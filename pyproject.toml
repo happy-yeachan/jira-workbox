@@ -1,0 +1,22 @@
+[project]
+name = "jira-workbox"
+version = "0.1.0"
+description = "Local web tool for Jira/Confluence operational tasks (plan/execute pattern)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "keyring>=25.0",
+    "pydantic>=2.7",
+]
+
+# No build backend on purpose: this is an application run in place with
+#   uv run uvicorn app:app
+# not a distributable package.
+
+[dependency-groups]
+dev = []
+
+[tool.uv]
+package = false

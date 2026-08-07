@@ -1,0 +1,586 @@
+"""jira-workbox — FastAPI entry point.
+
+Run:
+    uv run uvicorn app:app --port 8000        # or: run.command / run.bat
+
+API shape (the whole surface):
+
+    GET  /api/health                    connection + config, no secrets
+    GET  /api/tasks                     task specs + JSON schema for the form
+    POST /api/tasks/{name}/plan         params -> PlanResult (read-only)
+    POST /api/tasks/{name}/plan/stream  params -> SSE progress, terminal PlanResult
+    POST /api/tasks/{name}/execute      {plan_id} -> SSE progress (write tasks only)
+
+There is deliberately no route that accepts a list of targets to write. The
+only executable input is a ``plan_id`` issued by a plan — single-use and
+expiring — so every write is preceded by a preview the operator saw.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, SecretStr, ValidationError
+
+import tasks
+from core.auth import (
+    SETUP_HINT,
+    Credentials,
+    load_credentials,
+    mask_email,
+    normalize_site_url,
+    store_credentials,
+)
+from core.client import UpstreamError, WorkboxClient, get_client, set_client
+from core import planstore, rollback
+from core.config import BASE_DIR, load_settings
+from core.models import ExecOptions, PlanResult, ProgressEvent
+from core.planstore import PlanRejected, consume, pending_count
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
+)
+# httpx logs request lines at INFO; keep the noise (and any URLs) down.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+log = logging.getLogger("workbox")
+
+STATIC_DIR = BASE_DIR / "static"
+
+
+def _install_client(creds: Credentials) -> WorkboxClient:
+    """Build the site client and make it the process singleton."""
+    settings = load_settings()
+    client = WorkboxClient(creds, settings)
+    set_client(client)
+    log.info(
+        "connected: site=%s account=%s tasks=%d batch_size=%d concurrency=%d "
+        "plan_ttl=%ds verify_tls=%s",
+        creds.site_url, mask_email(creds.email), len(tasks.all_tasks()),
+        settings.batch_size, settings.concurrency, settings.plan_ttl_seconds,
+        settings.verify_tls,
+    )
+    return client
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = load_settings()  # logs the security notes once, on first call
+
+    # Starting without credentials is normal now: the browser setup form is how
+    # you store them, so the server has to be up for you to reach it.
+    creds = load_credentials()
+    if creds is not None:
+        _install_client(creds)
+    else:
+        log.warning("no credentials stored yet — open the UI and run setup")
+        print(f"\n{SETUP_HINT}\n", file=sys.stderr)
+
+    try:
+        yield
+    finally:
+        try:
+            client = get_client()
+        except RuntimeError:
+            client = None
+        set_client(None)
+        if client is not None:
+            await client.aclose()
+        log.info("shutdown complete")
+
+
+app = FastAPI(title="jira-workbox", version="0.2.0", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# --------------------------------------------------------------------------
+# request/response bodies
+# --------------------------------------------------------------------------
+
+
+class ExecuteRequest(BaseModel):
+    plan_id: str = Field(min_length=1)
+    batch_size: int | None = Field(default=None, ge=1, le=100)
+    concurrency: int | None = Field(default=None, ge=1, le=20)
+
+
+class SetupRequest(BaseModel):
+    """Write-only. Nothing in this model is ever sent back to a client."""
+
+    site_url: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=200)
+    api_token: SecretStr = Field(min_length=1)
+
+
+def _require_client() -> WorkboxClient:
+    """503 rather than a 500 stack trace when nothing is configured yet."""
+    try:
+        return get_client()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail=SETUP_HINT) from None
+
+
+def _guard_setup_request(request: Request) -> None:
+    """Reject anything that did not come from this app's own page.
+
+    Two independent checks:
+
+    * a custom header — cross-origin requests carrying one are preflighted, and
+      this server answers no CORS preflight, so a page on another origin cannot
+      send it at all;
+    * an Origin/Referer allowlist, for clients that set headers freely.
+
+    Neither stops a local process that forges headers — that is what the setup
+    code is for.
+    """
+    if request.headers.get("x-workbox-setup") != "1":
+        raise HTTPException(
+            status_code=403,
+            detail="워크박스 화면에서 보낸 요청만 허용됩니다.",
+        )
+
+    # Compare against the Host this very request arrived on, not against
+    # settings.port — uvicorn may have been started with a different --port,
+    # and hardcoding the configured one would reject the real page.
+    host_header = request.headers.get("host", "")
+    port = host_header.rsplit(":", 1)[1] if ":" in host_header else ""
+    allowed = {f"http://{host_header}", f"https://{host_header}"}
+    for alias in ("127.0.0.1", "localhost", "[::1]"):
+        allowed.add(f"http://{alias}:{port}" if port else f"http://{alias}")
+
+    origin = request.headers.get("origin")
+    if origin is None:
+        referer = request.headers.get("referer") or ""
+        origin = "/".join(referer.split("/")[:3]) if referer else None
+    if origin is not None and origin not in allowed:
+        log.error("SECURITY: setup request rejected from origin %s", origin[:120])
+        raise HTTPException(status_code=403, detail="다른 사이트에서 온 설정 요청은 차단됩니다.")
+
+
+# --------------------------------------------------------------------------
+# pages
+# --------------------------------------------------------------------------
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+# --------------------------------------------------------------------------
+# api
+# --------------------------------------------------------------------------
+
+
+@app.get("/api/health")
+async def health() -> dict[str, object]:
+    """Config and connectivity. Returns no token and no setup code, ever."""
+    settings = load_settings()
+    common: dict[str, object] = {
+        "user_agent": settings.user_agent,
+        "client_id_header": settings.client_id_header,
+        "verify_tls": settings.verify_tls,
+        "security_warnings": settings.security_notes(),
+        "default_batch_size": settings.batch_size,
+        "default_concurrency": settings.concurrency,
+        "plan_ttl_seconds": settings.plan_ttl_seconds,
+        "readonly_plan_ttl_seconds": settings.readonly_plan_ttl_seconds,
+        "pending_plans": pending_count(),
+    }
+
+    try:
+        client = get_client()
+    except RuntimeError:
+        return {
+            "configured": False,
+            "connected": False,
+            "detail": SETUP_HINT,
+            "site_url": None,
+            "account_email": None,
+            "account_name": None,
+            **common,
+        }
+
+    account: str | None = None
+    connected = False
+    detail: str | None = None
+    try:
+        me = await client.get_json("/myself")
+        account = me.get("displayName") or me.get("accountId")
+        connected = True
+    except UpstreamError as exc:
+        detail = str(exc)[:200]
+
+    return {
+        "configured": True,
+        "connected": connected,
+        "detail": detail,
+        "site_url": client.site_url,
+        "account_email": mask_email(client.email),
+        "account_name": account,
+        **common,
+    }
+
+
+@app.post("/api/setup/credentials")
+async def setup_credentials(body: SetupRequest, request: Request) -> dict[str, object]:
+    """Store credentials in the OS credential store. Write-only.
+
+    Nothing here reads a stored token back, and the response never contains one.
+    On success the site client is rebuilt in place, so rotating a token does not
+    need a restart.
+    """
+    _guard_setup_request(request)
+    try:
+        site_url = normalize_site_url(body.site_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    email = body.email.strip()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="이메일 주소 형식이 아닙니다.")
+
+    token = body.api_token.get_secret_value().strip()
+    if not token:
+        raise HTTPException(status_code=422, detail="API 토큰이 비어 있습니다.")
+
+    store_credentials(site_url, email, token)
+    del token
+
+    old = None
+    try:
+        old = get_client()
+    except RuntimeError:
+        pass
+    creds = load_credentials()
+    if creds is None:  # pragma: no cover - keyring wrote but did not read back
+        raise HTTPException(status_code=500, detail="저장한 접속 정보를 다시 읽지 못했습니다.")
+    _install_client(creds)
+    if old is not None:
+        await old.aclose()
+
+    log.info("credentials stored via web setup: site=%s account=%s",
+             site_url, mask_email(email))
+    return {"ok": True, "site_url": site_url, "account_email": mask_email(email)}
+
+
+@app.get("/api/groups")
+async def search_groups(q: str = "", limit: int = 50) -> list[dict[str, str]]:
+    """Group typeahead for the group-picker widget. Site token, read-only.
+
+    Returns ``[{id, name}]`` from Jira's group picker so the operator selects
+    real groups by name instead of typing ids.
+    """
+    client = _require_client()
+    limit = max(1, min(limit, 100))
+    try:
+        payload = await client.get_json(
+            "/groups/picker", params={"query": q, "maxResults": limit}
+        )
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return [
+        {"id": str(g.get("groupId")), "name": g.get("name") or str(g.get("groupId"))}
+        for g in (payload.get("groups") or [])
+        if g.get("groupId")
+    ]
+
+
+@app.get("/api/projects")
+async def search_projects(q: str = "", limit: int = 20) -> list[dict[str, str]]:
+    """Project typeahead — matches key or name. For the project picker."""
+    client = _require_client()
+    limit = max(1, min(limit, 50))
+    try:
+        payload = await client.get_json(
+            "/project/search", params={"query": q, "maxResults": limit,
+                                       "orderBy": "key"})
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return [
+        {"key": str(p.get("key")), "name": str(p.get("name") or "")}
+        for p in (payload.get("values") or [])
+        if p.get("key")
+    ]
+
+
+@app.get("/api/users")
+async def search_users(q: str = "", limit: int = 20) -> list[dict[str, str | None]]:
+    """User typeahead for the single-user picker (e.g. a project lead)."""
+    client = _require_client()
+    if not q.strip():
+        return []
+    limit = max(1, min(limit, 50))
+    try:
+        rows = await client.get_json("/user/search", params={"query": q, "maxResults": limit})
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    rows = rows if isinstance(rows, list) else rows.get("value", [])
+    out = []
+    for u in rows:
+        if not u.get("accountId") or u.get("accountType") not in (None, "atlassian"):
+            continue
+        out.append({"account_id": u.get("accountId"),
+                    "name": u.get("displayName"),
+                    "email": u.get("emailAddress")})
+    return out
+
+
+@app.get("/api/tasks")
+async def list_tasks() -> list[dict[str, object]]:
+    """Specs plus the params JSON schema the UI renders the form from."""
+    return [
+        {
+            "spec": module.spec.model_dump(),
+            "schema": module.params_model.model_json_schema(),
+            "streams_plan": module.streams_plan,
+        }
+        for module in tasks.all_tasks()
+    ]
+
+
+def _get_task(name: str) -> tasks.TaskModule:
+    try:
+        return tasks.get(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"없는 작업입니다: {name}") from None
+
+
+def _validate_params(module: tasks.TaskModule, payload: dict) -> BaseModel:
+    try:
+        return module.params_model.model_validate(payload)
+    except ValidationError as exc:
+        # include_context=False: a custom validator's ctx holds the raw
+        # ValueError, which is not JSON serializable.
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_url=False, include_context=False),
+        ) from None
+
+
+@app.post("/api/tasks/{name}/plan")
+async def plan_task(name: str, payload: dict) -> PlanResult:
+    """Read-only preview. Issues the plan token."""
+    module = _get_task(name)
+    _require_client()
+    params = _validate_params(module, payload)
+    try:
+        return await tasks.run_plan(module, params)
+    except tasks.TaskInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+@app.post("/api/tasks/{name}/plan/stream")
+async def plan_task_stream(name: str, payload: dict) -> StreamingResponse:
+    """Same as /plan, but streams progress for long analyses.
+
+    Params are validated before the stream opens, so a bad form is still a
+    clean 422 rather than an error buried in the stream.
+    """
+    module = _get_task(name)
+    _require_client()
+    params = _validate_params(module, payload)
+    settings = load_settings()
+
+    async def events() -> AsyncIterator[ProgressEvent]:
+        try:
+            async for event in tasks.stream_plan(module, params):
+                yield event
+        except asyncio.CancelledError:
+            log.info("preview cancelled by client: task=%s", name)
+            raise
+        except tasks.TaskInputError as exc:
+            yield ProgressEvent(type="error", message=str(exc)[:300])
+        except Exception as exc:  # noqa: BLE001 - surface it in the stream
+            log.exception("preview failed: task=%s", name)
+            yield ProgressEvent(
+                type="error", message=f"{type(exc).__name__}: {exc}"[:300]
+            )
+
+    return _sse_response(events(), settings.heartbeat_seconds)
+
+
+@app.post("/api/tasks/{name}/execute")
+async def execute_task(name: str, body: ExecuteRequest, request: Request) -> StreamingResponse:
+    """Execute a previously planned change set, streaming progress as SSE.
+
+    The plan token is consumed here, before streaming starts, so a rejected or
+    stale plan is a clean 409 instead of an error buried in the stream.
+    """
+    module = _get_task(name)
+    _require_client()
+    settings = load_settings()
+
+    if module.spec.readonly or module.execute_stream is None:
+        raise HTTPException(
+            status_code=405, detail="조회 전용 작업이라 실행 단계가 없습니다."
+        )
+
+    try:
+        plan_result = consume(body.plan_id, task=name)
+    except PlanRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    if not plan_result.changes:
+        raise HTTPException(status_code=409, detail="이 미리보기에는 변경할 항목이 없습니다.")
+
+    opts = ExecOptions(
+        batch_size=body.batch_size or settings.batch_size,
+        concurrency=body.concurrency or settings.concurrency,
+    )
+    execute_stream = module.execute_stream
+
+    async def events() -> AsyncIterator[ProgressEvent]:
+        try:
+            async for event in execute_stream(plan_result, opts):
+                yield event
+        except asyncio.CancelledError:
+            # Client aborted the fetch; execute_stream already logged the run.
+            log.info("execution cancelled by client: task=%s plan=%s", name, body.plan_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface it in the stream
+            log.exception("execution failed: task=%s", name)
+            yield ProgressEvent(
+                type="error", message=f"{type(exc).__name__}: {exc}"[:300]
+            )
+
+    return _sse_response(events(), settings.heartbeat_seconds)
+
+
+# --------------------------------------------------------------------------
+# rollback history — undo any past write run
+# --------------------------------------------------------------------------
+
+
+@app.get("/api/history")
+async def list_history(limit: int = 50) -> list[dict[str, object]]:
+    """Newest-first record of write runs, each with whether it can be undone."""
+    return rollback.history(limit=max(1, min(limit, 200)))
+
+
+@app.post("/api/history/{entry_id}/rollback")
+async def rollback_entry(entry_id: str, request: Request) -> StreamingResponse:
+    """Undo a past run: register a plan from its stored inverse and execute it.
+
+    The undo runs through the same task, which journals its own inverse — so the
+    undo is itself listed in history and can be redone.
+    """
+    settings = load_settings()
+    _require_client()
+    entry = rollback.get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="그 기록을 찾을 수 없습니다.")
+    if entry.get("status") != "active":
+        raise HTTPException(status_code=409, detail="이미 되돌린 작업입니다.")
+
+    module = _get_task(entry["task"])
+    if module.spec.readonly or module.execute_stream is None:
+        raise HTTPException(status_code=409, detail="되돌릴 수 없는 작업 종류입니다.")
+
+    changes = rollback.inverse_changes(entry)
+    if not changes:
+        raise HTTPException(status_code=409, detail="되돌릴 항목이 없습니다.")
+
+    plan = planstore.register(
+        task=entry["task"],
+        params_echo={"rollback_of": entry_id, "rollback_note": f"{entry_id[:8]} 되돌리기"},
+        changes=changes,
+    )
+    consume(plan.plan_id, task=entry["task"])  # single-use, mirror the normal path
+    opts = ExecOptions(concurrency=settings.concurrency)
+    execute_stream = module.execute_stream
+    clean = False
+
+    async def events() -> AsyncIterator[ProgressEvent]:
+        nonlocal clean
+        try:
+            async for event in execute_stream(plan, opts):
+                yield event
+            clean = True
+        except asyncio.CancelledError:
+            log.info("rollback cancelled by client: entry=%s", entry_id)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.exception("rollback failed: entry=%s", entry_id)
+            yield ProgressEvent(type="error", message=f"{type(exc).__name__}: {exc}"[:300])
+        finally:
+            # Mark the original undone only if the undo actually ran to the end.
+            if clean:
+                rollback.mark_rolled_back(entry_id, by_id=None)
+
+    return _sse_response(events(), settings.heartbeat_seconds)
+
+
+# --------------------------------------------------------------------------
+# SSE plumbing
+# --------------------------------------------------------------------------
+
+
+def _format_sse(event: ProgressEvent) -> str:
+    data = json.dumps(event.model_dump(mode="json", exclude_none=True), ensure_ascii=False)
+    return f"event: {event.type}\ndata: {data}\n\n"
+
+
+async def _with_heartbeat(
+    events: AsyncIterator[ProgressEvent], interval: float
+) -> AsyncIterator[str]:
+    """Emit ``: ping`` comment frames while the producer is quiet.
+
+    Not cosmetic: a client disconnect only becomes visible when the server tries
+    to write. Without this, closing the tab during a long silent scan leaves the
+    scan running to completion. The UI's SSE reader keeps only ``data:`` lines,
+    so comment frames are ignored there.
+    """
+    iterator = events.__aiter__()
+    pending: asyncio.Task[ProgressEvent] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(iterator.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield ": ping\n\n"
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                return
+            finally:
+                pending = None
+            yield _format_sse(event)
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+def _sse_response(
+    events: AsyncIterator[ProgressEvent], heartbeat_seconds: float
+) -> StreamingResponse:
+    return StreamingResponse(
+        _with_heartbeat(events, heartbeat_seconds),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+if __name__ == "__main__":
+    settings = load_settings()
+    uvicorn.run("app:app", host=settings.host, port=settings.port, log_level="info")

@@ -1,0 +1,440 @@
+"""Is a project's configuration shared with other projects? (config ecosystem)
+
+Category: 스페이스. Enter a project key and see, per scheme type, whether the
+scheme the project uses is **shared** with other projects or **dedicated** to it
+— the input for later isolating (cloning + re-pointing) the shared ones.
+
+Read-only. Covers the scheme types whose project associations can be fetched in
+bulk (one grouped call per type over all project ids, so it stays fast):
+
+    이슈 타입 스킴        GET /issuetypescheme/project?projectId=…
+    워크플로우 스킴       GET /workflowscheme/project?projectId=…
+    이슈 유형 화면 스킴   GET /issuetypescreenscheme/project?projectId=…   (see 화면 공유 분석 for the full screen chain)
+    보안 스킴            GET /issuesecurityschemes/project?projectId=…
+
+Permission / notification schemes have no bulk association endpoint (only
+per-project GET), so telling whether they are shared needs a site-wide scan —
+that is a follow-up phase, not here.
+
+Verdict per scheme: 전용 (only this project) / 공유됨 (also other projects) /
+없음 (project has no scheme of this type). Everything degrades toward 공유됨:
+if the association could not be read, it is not called 전용.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
+
+from core import planstore
+from core.client import UpstreamError, WorkboxClient, get_client
+from core.concurrency import chunked
+from core.models import Column, PlanResult, ProgressEvent, ResultTable
+from tasks import TaskInputError, TaskModule, TaskSpec, register
+from tasks import screen_share_analysis as _screens
+
+log = logging.getLogger("workbox.task.project_config_audit")
+
+TASK_NAME = "project_config_audit"
+_P_PROJECT_ONE = "/project/{key}"
+_P_PROJECT_SEARCH = "/project/search"
+_P_ISSUETYPE = "/issuetype"
+_P_ITS_MAPPING = "/issuetypescheme/mapping"
+_P_WF_ONE = "/workflowscheme/{id}"
+_P_SEC_ONE = "/issuesecurityschemes/{id}"
+_P_PROJECT_PERM = "/project/{key}/permissionscheme"
+_ID_CHUNK = 50
+
+_VERDICT_KEY = {"전용": "target_only", "공유됨": "shared", "없음": "orphan",
+                "확인 불가": "unknown", "미확인": "unknown"}
+
+# The screen chain carries a lot of evidence columns (근거 경로, 공유 시작 지점, WF
+# 참조 …). Inside the audit we only want state at a glance, so keep just the name
+# and the verdict per row; the full evidence stays in the JSON download.
+_SCREEN_KEEP = {
+    "issue_type_screen_schemes": ("verdict", "itss_name", "project_count"),
+    "screen_schemes": ("verdict", "screen_scheme_name", "reachable_project_count"),
+    "screens": ("verdict", "screen_name", "reachable_project_count"),
+}
+
+
+def _slim(t: ResultTable) -> ResultTable:
+    keep = _SCREEN_KEEP.get(t.key)
+    if keep:
+        t.columns = [c for c in t.columns if c.key in keep]
+    return t
+
+
+def _sid(v: Any) -> str:
+    return "" if v is None else str(v)
+
+
+_CHECK_OPTIONS = [
+    ("issue_type", "이슈 타입 스킴"),
+    ("workflow", "워크플로우 스킴"),
+    ("screens", "화면 구성 (ITSS·화면) — 느림"),
+    ("security", "보안 스킴"),
+    ("permission", "권한 스킴"),
+]
+_ALL_CHECKS = [v for v, _ in _CHECK_OPTIONS]
+
+
+class Params(BaseModel):
+    project: str = Field(
+        title="프로젝트",
+        description="진단할 프로젝트 키 또는 ID (회사 관리형)",
+        json_schema_extra={"widget": "project_picker", "placeholder": "예: ABC"},
+    )
+    checks: list[str] = Field(
+        default_factory=lambda: list(_ALL_CHECKS),
+        title="검사 항목",
+        description="기본은 전체입니다. 느린 항목(화면·권한)을 빼면 더 빠릅니다.",
+        json_schema_extra={
+            "widget": "checkset",
+            "options": [{"value": v, "label": l} for v, l in _CHECK_OPTIONS],
+        },
+    )
+
+    @field_validator("project")
+    @classmethod
+    def _clean(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("프로젝트 키 또는 ID를 입력하세요.")
+        if "/" in v or v.lower().startswith("http"):
+            raise ValueError("URL이 아니라 키나 숫자 ID를 입력하세요.")
+        return v
+
+    @field_validator("checks")
+    @classmethod
+    def _checks(cls, v: list[str]) -> list[str]:
+        v = [c for c in v if c in _ALL_CHECKS]
+        if not v:
+            raise ValueError("검사 항목을 최소 하나 선택하세요.")
+        return v
+
+
+@dataclass(slots=True)
+class SchemeRow:
+    kind: str                 # display name of the scheme type
+    scheme_id: str | None
+    scheme_name: str
+    others: list[str]         # other projects' "KEY (name)" strings (display)
+    other_ids: list[str]      # other projects' ids (for the follow-up isolate step)
+    verdict: str              # 전용 | 공유됨 | 없음 | 확인 불가
+    note: str = ""
+    isolate_key: str = ""     # config_isolate scheme_type, if this type can be isolated
+
+
+# --------------------------------------------------------------------------
+# each scheme type: how to pull {scheme -> project ids} for a batch of projects
+# --------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class SchemeType:
+    kind: str
+    path: str
+    items_key: str
+    scheme_field: str         # key in each row holding the scheme object, or "" for flat rows
+    id_field: str             # where the scheme id lives (in the scheme object, or the row)
+    name_field: str           # where the scheme name lives ("" if none)
+    paginated: bool           # offset-paginated vs single container
+    check: str = ""           # which "검사 항목" toggle enables this type
+    detail: str = ""
+    isolate_key: str = ""     # config_isolate scheme_type for the [분리하기] button
+
+
+_TYPES = [
+    SchemeType("이슈 타입 스킴", "/issuetypescheme/project", "values", "issueTypeScheme", "id", "name", True, check="issue_type", isolate_key="issue_type"),
+    SchemeType("워크플로우 스킴", "/workflowscheme/project", "values", "workflowScheme", "id", "name", False, check="workflow", isolate_key="workflow"),
+    SchemeType("이슈 유형 화면 스킴", "/issuetypescreenscheme/project", "values",
+               "issueTypeScreenScheme", "id", "name", True, check="screens",
+               detail="화면 단위 상세는 아래 표를 보세요.", isolate_key="issuetypescreen"),
+    SchemeType("보안 스킴", "/issuesecurityschemes/project", "values", "", "issueSecuritySchemeId", "", True, check="security", isolate_key="security"),
+]
+
+
+async def _scheme_to_projects(
+    client: WorkboxClient, st: SchemeType, project_ids: list[str]
+) -> tuple[dict[str, set[str]], dict[str, str], bool]:
+    """Return (schemeId -> set(projectId), schemeId -> name, ok).
+
+    Passes all project ids to the association endpoint in chunks; each row maps
+    one scheme to the projects (among those asked) that use it.
+    """
+    scheme_projects: dict[str, set[str]] = {}
+    names: dict[str, str] = {}
+    ok = True
+
+    async def ingest(rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            if st.scheme_field:
+                scheme = row.get(st.scheme_field) or {}
+                sid = _sid(scheme.get(st.id_field))
+                if st.name_field and scheme.get(st.name_field):
+                    names[sid] = str(scheme[st.name_field])
+                pids = [_sid(p) for p in (row.get("projectIds") or [])]
+            else:  # flat row: {schemeId, projectId}
+                sid = _sid(row.get(st.id_field))
+                pids = [_sid(row.get("projectId"))]
+            if not sid:
+                continue
+            scheme_projects.setdefault(sid, set()).update(p for p in pids if p)
+
+    for chunk in chunked(project_ids, _ID_CHUNK):
+        params = {"projectId": chunk}
+        try:
+            if st.paginated:
+                rows = [r async for r in client.paginate_offset(
+                    st.path, items_key=st.items_key, params=params, page_size=50)]
+                await ingest(rows)
+            else:
+                payload = await client.get_json(st.path, params=params)
+                await ingest(payload.get(st.items_key) or [])
+        except UpstreamError as exc:
+            ok = False
+            log.warning("%s association read failed: %s", st.kind, exc)
+    return scheme_projects, names, ok
+
+
+# --------------------------------------------------------------------------
+# per-scheme "contents" (what's inside the scheme) for the expandable body
+# --------------------------------------------------------------------------
+
+
+async def _contents_table(client: WorkboxClient, kind: str, scheme_id: str | None) -> ResultTable:
+    """A small table of what the target's scheme contains. Best-effort."""
+    key = "content_" + {"이슈 타입 스킴": "its", "워크플로우 스킴": "wf",
+                        "보안 스킴": "sec", "권한 스킴": "perm"}.get(kind, "x")
+    empty = ResultTable(key=key, title="내용", columns=[Column(key="info", title="내용")],
+                        rows=([] if scheme_id else [{"info": "이 프로젝트에는 이 스킴이 없습니다."}]))
+    if not scheme_id:
+        return empty
+    try:
+        if kind == "이슈 타입 스킴":
+            ids = []
+            async for m in client.paginate_offset(_P_ITS_MAPPING, items_key="values",
+                                                   params={"issueTypeSchemeId": [scheme_id]}, page_size=100):
+                if str(m.get("issueTypeSchemeId")) == scheme_id:
+                    ids.append(str(m.get("issueTypeId")))
+            all_types = await client.get_json(_P_ISSUETYPE)
+            names = {str(t.get("id")): t.get("name") for t in (all_types.get("value") or all_types if isinstance(all_types, list) else [])}
+            # get_json wraps a bare list under "value"
+            if not names:
+                rows_all = all_types.get("value", []) if isinstance(all_types, dict) else []
+                names = {str(t.get("id")): t.get("name") for t in rows_all}
+            return ResultTable(key=key, title="이슈 타입", columns=[Column(key="name", title="이슈 타입")],
+                               rows=[{"name": names.get(i, f"#{i}")} for i in ids])
+        if kind == "워크플로우 스킴":
+            wf = await client.get_json(_P_WF_ONE.format(id=scheme_id))
+            rows = [{"issue_type": "기본값", "workflow": wf.get("defaultWorkflow") or "-"}]
+            for it, w in (wf.get("issueTypeMappings") or {}).items():
+                rows.append({"issue_type": str(it), "workflow": str(w)})
+            return ResultTable(key=key, title="워크플로우",
+                               columns=[Column(key="issue_type", title="이슈 유형"),
+                                        Column(key="workflow", title="워크플로우")],
+                               rows=rows)
+        if kind == "보안 스킴":
+            sec = await client.get_json(_P_SEC_ONE.format(id=scheme_id))
+            return ResultTable(key=key, title="보안 레벨",
+                               columns=[Column(key="name", title="레벨"),
+                                        Column(key="description", title="설명")],
+                               rows=[{"name": l.get("name"), "description": l.get("description") or ""}
+                                     for l in (sec.get("levels") or [])])
+    except UpstreamError as exc:
+        return ResultTable(key=key, title="내용", columns=[Column(key="info", title="내용")],
+                           rows=[{"info": f"내용을 불러오지 못했습니다: {exc}"}])
+    return empty
+
+
+def _group_note(r: "SchemeRow") -> str:
+    base = r.scheme_name if r.scheme_id else "없음"
+    if r.verdict == "공유됨":
+        tail = "공유됨 · " + ", ".join(r.others[:2]) + (f" 외 {len(r.others) - 2}개" if len(r.others) > 2 else "")
+    else:
+        tail = r.verdict
+    return f"{base} · {tail}"
+
+
+# --------------------------------------------------------------------------
+# plan
+# --------------------------------------------------------------------------
+
+
+async def _resolve_target(client: WorkboxClient, key_or_id: str):
+    try:
+        raw = await client.get_json(_P_PROJECT_ONE.format(key=key_or_id))
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403, 404):
+            raise TaskInputError(
+                f"프로젝트 '{key_or_id}'를 읽지 못했습니다({exc.status_code}). 키와 관리 권한을 확인하세요."
+            ) from None
+        raise
+    if bool(raw.get("simplified")):
+        raise TaskInputError(
+            f"{raw.get('key')}는 팀 관리형 프로젝트입니다. 설정이 프로젝트 전용이라 진단 대상이 아닙니다."
+        )
+    return _sid(raw.get("id")), str(raw.get("key") or key_or_id), str(raw.get("name") or "")
+
+
+async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
+    client = get_client()
+    warnings: list[str] = []
+    yield ProgressEvent(type="start", message=f"{params.project} 설정 진단")
+
+    yield ProgressEvent(type="phase", phase="target", message="프로젝트 확인")
+    target_id, target_key, target_name = await _resolve_target(client, params.project)
+
+    # every project (id -> "KEY (name)") so shared lists read nicely
+    yield ProgressEvent(type="phase", phase="projects", message="전체 프로젝트 목록")
+    projects: dict[str, str] = {}
+    async for p in client.paginate_offset(_P_PROJECT_SEARCH, items_key="values", page_size=50):
+        pid = _sid(p.get("id"))
+        projects[pid] = f"{p.get('key')} ({p.get('name')})"
+    all_ids = list(projects)
+    projects.setdefault(target_id, f"{target_key} ({target_name})")
+
+    selected = [st for st in _TYPES if st.check in params.checks]
+    rows: list[SchemeRow] = []
+    for n, st in enumerate(selected, 1):
+        yield ProgressEvent(type="phase", phase="schemes", index=n, total=len(selected),
+                            message=st.kind)
+        scheme_projects, names, ok = await _scheme_to_projects(client, st, all_ids)
+        # which scheme does the target use?
+        target_scheme = next((sid for sid, ps in scheme_projects.items() if target_id in ps), None)
+        if target_scheme is None:
+            rows.append(SchemeRow(st.kind, None, "없음", [], [],
+                                  "없음", note=("연결 조회 실패" if not ok else st.detail),
+                                  isolate_key=st.isolate_key))
+            if not ok:
+                warnings.append(f"{st.kind}: 연결 정보를 읽지 못했습니다.")
+            continue
+        other_ids = sorted(p for p in scheme_projects[target_scheme] if p != target_id)
+        others = [projects.get(p, p) for p in other_ids]
+        verdict = "확인 불가" if not ok else ("공유됨" if other_ids else "전용")
+        rows.append(SchemeRow(
+            st.kind, target_scheme, names.get(target_scheme, f"#{target_scheme}"),
+            others, other_ids, verdict, note=st.detail, isolate_key=st.isolate_key,
+        ))
+        if not ok:
+            warnings.append(f"{st.kind}: 일부 연결을 읽지 못해 '확인 불가'로 둡니다.")
+
+    # --- permission scheme -----------------------------------------------
+    # Unlike the others, permission schemes have no bulk association endpoint,
+    # so "shared by N" would need a full per-project scan. That is expensive and
+    # Jira already shows the shared count on its own scheme page, so we skip it:
+    # show the scheme + its grants, and leave sharing as 미확인.
+    if "permission" in params.checks:
+        yield ProgressEvent(type="phase", phase="permission", message="권한 스킴 확인")
+        try:
+            tps = await client.get_json(_P_PROJECT_PERM.format(key=target_key))
+            psid, psname = _sid(tps.get("id")), str(tps.get("name") or f"#{tps.get('id')}")
+            rows.append(SchemeRow("권한 스킴", psid, psname, [], [], "미확인",
+                                  note="공유 여부는 Jira 스킴 페이지에서 확인하세요."))
+        except UpstreamError:
+            rows.append(SchemeRow("권한 스킴", None, "없음", [], [], "확인 불가",
+                                  note="이 프로젝트의 권한 스킴을 읽지 못했습니다."))
+
+    # --- deep screen chain for the ITSS node's body -----------------------
+    screen_tables: list[ResultTable] = []
+    screen_report: dict[str, Any] = {}
+    screen_complete = True
+    if "screens" in params.checks:
+      try:
+        async for ev in _screens.plan_stream(_screens.Params(project=target_key)):
+            if ev.type in ("phase", "warning"):
+                yield ev
+                if ev.type == "warning" and ev.message:
+                    warnings.append(ev.message)
+            elif ev.type == "plan" and ev.plan is not None:
+                screen_tables = ev.plan.tables
+                screen_report = ev.plan.data.get(_screens.REPORT_KEY, {})
+                screen_complete = ev.plan.complete
+      except TaskInputError:
+        warnings.append("화면 상세 분석을 건너뛰었습니다 (프로젝트 상태 확인 필요).")
+    # anomalies·워크플로우 전환 화면 표는 상세 증거라 진단 화면에서는 제외(전체는
+    # JSON 내려받기에 있음). 남은 표는 계층 순서로 두고 컬럼을 핵심만 남긴다.
+    _drop = {"anomalies", "workflow_screen_refs"}
+    screen_tables = [t for t in screen_tables if t.key not in _drop]
+    _order = ["issue_type_screen_schemes", "screen_schemes", "screens"]
+    screen_tables.sort(key=lambda t: _order.index(t.key) if t.key in _order else 99)
+    screen_tables = [_slim(t) for t in screen_tables]
+
+    # --- one accordion group per scheme type; header = brief, body = contents -
+    tables: list[ResultTable] = []
+    for r in rows:
+        badge, note = _VERDICT_KEY.get(r.verdict, "unknown"), _group_note(r)
+        can_isolate = r.verdict == "공유됨" and bool(r.isolate_key)
+        action = "분리하기" if can_isolate else ""
+        action_params = (
+            {"project": target_key, "scheme_type": r.isolate_key} if can_isolate else {}
+        )
+        if r.kind == "이슈 유형 화면 스킴" and screen_tables:
+            body = screen_tables
+        elif r.kind == "권한 스킴":
+            # header only — just shared-or-not, no grant list (a columnless table
+            # so the UI renders the header without an expand caret)
+            body = [ResultTable(key="permission_head", title="", group=r.kind)]
+        else:
+            body = [await _contents_table(client, r.kind, r.scheme_id)]
+        for i, t in enumerate(body):
+            t.group = r.kind
+            t.collapsed = True
+            if i == 0:
+                t.group_badge, t.group_note, t.group_action = badge, note, action
+                t.group_action_params = action_params
+        tables.extend(body)
+
+    shared = [r for r in rows if r.verdict == "공유됨"]
+    if shared:
+        warnings.insert(0, f"공유 중인 설정 {len(shared)}종: " + ", ".join(r.kind for r in shared)
+                        + " — 각 항목의 [분리하기]로 전용으로 만들 수 있습니다.")
+
+    report = {
+        "schema_version": 1,
+        "task": TASK_NAME,
+        "target_project": {"id": target_id, "key": target_key, "name": target_name},
+        "schemes": [{
+            "kind": r.kind, "scheme_id": r.scheme_id, "scheme_name": r.scheme_name,
+            "verdict": r.verdict, "shared": r.verdict == "공유됨",
+            "other_project_ids": r.other_ids,
+        } for r in rows],
+    }
+
+    result = planstore.register(
+        task=TASK_NAME,
+        params_echo={"project": target_key},
+        warnings=warnings,
+        tables=tables,
+        data={TASK_NAME: report, _screens.REPORT_KEY: screen_report},
+        readonly=True,
+        complete=screen_complete,
+    )
+    yield ProgressEvent(type="plan", total=len(rows), plan=result)
+
+
+async def plan(params: Params) -> PlanResult:
+    async for event in plan_stream(params):
+        if event.type == "plan" and event.plan is not None:
+            return event.plan
+    raise RuntimeError("audit ended without a plan event")
+
+
+TASK = register(
+    TaskModule(
+        spec=TaskSpec(
+            name=TASK_NAME,
+            category="스페이스",
+            title="설정 공유 진단",
+            description="프로젝트 키 하나로 이슈타입·워크플로우·보안 스킴과 화면 구성(화면·화면스킴·워크플로우 전환 화면)이 다른 프로젝트와 공유 중인지 한 번에 봅니다.",
+            readonly=True,
+        ),
+        params_model=Params,
+        plan_stream=plan_stream,
+    )
+)

@@ -1,0 +1,1559 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jira-workbox</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --line: #e6e8eb;
+    --line-soft: #f0f1f3;
+    --ink: #16191d;
+    --ink-2: #454b54;
+    --muted: #6b7280;
+    --accent: #4f46e5;
+    --accent-soft: #eef2ff;
+    --ok: #067647; --ok-bg: #ecfdf3; --ok-line: #abefc6;
+    --warn: #b54708; --warn-bg: #fffaeb; --warn-line: #fedf89;
+    --bad: #b42318; --bad-bg: #fef3f2; --bad-line: #fecdca;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(16,24,40,.05);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: .92em; }
+
+  /* ---------- header ---------- */
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 20px; height: 52px;
+    background: var(--surface); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { font-weight: 650; letter-spacing: -.01em; font-size: 15px; }
+  .brand .dim { color: var(--muted); font-weight: 400; }
+  .spacer { flex: 1; }
+  .status {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+    font-size: 12.5px; color: var(--ink-2); background: var(--surface);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #cbd0d6; flex: none; }
+  .dot.on { background: #12b76a; box-shadow: 0 0 0 3px rgba(18,183,106,.15); }
+  .dot.off { background: #f04438; box-shadow: 0 0 0 3px rgba(240,68,56,.15); }
+
+  .alarm {
+    background: var(--bad-bg); border-bottom: 1px solid var(--bad-line);
+    color: var(--bad); padding: 9px 20px; font-size: 13px; font-weight: 500;
+  }
+
+  /* ---------- layout ---------- */
+  main { display: flex; align-items: flex-start; }
+  nav {
+    width: 248px; flex: none; padding: 16px 12px;
+    position: sticky; top: 52px; align-self: flex-start;
+  }
+  .nav-label {
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); padding: 0 10px 8px;
+  }
+  nav button {
+    display: block; width: 100%; text-align: left; border: 0; background: none;
+    padding: 9px 10px; border-radius: 8px; cursor: pointer; font: inherit;
+    color: var(--ink-2); margin-bottom: 2px;
+  }
+  nav button:hover { background: #eff1f4; }
+  nav button[aria-current="true"] { background: var(--accent-soft); color: var(--ink); }
+  nav button[aria-current="true"] .t { color: var(--accent); }
+  nav .t { font-weight: 550; font-size: 13.5px; display: block; }
+  nav .d {
+    font-size: 12px; color: var(--muted); display: block; margin-top: 2px;
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .pill {
+    display: inline-block; font-size: 10.5px; font-weight: 600; padding: 1px 6px;
+    border-radius: 999px; background: #eef1f4; color: var(--muted); vertical-align: 1px;
+  }
+
+  section.work {
+    flex: 1; min-width: 0; padding: 16px 20px 48px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+  }
+  .card > header {
+    all: unset; display: flex; align-items: center; gap: 10px;
+    padding: 13px 16px; border-bottom: 1px solid var(--line-soft);
+  }
+  .card > header h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+  .step {
+    width: 20px; height: 20px; flex: none; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 11.5px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .card > .body { padding: 16px; }
+  .card.narrow { max-width: 820px; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+
+  /* ---------- forms ---------- */
+  .field { display: block; margin-bottom: 14px; }
+  .field:last-of-type { margin-bottom: 0; }
+  .field .name { display: block; font-size: 13px; font-weight: 550; margin-bottom: 2px; }
+  .field .hint { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  input[type=text], input[type=password], input[type=number], textarea, select {
+    width: 100%; padding: 8px 11px; color: var(--ink);
+    border: 1px solid #d5d9de; border-radius: 8px; background: var(--surface);
+    font: inherit; font-size: 13.5px; transition: border-color .12s, box-shadow .12s;
+  }
+  input[type=text], input[type=password], textarea { font-family: var(--mono); font-size: 13px; }
+  input:focus, textarea:focus, select:focus {
+    outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+  }
+  textarea { resize: vertical; min-height: 56px; }
+  .check { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 14px; }
+  .check input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+  .check .name { display: block; font-size: 13px; font-weight: 550; }
+  .check .hint { display: block; font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+  .inline { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+  .inline input { width: 68px; padding: 5px 8px; font-size: 12.5px; }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px; justify-content: center;
+    height: 34px; padding: 0 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid #d5d9de; background: var(--surface); color: var(--ink);
+    font: inherit; font-size: 13.5px; font-weight: 550; white-space: nowrap;
+    transition: background .12s, border-color .12s, box-shadow .12s;
+  }
+  .btn:hover:not(:disabled) { background: #f6f7f9; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover:not(:disabled) { background: #4338ca; border-color: #4338ca; }
+  .btn.danger { background: #d92d20; border-color: #d92d20; color: #fff; }
+  .btn.danger:hover:not(:disabled) { background: #b42318; border-color: #b42318; }
+  .btn.small { height: 28px; padding: 0 10px; font-size: 12.5px; }
+  .btn.ghost { border-color: transparent; background: none; color: var(--ink-2); }
+  .btn.ghost:hover:not(:disabled) { background: #eff1f4; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+  /* ---------- notices ---------- */
+  .notice { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 10px; border: 1px solid; }
+  .notice.err { background: var(--bad-bg); border-color: var(--bad-line); color: var(--bad); }
+  .notice.warn { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn); }
+  .notice:last-child { margin-bottom: 0; }
+
+  /* ---------- tables ---------- */
+  .tablewrap {
+    border: 1px solid var(--line); border-radius: 8px; overflow: auto; max-height: 420px;
+    background: var(--surface);
+  }
+  /* content-sized columns + horizontal scroll beats 12 columns fighting over
+     one screen width and folding a name into five lines */
+  table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+  thead th {
+    position: sticky; top: 0; z-index: 1; text-align: left; white-space: nowrap;
+    padding: 8px 12px; background: #fafbfc; color: var(--muted);
+    font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+    border-bottom: 1px solid var(--line);
+  }
+  tbody td {
+    padding: 8px 12px; border-bottom: 1px solid var(--line-soft);
+    vertical-align: top; color: var(--ink-2); white-space: nowrap;
+  }
+  td.text { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  td.tags { white-space: normal; max-width: 300px; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: #fcfcfd; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* pre-wrap belongs on the content span, not the cell: the cell also holds the
+     source indentation between Alpine's <template> nodes, and pre-wrap would
+     render every one of those newlines as a blank line */
+  td.path { font-family: var(--mono); font-size: 11.5px; max-width: 420px; color: var(--muted); }
+  /* multi-line evidence would otherwise stretch every row to its height, even
+     while scrolled out of view — clamp it, the full text is in the tooltip */
+  /* height clamp rather than -webkit-line-clamp: current Chrome resolves the
+     -webkit-box display away and the clamp silently does nothing */
+  td.path > span, td.tags > span { display: block; max-height: 3.4em; overflow: hidden; }
+  td.path > span { white-space: pre-wrap; }
+  td.wide { white-space: normal; max-width: 300px; }
+  tr.muted td { opacity: .55; }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    font-size: 11.5px; font-weight: 600; border: 1px solid var(--line); background: #f4f5f7; color: var(--ink-2);
+  }
+  .badge.v-shared, .badge.v-other_project, .badge.v-fatal { background: var(--bad-bg); border-color: var(--bad-line); color: var(--bad); }
+  .badge.v-shared_workflow_unproven, .badge.v-unproven, .badge.v-degrades_verdict { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn); }
+  .badge.v-target_only, .badge.v-target_workflow { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok); }
+  .tag {
+    display: inline-block; padding: 1px 7px; margin: 0 4px 3px 0; border-radius: 6px;
+    background: #f2f4f7; color: var(--ink-2); font-size: 11.5px; font-family: var(--mono);
+  }
+  .tag.add { background: var(--ok-bg); color: var(--ok); }
+  .tag.del { background: var(--bad-bg); color: var(--bad); text-decoration: line-through; }
+
+  /* ---------- progress + log ---------- */
+  .bar { height: 6px; border-radius: 999px; background: #eceef1; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .15s ease; }
+  .metrics { display: flex; align-items: center; gap: 16px; font-size: 12.5px; color: var(--muted); margin-top: 9px; }
+  .metrics b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .metrics .ok b { color: var(--ok); } .metrics .bad b { color: var(--bad); }
+  pre.log {
+    margin: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: #fbfcfd; color: var(--ink-2); font-family: var(--mono); font-size: 11.5px;
+    line-height: 1.65; max-height: 240px; overflow: auto; white-space: pre-wrap;
+  }
+  pre.log b { font-weight: 600; }
+  pre.log b.ok { color: var(--ok); } pre.log b.bad { color: var(--bad); }
+  pre.log b.warn { color: var(--warn); } pre.log b.sys { color: #8b90a0; }
+
+  /* ---------- modal ---------- */
+  .modal-bg {
+    position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+    background: rgba(16,24,40,.45); backdrop-filter: blur(2px); padding: 20px;
+  }
+  .modal {
+    background: var(--surface); border-radius: 12px; width: 460px; max-width: 100%;
+    box-shadow: 0 20px 24px -4px rgba(16,24,40,.12), 0 8px 8px -4px rgba(16,24,40,.04);
+  }
+  .modal .body { padding: 18px; }
+  .modal .body h3 { margin: 0 0 10px; font-size: 16px; }
+  .modal .foot {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 14px 18px; border-top: 1px solid var(--line-soft);
+  }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 12px 0; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; font-weight: 550; }
+
+  .center-wrap { display: flex; justify-content: center; padding: 40px 20px; }
+  .center-wrap .card { width: 480px; max-width: 100%; }
+  .empty { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 13.5px; }
+
+  /* landing has no sidebar — center the card grid and give it room */
+  main.landing section.work { padding: 32px 24px 56px; align-items: center; }
+  .landing-wrap { width: 100%; max-width: 1040px; }
+  .hero { padding: 8px 2px 20px; }
+  .hero h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: -.02em; }
+  .hero .sub { max-width: 620px; }
+  .cat { margin-bottom: 22px; }
+  .cat-label {
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+  .task-card {
+    text-align: left; background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px; cursor: pointer; font: inherit;
+    box-shadow: var(--shadow); transition: border-color .12s, box-shadow .12s, transform .06s;
+  }
+  .task-card:hover { border-color: var(--accent); box-shadow: 0 4px 12px rgba(16,24,40,.08); }
+  .task-card:active { transform: translateY(1px); }
+  .tc-title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  .tc-desc { color: var(--muted); font-size: 12.5px; margin-top: 5px; line-height: 1.5; }
+
+  details.advanced { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+  details.advanced > summary {
+    cursor: pointer; font-size: 13px; font-weight: 550; color: var(--ink-2);
+    list-style: none; display: inline-flex; align-items: center; gap: 6px;
+  }
+  details.advanced > summary::-webkit-details-marker { display: none; }
+  details.advanced > summary::before { content: "▸"; color: var(--muted); }
+  details.advanced[open] > summary::before { content: "▾"; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 9px;
+    font-size: 12px; color: var(--muted);
+  }
+  .legend .badge { margin-right: 5px; font-weight: 600; }
+
+  /* one accordion card: header on top, body expands downward inside the same
+     bordered box, so the clicked row stays put and the detail reads as attached */
+  .tgroup { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px;
+            background: var(--surface); overflow: hidden; }
+  .tgroup-h {
+    display: flex; align-items: center; gap: 10px; width: 100%; cursor: pointer;
+    font: inherit; font-size: 13.5px; color: var(--ink); padding: 11px 13px;
+  }
+  .tgroup-h:hover { background: #f9fafb; }
+  .tgroup-h .tg-caret { color: var(--muted); width: 12px; flex: none; }
+  .tgroup-h .tg-name { font-weight: 600; }
+  .tgroup-h .badge { flex: none; }
+  .tgroup-body { padding: 12px 13px 2px; border-top: 1px solid var(--line-soft); }
+
+  .picker {
+    margin-top: 6px; border: 1px solid var(--line); border-radius: 8px;
+    max-height: 220px; overflow: auto; background: var(--surface);
+  }
+  .pick-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer;
+    border-bottom: 1px solid var(--line-soft); font-size: 13px;
+  }
+  .pick-row:last-child { border-bottom: 0; }
+  .pick-row:hover { background: #f6f7f9; }
+  .pick-row input { width: 15px; height: 15px; accent-color: var(--accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag.pick { cursor: pointer; background: var(--accent-soft); color: var(--accent); }
+  .tag.pick:hover { background: #e0e4ff; }
+
+  /* template picker: pick from grouped cards, cryptic key stays hidden */
+  .tmpl-group { margin-top: 10px; }
+  .tmpl-group-label {
+    font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 5px;
+  }
+  .tmpl-cards { display: flex; flex-wrap: wrap; gap: 7px; }
+  .tmpl-card {
+    font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+    background: var(--surface); color: var(--ink); transition: border-color .12s, background .12s;
+  }
+  .tmpl-card:hover { border-color: var(--accent); }
+  .tmpl-card.sel { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .linklike { font: inherit; font-size: 12.5px; background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; }
+  .linklike:hover { text-decoration: underline; }
+
+  .drawer-bg {
+    position: fixed; inset: 0; z-index: 25; background: rgba(16,24,40,.35);
+    display: flex; justify-content: flex-end;
+  }
+  .drawer {
+    width: 460px; max-width: 92vw; height: 100%; background: var(--surface);
+    border-left: 1px solid var(--line); display: flex; flex-direction: column;
+    box-shadow: -8px 0 24px rgba(16,24,40,.1);
+  }
+  .drawer > header {
+    display: flex; align-items: center; gap: 8px; padding: 13px 16px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .drawer > header h2 { margin: 0; font-size: 15px; }
+  .drawer-body { padding: 16px; overflow: auto; }
+  .hist-row {
+    display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+    border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px;
+  }
+  .hist-row.rolled_back { opacity: .6; background: #fafbfc; }
+  .hist-title { font-size: 13.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body x-data="workbox" x-init="boot()">
+
+<header>
+  <span class="brand" @click="selected = null" title="홈으로" style="cursor:pointer">jira<span class="dim">-workbox</span></span>
+  <template x-if="health.configured">
+    <span class="status">
+      <span class="dot" :class="health.connected ? 'on' : 'off'"></span>
+      <span x-text="(health.site_url || '').replace('https://', '')"></span>
+      <span class="sub" x-text="health.account_name ? '· ' + health.account_name : (health.account_email ? '· ' + health.account_email : '')"></span>
+    </span>
+  </template>
+  <span class="spacer"></span>
+  <span class="sub" x-show="health.detail && health.configured" x-text="health.detail"></span>
+  <button class="btn small ghost" @click="toggleHistory()" x-show="health.configured">
+    작업 기록<span x-show="history.length" x-text="' (' + history.length + ')'"></span>
+  </button>
+  <button class="btn small ghost" @click="setupOpen = !setupOpen" x-show="health.configured">접속 정보</button>
+</header>
+
+<template x-for="w in (health.security_warnings || [])">
+  <div class="alarm" x-text="'⚠  ' + w"></div>
+</template>
+
+<!-- ---------- setup ---------- -->
+<template x-if="health.configured === false || setupOpen">
+  <div class="center-wrap">
+    <div class="card">
+      <header>
+        <h2 x-text="health.configured ? '접속 정보' : 'Jira 사이트 연결'"></h2>
+      </header>
+      <div class="body">
+        <p class="sub" style="margin:0 0 16px">
+          OS 키체인(<code>jira-workbox</code>)에 저장됩니다. 이 폴더의 파일에는 남지 않고,
+          저장된 토큰이 이 화면으로 다시 내려오는 일도 없습니다.
+        </p>
+
+        <label class="field">
+          <span class="name">사이트 URL</span>
+          <input type="text" x-model="setup.site_url"
+                 placeholder="https://your-site.atlassian.net"
+                 autocomplete="off" spellcheck="false" @keydown.enter="saveCredentials()">
+        </label>
+
+        <label class="field">
+          <span class="name">계정 이메일</span>
+          <input type="text" x-model="setup.email" placeholder="you@example.com"
+                 autocomplete="off" spellcheck="false" @keydown.enter="saveCredentials()">
+        </label>
+
+        <label class="field">
+          <span class="name">API 토큰</span>
+          <span class="hint">
+            <a href="https://id.atlassian.com/manage-profile/security/api-tokens"
+               target="_blank" rel="noopener noreferrer">id.atlassian.com</a>에서 발급합니다.
+            저장되는 즉시 이 화면에서 지워집니다.
+          </span>
+          <input type="password" x-model="setup.api_token" autocomplete="new-password"
+                 spellcheck="false" data-1p-ignore data-lpignore="true"
+                 @keydown.enter="saveCredentials()">
+        </label>
+
+        <div class="notice err" x-show="setupError" x-text="setupError" style="margin-top:14px"></div>
+
+        <div class="row" style="margin-top:16px">
+          <button class="btn primary" @click="saveCredentials()" :disabled="setupBusy">
+            <span x-text="setupBusy ? '연결 중…' : '연결'"></span>
+          </button>
+          <button class="btn ghost" x-show="health.configured" @click="setupOpen = false">닫기</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<!-- ---------- 작업 기록 (rollback history) drawer ---------- -->
+<template x-if="historyOpen">
+  <div class="drawer-bg" @click.self="historyOpen = false" @keydown.escape.window="historyOpen = false">
+    <aside class="drawer">
+      <header>
+        <h2>작업 기록</h2>
+        <span class="spacer"></span>
+        <button class="btn small ghost" @click="loadHistory()">새로고침</button>
+        <button class="btn small ghost" @click="historyOpen = false">닫기</button>
+      </header>
+      <div class="drawer-body">
+        <p class="sub" style="margin:0 0 12px">
+          이 워크박스에서 실행한 변경 작업입니다. 각 항목을 되돌릴 수 있습니다.
+        </p>
+        <template x-if="!history.length">
+          <div class="empty" style="padding:32px 0">아직 실행한 작업이 없습니다.</div>
+        </template>
+        <template x-for="h in history" :key="h.id">
+          <div class="hist-row" :class="h.status">
+            <div style="min-width:0">
+              <div class="hist-title" x-text="h.title"></div>
+              <div class="sub">
+                <span x-text="fmtTime(h.ts)"></span>
+                · 성공 <b x-text="h.succeeded"></b><span x-show="h.failed" x-text="' · 실패 ' + h.failed"></span>
+                <span x-show="h.note" x-text="' · ' + h.note"></span>
+              </div>
+            </div>
+            <span class="spacer"></span>
+            <template x-if="h.can_rollback">
+              <button class="btn small" style="flex:none" :disabled="running" @click="rbConfirm = h">↩ 되돌리기</button>
+            </template>
+            <template x-if="h.status === 'rolled_back'">
+              <span class="badge v-unknown">되돌림</span>
+            </template>
+          </div>
+        </template>
+      </div>
+    </aside>
+  </div>
+</template>
+
+<main x-show="health.configured !== false && !setupOpen" :class="{ 'landing': !selected }">
+  <nav x-show="selected">
+    <template x-for="group in groups" :key="group.name">
+      <div style="margin-bottom:14px">
+        <div class="nav-label" x-text="group.name"></div>
+        <template x-for="t in group.tasks" :key="t.spec.name">
+          <button @click="select(t)"
+                  :aria-current="String(selected && selected.spec.name === t.spec.name)">
+            <span class="t">
+              <span x-text="t.spec.title"></span>
+              <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
+            </span>
+            <span class="d" x-text="t.spec.description"></span>
+          </button>
+        </template>
+      </div>
+    </template>
+  </nav>
+
+  <section class="work">
+    <template x-if="!selected">
+      <div class="landing-wrap">
+        <div class="hero">
+          <h1>워크박스</h1>
+          <p class="sub">작업을 골라 시작하세요. 변경 작업은 실행 전에 항상 미리보기로 대상을 확인하고, 실행한 뒤에는 <b>작업 기록</b>에서 되돌릴 수 있습니다.</p>
+        </div>
+        <template x-for="group in groups" :key="group.name">
+          <div class="cat">
+            <div class="cat-label" x-text="group.name"></div>
+            <div class="cards">
+              <template x-for="t in group.tasks" :key="t.spec.name">
+                <button class="task-card" @click="select(t)">
+                  <div class="tc-title">
+                    <span x-text="t.spec.title"></span>
+                    <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
+                  </div>
+                  <div class="tc-desc" x-text="t.spec.description"></div>
+                </button>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </template>
+
+    <!-- ---------- parameters ---------- -->
+    <template x-if="selected">
+      <div class="card narrow">
+        <header>
+          <span class="step">1</span>
+          <h2 x-text="selected.spec.title"></h2>
+          <span class="spacer"></span>
+          <span class="sub" x-show="selected.spec.readonly">조회 전용 · Jira에 쓰지 않습니다</span>
+        </header>
+        <div class="body">
+          <template x-for="[key, raw] in basicFields" :key="key">
+            <div x-data="{ prop: normProp(raw) }">
+              <template x-if="prop.enum">
+                <label class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <select x-model="form[key]">
+                    <template x-for="opt in prop.enum" :key="opt">
+                      <option :value="opt" x-text="(prop.labels && prop.labels[opt]) || opt"></option>
+                    </template>
+                  </select>
+                </label>
+              </template>
+
+              <template x-if="!prop.enum && prop.type === 'boolean'">
+                <label class="check">
+                  <input type="checkbox" x-model="form[key]">
+                  <span>
+                    <span class="name" x-text="prop.title || key"></span>
+                    <span class="hint" x-show="prop.description" x-text="prop.description" style="margin:0"></span>
+                  </span>
+                </label>
+              </template>
+
+              <template x-if="!prop.enum && (prop.type === 'integer' || prop.type === 'number')">
+                <label class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <input type="number" x-model="form[key]" :min="prop.minimum" :max="prop.maximum"
+                         style="max-width:200px">
+                </label>
+              </template>
+
+              <template x-if="prop.widget === 'checkset'">
+                <div class="field">
+                  <div style="display:flex; align-items:baseline; gap:10px">
+                    <span class="name" x-text="prop.title || key"></span>
+                    <button type="button" class="linklike"
+                            @click="toggleAllChecks(key, prop.options)"
+                            x-text="allChecked(key, prop.options) ? '전체 해제' : '전체 선택'"></button>
+                  </div>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <div style="display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:4px">
+                    <template x-for="opt in (prop.options || [])" :key="opt.value">
+                      <label class="check" style="margin-bottom:0">
+                        <input type="checkbox" :checked="form[key].includes(opt.value)"
+                               @change="toggleGroup(key, opt.value)">
+                        <span class="name" x-text="opt.label"></span>
+                      </label>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="prop.widget === 'project_picker'">
+                <div class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <template x-if="!form[key]">
+                    <input type="text" placeholder="프로젝트 이름 또는 키로 검색…" x-model="pp.q"
+                           @input.debounce.300ms="searchProjects()" autocomplete="off">
+                  </template>
+                  <div class="picker" x-show="!form[key] && (pp.loading || pp.results.length)">
+                    <template x-if="pp.loading"><div class="sub" style="padding:7px 10px">검색 중…</div></template>
+                    <template x-for="pr in pp.results" :key="pr.key">
+                      <div class="pick-row" @click="pickProject(key, pr)">
+                        <span class="mono" x-text="pr.key"></span>
+                        <span x-text="pr.name"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="chips" x-show="form[key]" style="margin-top:8px">
+                    <span class="tag pick" @click="form[key]=''" x-text="'✕ ' + (projectNames[form[key]] || form[key])"></span>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="prop.widget === 'user_picker'">
+                <div class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <template x-if="!form[key]">
+                    <input type="text" placeholder="이름 또는 이메일로 검색…" x-model="up.q"
+                           @input.debounce.300ms="searchUsers()" autocomplete="off">
+                  </template>
+                  <div class="picker" x-show="!form[key] && (up.loading || up.results.length)">
+                    <template x-if="up.loading"><div class="sub" style="padding:7px 10px">검색 중…</div></template>
+                    <template x-for="u in up.results" :key="u.account_id">
+                      <div class="pick-row" @click="pickUser(key, u)">
+                        <span x-text="u.name || u.account_id"></span>
+                        <span class="sub" x-show="u.email" x-text="u.email"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="chips" x-show="form[key]" style="margin-top:8px">
+                    <span class="tag pick" @click="form[key]=''" x-text="'✕ ' + (userNames[form[key]] || form[key])"></span>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="prop.widget === 'template_picker'">
+                <div class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <template x-if="!tp.manual">
+                    <div>
+                      <template x-for="g in templateGroups()" :key="g.product">
+                        <div class="tmpl-group">
+                          <div class="tmpl-group-label" x-text="g.product"></div>
+                          <div class="tmpl-cards">
+                            <template x-for="t in g.items" :key="t.key">
+                              <button type="button" class="tmpl-card"
+                                      :class="form[key] === t.key ? 'sel' : ''"
+                                      @click="pickTemplate(t)" x-text="t.name"></button>
+                            </template>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <template x-if="tp.manual">
+                    <input type="text" placeholder="예: com.pyxis.greenhopper.jira:gh-scrum-template"
+                           x-model="form[key]" autocomplete="off">
+                  </template>
+                  <div style="display:flex; align-items:center; gap:12px; margin-top:9px">
+                    <span class="sub" x-show="form[key]" x-text="'선택됨 · ' + templateLabel(form[key])"></span>
+                    <span class="spacer"></span>
+                    <button type="button" class="linklike" @click="tp.manual = !tp.manual"
+                            x-text="tp.manual ? '← 프리셋에서 고르기' : '템플릿 키 직접 입력'"></button>
+                  </div>
+                  <span class="hint" x-show="tp.manual">직접 입력하면 고급 설정에서 프로젝트 타입도 확인하세요.</span>
+                </div>
+              </template>
+
+              <template x-if="prop.widget === 'group_picker'">
+                <div class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <input type="text" placeholder="그룹 이름으로 검색…" x-model="gp.q"
+                         @input.debounce.300ms="searchGroups()" autocomplete="off">
+                  <div class="picker" x-show="gp.loading || gp.results.length">
+                    <template x-if="gp.loading">
+                      <div class="sub" style="padding:7px 10px">검색 중…</div>
+                    </template>
+                    <template x-for="g in gp.results" :key="g.id">
+                      <label class="pick-row">
+                        <input type="checkbox" :checked="form[key].includes(g.id)"
+                               @change="toggleGroup(key, g.id, g.name)">
+                        <span x-text="g.name"></span>
+                      </label>
+                    </template>
+                  </div>
+                  <div class="chips" x-show="form[key].length" style="margin-top:8px">
+                    <template x-for="id in form[key]" :key="id">
+                      <span class="tag pick" @click="toggleGroup(key, id)"
+                            x-text="'✕ ' + (groupNames[id] || id)"></span>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="prop.widget === 'lines'">
+                <label class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <textarea rows="6" x-model="form[key]" placeholder="한 줄에 하나씩"></textarea>
+                  <span class="hint" x-show="form[key]"
+                        x-text="'인식된 이메일 ' + emailCount(form[key]) + '개'"></span>
+                </label>
+              </template>
+
+              <template x-if="!prop.enum && prop.type === 'array' && !['group_picker','checkset','lines'].includes(prop.widget)">
+                <label class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-text="prop.description ? prop.description + ' · 한 줄에 하나씩' : '한 줄에 하나씩'"></span>
+                  <textarea rows="2" x-model="form[key]"></textarea>
+                </label>
+              </template>
+
+              <template x-if="!prop.enum && prop.type === 'string' && !['user_picker','template_picker','group_picker','project_picker'].includes(prop.widget)">
+                <label class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <template x-if="prop.widget === 'textarea'">
+                    <textarea rows="3" x-model="form[key]" :placeholder="prop.placeholder || ''"></textarea>
+                  </template>
+                  <template x-if="prop.widget !== 'textarea'">
+                    <input type="text" x-model="form[key]" :placeholder="prop.placeholder || ''">
+                  </template>
+                </label>
+              </template>
+            </div>
+          </template>
+
+          <template x-if="advancedFields.length">
+            <details class="advanced">
+              <summary x-text="'고급 설정 (' + advancedFields.length + ')'"></summary>
+              <div style="padding-top:12px">
+                <template x-for="[key, raw] in advancedFields" :key="key">
+                  <div x-data="{ prop: normProp(raw) }">
+                    <template x-if="prop.enum">
+                      <label class="field">
+                        <span class="name" x-text="prop.title || key"></span>
+                        <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                        <select x-model="form[key]">
+                          <template x-for="opt in prop.enum" :key="opt">
+                            <option :value="opt" x-text="(prop.labels && prop.labels[opt]) || opt"></option>
+                          </template>
+                        </select>
+                      </label>
+                    </template>
+                    <template x-if="!prop.enum && prop.type === 'boolean'">
+                      <label class="check">
+                        <input type="checkbox" x-model="form[key]">
+                        <span>
+                          <span class="name" x-text="prop.title || key"></span>
+                          <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                        </span>
+                      </label>
+                    </template>
+                    <template x-if="!prop.enum && (prop.type === 'integer' || prop.type === 'number')">
+                      <label class="field">
+                        <span class="name" x-text="prop.title || key"></span>
+                        <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                        <input type="number" x-model="form[key]" :min="prop.minimum" :max="prop.maximum"
+                               style="max-width:200px">
+                      </label>
+                    </template>
+                    <template x-if="!prop.enum && prop.type === 'array'">
+                      <label class="field">
+                        <span class="name" x-text="prop.title || key"></span>
+                        <span class="hint" x-text="prop.description || '한 줄에 하나씩'"></span>
+                        <textarea rows="2" x-model="form[key]"></textarea>
+                      </label>
+                    </template>
+                    <template x-if="!prop.enum && prop.type === 'string'">
+                      <label class="field">
+                        <span class="name" x-text="prop.title || key"></span>
+                        <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                        <input type="text" x-model="form[key]" :placeholder="prop.placeholder || ''">
+                      </label>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </details>
+          </template>
+
+          <div class="notice err" x-show="error" x-text="error" style="margin-top:14px"></div>
+
+          <div class="row" style="margin-top:18px">
+            <button class="btn primary" @click="doPlan()" :disabled="planning || running">
+              <span x-text="planning ? (selected.spec.readonly ? '분석 중…' : '미리보기 만드는 중…')
+                                     : (selected.spec.readonly ? '분석 실행' : '미리보기')"></span>
+            </button>
+            <button class="btn" x-show="planning || running" @click="cancel()">중단</button>
+            <span class="spacer"></span>
+            <span class="sub" x-show="!plan && !selected.spec.readonly">미리보기를 해야 실행 버튼이 열립니다.</span>
+          </div>
+
+          <div x-show="planning || running" style="margin-top:16px">
+            <div class="bar"><i :style="'width:' + pct() + '%'"></i></div>
+            <div class="metrics">
+              <span><b x-text="progress.done"></b><span x-show="progress.total" x-text="' / ' + progress.total"></span></span>
+              <span class="ok" x-show="progress.ok">ok <b x-text="progress.ok"></b></span>
+              <span class="bad" x-show="progress.fail">failed <b x-text="progress.fail"></b></span>
+              <span x-show="phase" x-text="phase"></span>
+              <span x-show="status" x-text="status"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ---------- activity ---------- -->
+    <template x-if="log.length">
+      <div class="card">
+        <header>
+          <h2>진행 기록</h2>
+          <span class="sub" x-text="status"></span>
+          <span class="spacer"></span>
+          <button class="btn small ghost" @click="logOpen = !logOpen"
+                  x-text="logOpen ? '접기' : '펼치기 (' + log.length + ')'"></button>
+        </header>
+        <div class="body" x-show="logOpen">
+          <pre class="log" x-ref="log"><template x-for="line in log"><span><b :class="line.cls" x-text="line.tag"></b><span x-text="' ' + line.text + '\n'"></span></span></template></pre>
+        </div>
+      </div>
+    </template>
+
+    <!-- ---------- result ---------- -->
+    <template x-if="plan">
+      <div class="card">
+        <header>
+          <span class="step">2</span>
+          <h2 x-text="plan.tables.length ? '결과' : '미리보기'"></h2>
+          <span class="sub" x-text="planSummary()"></span>
+          <span class="spacer"></span>
+          <button class="btn small" @click="downloadJson()">JSON</button>
+          <button class="btn small ghost" @click="plan = null" :disabled="running">닫기</button>
+        </header>
+        <div class="body">
+          <template x-if="plan.complete === false">
+            <div class="notice err">
+              <b>결과가 불완전합니다.</b> 일부 조회가 전체를 반환하지 못했습니다.
+              '공유됨'은 그대로 믿어도 되지만, 어떤 항목도 '수정해도 안전'으로 보면 안 됩니다.
+            </div>
+          </template>
+          <template x-for="w in plan.warnings">
+            <div class="notice warn" x-text="w"></div>
+          </template>
+
+          <div class="sub" style="margin:2px 0 14px">
+            <code x-text="plan.plan_id.slice(0, 8)"></code>
+            · 유효 <span x-text="new Date(plan.expires_at).toLocaleTimeString()"></span>
+            <span x-show="!plan.readonly"> · 1회용</span>
+            <span x-show="plan.truncated"> · <b>일부 행이 잘림</b></span>
+            · 내려받기는 이 화면에서 만들어집니다 (서버는 디스크에 아무것도 쓰지 않습니다)
+          </div>
+
+          <!-- write tasks: before/after diff -->
+          <template x-if="!plan.tables.length">
+            <div class="tablewrap">
+              <table>
+                <thead><tr><th>대상</th><th>요약</th><th>변경 전</th><th>변경 후</th></tr></thead>
+                <tbody>
+                  <template x-for="c in plan.changes" :key="c.target_id">
+                    <tr>
+                      <td class="mono" x-text="c.target_id"></td>
+                      <td class="wide" x-text="c.label"></td>
+                      <td>
+                        <template x-for="l in (c.before.labels || [])">
+                          <span class="tag" :class="(c.after.labels || []).includes(l) ? '' : 'del'" x-text="l"></span>
+                        </template>
+                      </td>
+                      <td>
+                        <template x-for="l in (c.after.labels || [])">
+                          <span class="tag" :class="(c.before.labels || []).includes(l) ? '' : 'add'" x-text="l"></span>
+                        </template>
+                      </td>
+                    </tr>
+                  </template>
+                  <template x-for="c in plan.skipped" :key="'s-' + c.target_id">
+                    <tr class="muted">
+                      <td class="mono" x-text="c.target_id"></td>
+                      <td class="wide" x-text="c.label"></td>
+                      <td colspan="2" x-text="c.note || '변경 없음'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </template>
+
+          <!-- verdict legend — shown once for the whole diagnosis, since every
+               scheme group's header carries one of these badges -->
+          <template x-if="groupedTables().some(g => g.badge)">
+            <div class="legend" style="margin-bottom:12px">
+              <span><b class="badge v-target_only">전용</b> 이 프로젝트만 사용 — 그대로 수정해도 안전</span>
+              <span><b class="badge v-shared">공유됨</b> 다른 프로젝트도 사용 — 복제 필요</span>
+              <span><b class="badge v-shared_workflow_unproven">공유 의심</b> 워크플로우가 참조, 전용임을 증명 못 함</span>
+              <span><b class="badge v-unknown">확인 불가</b> 조회가 불완전해 판단 보류</span>
+              <span><b class="badge v-orphan">미사용</b> 참조하는 곳 없음</span>
+            </div>
+          </template>
+
+          <!-- analysis tasks: ungrouped tables show inline; a named group folds
+               into one expandable panel so the summary stays the brief -->
+          <template x-for="grp in groupedTables()" :key="grp.id">
+            <div x-data="{ open: !grp.collapsed, body: grp.tables.some(t => (t.columns||[]).length) }"
+                 :class="grp.name ? 'tgroup' : ''">
+              <template x-if="grp.name">
+                <div class="tgroup-h" :style="body ? '' : 'cursor:default'" @click="body && (open = !open)">
+                  <span class="tg-caret" :style="body ? '' : 'visibility:hidden'"
+                        x-text="open ? '▾' : '▸'"></span>
+                  <template x-if="grp.badge">
+                    <span class="badge" :class="'v-' + grp.badge" x-text="label(grp.badge)"></span>
+                  </template>
+                  <span class="tg-name" x-text="grp.name"></span>
+                  <span class="sub" x-text="grp.note"></span>
+                  <span class="spacer"></span>
+                  <template x-if="grp.action">
+                    <button class="btn small" @click.stop="isolate(grp)"
+                            title="복제본을 만들어 이 프로젝트만 전용으로 갈아끼웁니다"
+                            x-text="grp.action"></button>
+                  </template>
+                </div>
+              </template>
+              <div x-show="!grp.name || (open && body)" :class="grp.name ? 'tgroup-body' : ''">
+                <template x-for="t in grp.tables" :key="t.key">
+                  <div style="margin-bottom:18px">
+                    <div class="row" style="margin-bottom:7px">
+                      <b style="font-size:13px" x-text="t.title"></b>
+                      <span class="sub" x-text="t.rows.length + '건'"></span>
+                      <span class="sub" x-text="t.note"></span>
+                      <span class="spacer"></span>
+                      <button class="btn small ghost" @click="downloadCsv(t)" :disabled="!t.rows.length">CSV</button>
+                    </div>
+                    <template x-if="!t.rows.length">
+                      <div class="sub" style="padding:8px 0">해당 없음</div>
+                    </template>
+                    <div class="tablewrap" x-show="t.rows.length">
+                      <table>
+                        <thead><tr>
+                          <template x-for="col in t.columns" :key="col.key">
+                            <th x-text="col.kind === 'action' ? '' : (col.title || col.key)"></th>
+                          </template>
+                        </tr></thead>
+                        <tbody>
+                          <template x-for="(row, i) in t.rows" :key="t.key + '-' + i">
+                            <tr>
+                              <template x-for="col in t.columns" :key="col.key">
+                                <td :class="cellClass(col)" :title="cellTitle(row, col)">
+                                  <template x-if="col.kind === 'badge'">
+                                    <span class="badge" :class="'v-' + row[col.key]" x-text="label(row[col.key])"></span>
+                                  </template>
+                                  <template x-if="col.kind === 'tags'">
+                                    <span>
+                                      <template x-for="v in (row[col.key] || [])">
+                                        <span class="tag" x-text="v"></span>
+                                      </template>
+                                    </span>
+                                  </template>
+                                  <template x-if="col.kind === 'bool'">
+                                    <span x-text="row[col.key] ? '✓' : '–'"></span>
+                                  </template>
+                                  <template x-if="col.kind === 'path'">
+                                    <span x-text="(row[col.key] || []).join('\n')"></span>
+                                  </template>
+                                  <template x-if="col.kind === 'action'">
+                                    <button class="btn small" x-show="row[col.key]" disabled
+                                            title="다음 단계에서 지원됩니다"
+                                            x-text="row[col.key] + ' (준비 중)'"></button>
+                                  </template>
+                                  <template x-if="!['badge','tags','bool','path','action'].includes(col.kind)">
+                                    <span x-text="row[col.key]"></span>
+                                  </template>
+                                </td>
+                              </template>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="!plan.readonly">
+            <div class="row" style="margin-top:4px">
+              <button class="btn danger" @click="confirming = true"
+                      :disabled="running || !plan.changes.length">
+                <span x-text="plan.changes.length"></span>건 실행
+              </button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+  </section>
+</main>
+
+<template x-if="confirming">
+  <div class="modal-bg" @click.self="confirming = false" @keydown.escape.window="confirming = false">
+    <div class="modal">
+      <div class="body">
+        <h3>정말 실행할까요?</h3>
+        <p class="sub" style="margin:0" x-text="selected.spec.danger"></p>
+        <dl class="kv">
+          <dt>대상</dt><dd x-text="plan.changes.length + '건'"></dd>
+          <dt>사이트</dt><dd x-text="(health.site_url || '').replace('https://','')"></dd>
+        </dl>
+        <p class="sub" style="margin:0">
+          미리보기는 실행과 함께 소모됩니다. 다시 하려면 미리보기부터 새로 해야 합니다.
+        </p>
+      </div>
+      <div class="foot">
+        <button class="btn ghost" @click="confirming = false">취소</button>
+        <button class="btn danger" @click="confirming = false; doExecute()">실행</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template x-if="rbConfirm">
+  <div class="modal-bg" @click.self="rbConfirm = null" @keydown.escape.window="rbConfirm = null">
+    <div class="modal">
+      <div class="body">
+        <h3>이 작업을 되돌릴까요?</h3>
+        <p class="sub" style="margin:0" x-text="rbConfirm.title"></p>
+        <dl class="kv">
+          <dt>되돌릴 항목</dt><dd x-text="rbConfirm.count + '건'"></dd>
+          <dt>사이트</dt><dd x-text="(health.site_url || '').replace('https://','')"></dd>
+        </dl>
+        <p class="sub" style="margin:0">
+          되돌리기도 실제 변경이라 기록에 남고, 필요하면 다시 되돌릴 수 있습니다.
+        </p>
+      </div>
+      <div class="foot">
+        <button class="btn ghost" @click="rbConfirm = null">취소</button>
+        <button class="btn danger" @click="confirmRollback()">되돌리기</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('workbox', () => ({
+    health: {}, tasks: [], groups: [], selected: null, fields: [], form: {},
+    basicFields: [], advancedFields: [],
+    plan: null, planning: false, running: false, error: '', isolateType: '', rbConfirm: null,
+    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '',
+    progress: { done: 0, total: 0, ok: 0, fail: 0 },
+    log: [], logOpen: true, controller: null,
+    history: [], historyOpen: false,
+    gp: { q: '', results: [], loading: false }, groupNames: {},
+    up: { q: '', results: [], loading: false }, userNames: {},
+    pp: { q: '', results: [], loading: false }, projectNames: {},
+    tp: { all: [], loaded: false, manual: false },
+    setupOpen: false, setupBusy: false, setupError: '',
+    setup: { site_url: '', email: '', api_token: '' },
+
+    async boot() {
+      // Any parameter edit invalidates the result, so Execute can never run
+      // against a change set the operator did not just look at.
+      this.$watch('form', () => { if (!this.running && !this.planning) this.plan = null; });
+      this.refreshHealth();
+      this.loadHistory();
+      this.tasks = await (await fetch('/api/tasks')).json();
+      // the server already orders by category, so grouping is a fold; tasks with
+      // launcher:false (e.g. 설정 분리) stay in `tasks` for lookup but off the menu
+      this.groups = this.tasks.filter(t => t.spec.launcher !== false).reduce((acc, t) => {
+        const name = t.spec.category || '기타';
+        const last = acc[acc.length - 1];
+        if (last && last.name === name) last.tasks.push(t);
+        else acc.push({ name, tasks: [t] });
+        return acc;
+      }, []);
+      // no auto-select: land on the overview, let the operator choose
+    },
+
+    async refreshHealth() {
+      try {
+        const h = await (await fetch('/api/health')).json();
+        this.health = h;
+        this.batchSize = h.default_batch_size || 25;
+        this.concurrency = h.default_concurrency || 8;
+      } catch (e) { this.error = '상태 확인 실패: ' + e; }
+    },
+
+    async saveCredentials() {
+      this.setupBusy = true; this.setupError = '';
+      try {
+        const res = await fetch('/api/setup/credentials', {
+          method: 'POST',
+          // The custom header is the CSRF guard: a page on another origin
+          // cannot send it without a preflight this server never answers.
+          headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify(this.setup),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.setupError = this.errText(data); return; }
+        // Keep the token in this page no longer than it takes to store it.
+        this.setup = { site_url: '', email: '', api_token: '' };
+        this.setupOpen = false;
+        await this.refreshHealth();
+      } catch (e) {
+        this.setupError = '접속 정보를 저장하지 못했습니다: ' + e;
+      } finally {
+        this.setupBusy = false;
+      }
+    },
+
+    // pydantic emits `str | None` and Literal-with-default in shapes the naive
+    // reader missed entirely (anyOf), leaving fields silently unfillable.
+    // machine values stay ASCII (the API and the saved report use them);
+    // only the display label is Korean
+    LABELS: {
+      target_only: '전용', shared: '공유됨', shared_workflow_unproven: '공유 의심',
+      unknown: '확인 불가', orphan: '미사용',
+      target_workflow: '대상 WF', other_project: '다른 프로젝트', unproven: '미증명',
+      fatal: '치명', degrades_verdict: '판정 하향', informational: '참고',
+      GLOBAL: '전역', PROJECT: '프로젝트', yes: '예', no: '아니오',
+      endpoint: '정식 조회', expand: '확장 조회',
+      orphan_screen: '미사용 화면', truncated_nested_page: '중첩 페이지 잘림',
+      mapping_gap: '매핑 누락', monotonicity_violation: '판정 모순',
+      dangling_screen_id: '없는 화면 ID', dangling_screen_scheme_id: '없는 스킴 ID',
+      endpoint_error: '조회 실패', scan_drift: '조회 불일치',
+    },
+    label(value) {
+      return this.LABELS[value] ?? value;
+    },
+
+    normProp(prop) {
+      let p = prop;
+      const branches = prop.anyOf || prop.oneOf;
+      if (branches) {
+        const real = branches.find(b => b.type && b.type !== 'null') || {};
+        p = Object.assign({}, real, { title: prop.title, description: prop.description,
+                                      default: prop.default, widget: prop.widget,
+                                      placeholder: prop.placeholder,
+                                      advanced: prop.advanced, hidden: prop.hidden,
+                                      labels: prop.labels, options: prop.options });
+      }
+      return p;
+    },
+
+    select(task) {
+      this.selected = task;
+      this.plan = null; this.error = ''; this.isolateType = ''; this.resetRun();
+      this.gp = { q: '', results: [], loading: false }; this.groupNames = {};
+      this.up = { q: '', results: [], loading: false }; this.userNames = {};
+      this.pp = { q: '', results: [], loading: false }; this.projectNames = {};
+      this.tp = { all: [], loaded: false, manual: false };
+      const props = task.schema.properties || {};
+      // hidden params never render — the server fills them from their defaults
+      this.fields = Object.entries(props).filter(([, p]) => !this.normProp(p).hidden);
+      // only what you normally touch is on screen; the rest folds away
+      this.basicFields = this.fields.filter(([, p]) => !this.normProp(p).advanced);
+      this.advancedFields = this.fields.filter(([, p]) => this.normProp(p).advanced);
+      const form = {};
+      for (const [key, raw] of this.fields) {
+        const prop = this.normProp(raw);
+        if (prop.widget === 'group_picker') form[key] = Array.isArray(prop.default) ? [...prop.default] : [];
+        else if (prop.widget === 'checkset') form[key] = Array.isArray(prop.default) ? [...prop.default] : (prop.options || []).map(o => o.value);
+        else if (prop.type === 'array') form[key] = (prop.default || []).join('\n');
+        else if (prop.type === 'boolean') form[key] = prop.default ?? false;
+        else form[key] = prop.default ?? '';
+      }
+      this.form = form;
+      if (this.fields.some(([, p]) => this.normProp(p).widget === 'template_picker')) {
+        this.loadTemplates();
+      }
+    },
+
+    payload() {
+      const out = {};
+      for (const [key, raw] of this.fields) {
+        const prop = this.normProp(raw);
+        const value = this.form[key];
+        if (prop.widget === 'group_picker' || prop.widget === 'checkset') out[key] = Array.isArray(value) ? value : [];
+        else if (prop.enum) out[key] = value;
+        else if (prop.type === 'array') out[key] = String(value).split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+        else if (prop.type === 'integer' || prop.type === 'number') out[key] = Number(value);
+        else out[key] = value;
+      }
+      // config_isolate's scheme_type is hidden and set by the [분리하기] button,
+      // so it isn't a rendered field — carry it through explicitly
+      if (this.selected?.spec.name === 'config_isolate' && this.isolateType) {
+        out.scheme_type = this.isolateType;
+      }
+      return out;
+    },
+
+    // Run 설정 분리 for one scheme group, prefilled from the diagnosis result.
+    // Opens the isolate task's normal preview→실행 flow (no immediate write).
+    isolate(grp) {
+      const task = this.tasks.find(t => t.spec.name === 'config_isolate');
+      const p = grp.actionParams || {};
+      if (!task || !p.scheme_type) { this.error = '분리할 대상을 확인하지 못했습니다.'; return; }
+      this.select(task);
+      this.isolateType = p.scheme_type;
+      this.form.project = p.project || '';
+      this.projectNames = { [this.form.project]: this.form.project };
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      this.doPlan();
+    },
+
+    async searchGroups() {
+      const q = this.gp.q.trim();
+      this.gp.loading = true;
+      try {
+        const res = await fetch('/api/groups?q=' + encodeURIComponent(q) + '&limit=50');
+        this.gp.results = res.ok ? await res.json() : [];
+        for (const g of this.gp.results) this.groupNames[g.id] = g.name;
+      } catch (e) {
+        this.gp.results = [];
+      } finally {
+        this.gp.loading = false;
+      }
+    },
+
+    toggleGroup(key, id, name) {
+      const cur = this.form[key] || [];
+      if (cur.includes(id)) this.form[key] = cur.filter(x => x !== id);
+      else this.form[key] = [...cur, id];
+      if (name) this.groupNames[id] = name;
+    },
+
+    // checkset: whole-set toggle for the 검사 항목 selector
+    allChecked(key, options) {
+      const vals = (options || []).map(o => o.value);
+      return vals.length > 0 && vals.every(v => (this.form[key] || []).includes(v));
+    },
+    toggleAllChecks(key, options) {
+      const vals = (options || []).map(o => o.value);
+      this.form[key] = this.allChecked(key, options) ? [] : [...vals];
+    },
+
+    // live count of the addresses the server will parse out of a 'lines' field —
+    // mirrors the server regex + de-dupe so the number matches the plan
+    emailCount(text) {
+      const re = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g;
+      return new Set((String(text || '').match(re) || []).map(s => s.toLowerCase())).size;
+    },
+
+    async searchUsers() {
+      const q = this.up.q.trim();
+      if (!q) { this.up.results = []; return; }
+      this.up.loading = true;
+      try {
+        const res = await fetch('/api/users?q=' + encodeURIComponent(q) + '&limit=20');
+        this.up.results = res.ok ? await res.json() : [];
+      } catch (e) { this.up.results = []; }
+      finally { this.up.loading = false; }
+    },
+
+    pickUser(key, u) {
+      this.form[key] = u.account_id;
+      this.userNames[u.account_id] = (u.name || u.account_id) + (u.email ? ` <${u.email}>` : '');
+      this.up = { q: '', results: [], loading: false };
+    },
+
+    async searchProjects() {
+      const q = this.pp.q.trim();
+      this.pp.loading = true;
+      try {
+        const res = await fetch('/api/projects?q=' + encodeURIComponent(q) + '&limit=20');
+        this.pp.results = res.ok ? await res.json() : [];
+        for (const pr of this.pp.results) this.projectNames[pr.key] = pr.key + ' — ' + pr.name;
+      } catch (e) { this.pp.results = []; }
+      finally { this.pp.loading = false; }
+    },
+
+    pickProject(key, pr) {
+      this.form[key] = pr.key;  // tasks take a project key
+      this.projectNames[pr.key] = pr.key + ' — ' + pr.name;
+      this.pp = { q: '', results: [], loading: false };
+    },
+
+    // Built-in preset templates. Jira has no public template-list API, so
+    // custom templates are used by typing their templateKey into the field.
+    BUILTIN_TEMPLATES: [
+      { product: '소프트웨어', name: '칸반 · 팀 관리형',  type: 'software', key: 'com.pyxis.greenhopper.jira:gh-simplified-agility-kanban' },
+      { product: '소프트웨어', name: '스크럼 · 팀 관리형', type: 'software', key: 'com.pyxis.greenhopper.jira:gh-simplified-agility-scrum' },
+      { product: '소프트웨어', name: '칸반 · 회사 관리형',  type: 'software', key: 'com.pyxis.greenhopper.jira:gh-kanban-template' },
+      { product: '소프트웨어', name: '스크럼 · 회사 관리형', type: 'software', key: 'com.pyxis.greenhopper.jira:gh-scrum-template' },
+      { product: '서비스 관리', name: 'IT 서비스 관리 (JSM)', type: 'service_desk', key: 'com.atlassian.servicedesk:simplified-it-service-management' },
+      { product: '업무 관리',  name: '업무 관리 (회사 관리형)', type: 'business', key: 'com.atlassian.jira-core-project-templates:jira-core-simplified-project-management' },
+    ],
+
+    loadTemplates() {
+      if (this.tp.loaded) return;
+      this.tp.all = [...this.BUILTIN_TEMPLATES];
+      this.tp.loaded = true;
+    },
+
+    // presets grouped by product, order preserved — the picker renders one row per group
+    templateGroups() {
+      const out = [];
+      for (const t of this.tp.all) {
+        const last = out[out.length - 1];
+        if (last && last.product === t.product) last.items.push(t);
+        else out.push({ product: t.product, items: [t] });
+      }
+      return out;
+    },
+
+    // friendly label for whatever is selected; a manual key shows as-is
+    templateLabel(key) {
+      const t = this.tp.all.find(x => x.key === key);
+      return t ? (t.product + ' · ' + t.name) : ('직접 입력: ' + key);
+    },
+
+    pickTemplate(t) {
+      this.form.template_key = t.key;
+      this.form.project_type_key = t.type || this.form.project_type_key;
+    },
+
+    async doPlan() {
+      this.planning = true; this.error = ''; this.plan = null; this.resetRun();
+      const url = `/api/tasks/${this.selected.spec.name}/plan` +
+                  (this.selected.streams_plan ? '/stream' : '');
+      this.controller = new AbortController();
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.payload()),
+          signal: this.controller.signal,
+        });
+        if (!res.ok) {
+          this.error = this.errText(await res.json().catch(() => ({})));
+          return;
+        }
+        if (this.selected.streams_plan) {
+          await this.readStream(res.body.getReader());
+        } else {
+          this.plan = await res.json();
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') { this.status = '중단됨'; this.push('sys', '·', '사용자가 중단'); }
+        else this.error = '미리보기 실패: ' + e;
+      } finally {
+        this.planning = false; this.controller = null; this.phase = '';
+      }
+    },
+
+    async doExecute() {
+      const total = this.plan.changes.length;
+      await this.stream(`/api/tasks/${this.selected.spec.name}/execute`,
+                        { plan_id: this.plan.plan_id }, total, `실행 시작 · 대상 ${total}건`);
+      this.plan = null;  // token consumed server side
+    },
+
+    // ---- 작업 기록 (rollback history) ----
+    async loadHistory() {
+      try {
+        const res = await fetch('/api/history?limit=100');
+        this.history = res.ok ? await res.json() : [];
+      } catch (e) { /* history is best-effort */ }
+    },
+
+    toggleHistory() {
+      this.historyOpen = !this.historyOpen;
+      if (this.historyOpen) this.loadHistory();
+    },
+
+    confirmRollback() {
+      const h = this.rbConfirm; this.rbConfirm = null;
+      if (h) this.rollback(h);
+    },
+
+    async rollback(h) {
+      if (this.running) return;
+      this.historyOpen = false;
+      await this.stream(`/api/history/${h.id}/rollback`, {}, h.count,
+                        `되돌리는 중 · ${h.title}`);
+    },
+
+    // one streaming-execute path for both a plan run and a rollback run
+    async stream(url, body, total, startMsg) {
+      this.resetRun();
+      this.progress.total = total || 0;
+      this.running = true; this.status = '실행 중'; this.error = '';
+      this.push('sys', '·', startMsg);
+      this.controller = new AbortController();
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: this.controller.signal,
+        });
+        if (!res.ok) {
+          this.error = this.errText(await res.json().catch(() => ({})));
+          this.status = '거부됨'; return;
+        }
+        await this.readStream(res.body.getReader());
+      } catch (e) {
+        if (e.name === 'AbortError') { this.status = '중단됨'; this.push('sys', '·', '사용자가 중단'); }
+        else { this.error = '실행 실패: ' + e; this.status = '오류'; }
+      } finally {
+        this.running = false; this.controller = null;
+        this.loadHistory();  // a run (or undo) changed the record
+      }
+    },
+
+    fmtTime(iso) {
+      try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+    },
+
+    // Minimal SSE reader: split on blank lines, keep the `data:` payloads.
+    // Heartbeat frames (`: ping`) have no data line and are ignored for free.
+    async readStream(reader) {
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let cut;
+        while ((cut = buffer.indexOf('\n\n')) !== -1) {
+          const block = buffer.slice(0, cut);
+          buffer = buffer.slice(cut + 2);
+          const data = block.split('\n')
+            .filter(l => l.startsWith('data:'))
+            .map(l => l.slice(5).trim()).join('');
+          if (data) this.onEvent(JSON.parse(data));
+        }
+      }
+    },
+
+    onEvent(ev) {
+      if (ev.type === 'start') {
+        this.progress.total = ev.total ?? this.progress.total;
+        if (ev.message) this.push('sys', '·', ev.message);
+      } else if (ev.type === 'phase') {
+        this.phase = this.PHASES[ev.phase] || (ev.phase || '').replace(/_/g, ' ');
+        if (ev.index != null) { this.progress.done = ev.index; this.progress.total = ev.total ?? 0; }
+        this.push('sys', '·', `${ev.phase}${ev.message ? ': ' + ev.message : ''}`);
+      } else if (ev.type === 'warning') {
+        this.push('warn', '!', ev.message || '');
+      } else if (ev.type === 'plan') {
+        this.plan = ev.plan;
+        this.status = ev.plan && ev.plan.complete === false ? '완료 (불완전)' : '완료';
+        this.push('sys', '·', `결과 ${ev.total ?? 0}건`);
+        this.logOpen = false;
+      } else if (ev.type === 'item') {
+        const it = ev.item || {};
+        this.progress.done = ev.index ?? this.progress.done + 1;
+        if (it.ok) { this.progress.ok++; this.push('ok', '✓', `${it.target_id} (${it.status_code ?? '-'})`); }
+        else { this.progress.fail++; this.push('bad', '✕', `${it.target_id} (${it.status_code ?? '-'}) ${it.error || ''}`); }
+      } else if (ev.type === 'batch') {
+        this.push('sys', '·', ev.message || '중간 지점');
+      } else if (ev.type === 'summary') {
+        const s = ev.summary || {};
+        this.status = s.failed ? `완료 · 실패 ${s.failed}건` : '완료';
+        this.push('sys', '·', `종료: 시도 ${s.attempted} · 성공 ${s.succeeded} · 실패 ${s.failed}`);
+        if (s.rollback_id) this.push('sys', '·', '작업 기록에서 되돌릴 수 있습니다 (상단 [작업 기록])');
+      } else if (ev.type === 'error') {
+        this.status = '오류'; this.error = ev.message || '알 수 없는 오류';
+        this.push('bad', '✕', ev.message || '');
+      }
+    },
+
+    PHASES: {
+      resolve_target: '프로젝트 확인', list_itss: 'ITSS 조회',
+      map_itss_screen_schemes: 'ITSS 매핑', list_screen_schemes: '화면 스킴 조회',
+      list_screens: '화면 조회', verify_itss_projects: '프로젝트 목록 재확인',
+      scan_target_workflows: '대상 워크플로우', scan_active_workflow_ids: '활성 워크플로우',
+      scan_workflows: '워크플로우 전환 검사', probe_dangling: '없는 ID 확인',
+      compute_verdicts: '판정 계산',
+    },
+
+    cancel() { if (this.controller) this.controller.abort(); },
+
+    // consecutive tables with the same non-empty `group` collapse into one panel;
+    // ungrouped tables each become their own always-open singleton group
+    groupedTables() {
+      const out = [];
+      for (const t of (this.plan?.tables || [])) {
+        const g = t.group || '';
+        const last = out[out.length - 1];
+        if (g && last && last.name === g) { last.tables.push(t); if (t.collapsed) last.collapsed = true; }
+        else out.push({ id: out.length + ':' + (g || t.key), name: g, collapsed: !!t.collapsed,
+                        badge: t.group_badge || '', note: t.group_note || '',
+                        action: t.group_action || '', actionParams: t.group_action_params || {},
+                        tables: [t] });
+      }
+      return out;
+    },
+
+    planSummary() {
+      if (!this.plan) return '';
+      if (this.plan.tables.length) {
+        return this.plan.tables.reduce((n, t) => n + t.rows.length, 0) + '건';
+      }
+      return `변경 ${this.plan.changes.length}건 · 변경 없음 ${this.plan.skipped.length}건`;
+    },
+
+    cellClass(col) {
+      if (col.kind === 'number') return 'num';
+      if (col.kind === 'path') return 'path';
+      if (col.kind === 'code') return 'mono';
+      if (col.kind === 'tags') return 'tags';
+      if (col.kind === 'badge' || col.kind === 'bool') return '';
+      return 'text';
+    },
+
+    cellTitle(row, col) {
+      const v = row[col.key];
+      return Array.isArray(v) ? v.join('\n') : (v ?? '');
+    },
+
+    // ---- downloads: built here, in the browser. Nothing hits the server disk.
+    csvCell(value) {
+      let s = Array.isArray(value) ? value.join('; ')
+            : (value === null || value === undefined) ? '' : String(value);
+      // A leading =, +, - or @ makes a spreadsheet treat the cell as a formula.
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+      return '"' + s.replace(/"/g, '""') + '"';
+    },
+
+    downloadCsv(table) {
+      const head = table.columns.map(c => this.csvCell(c.title || c.key)).join(',');
+      const body = table.rows.map(r => table.columns.map(c => this.csvCell(r[c.key])).join(',')).join('\r\n');
+      // BOM so Excel reads UTF-8 rather than mangling non-ASCII names.
+      this.saveBlob('﻿' + head + '\r\n' + body, 'text/csv;charset=utf-8',
+                    `${this.plan.task}-${table.key}.csv`);
+    },
+
+    downloadJson() {
+      const payload = {
+        task: this.plan.task, created_at: this.plan.created_at,
+        complete: this.plan.complete, warnings: this.plan.warnings,
+        params: this.plan.params_echo,
+        tables: this.plan.tables, changes: this.plan.changes, data: this.plan.data,
+      };
+      this.saveBlob(JSON.stringify(payload, null, 2), 'application/json',
+                    `${this.plan.task}-${this.plan.plan_id.slice(0, 8)}.json`);
+    },
+
+    saveBlob(text, type, filename) {
+      const url = URL.createObjectURL(new Blob([text], { type }));
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    },
+
+    resetRun() {
+      this.progress = { done: 0, total: 0, ok: 0, fail: 0 };
+      this.log = []; this.status = ''; this.phase = ''; this.logOpen = true;
+    },
+
+    push(cls, tag, text) {
+      this.log.push({ cls, tag, text });
+      this.$nextTick(() => { const el = this.$refs.log; if (el) el.scrollTop = el.scrollHeight; });
+    },
+
+    pct() {
+      if (!this.progress.total) return 0;
+      return Math.round(100 * this.progress.done / this.progress.total);
+    },
+
+    errText(data) {
+      const d = data && data.detail;
+      if (!d) return '요청이 거부되었습니다';
+      if (typeof d === 'string') return d;
+      return d.map(e => `${(e.loc || []).join('.')}: ${e.msg}`).join(' | ');
+    },
+  }));
+});
+</script>
+</body>
+</html>
