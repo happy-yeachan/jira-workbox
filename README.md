@@ -29,10 +29,29 @@ uv sync
    ```
    (private 저장소라 collaborator 초대를 먼저 받아야 clone됩니다.)
 
-2. 실행 — **맥: `run.command` 더블클릭 · 윈도우: `run.bat` 더블클릭**
-   - `uv`가 없으면 런처가 자동 설치하고, uv가 알맞은 파이썬과 패키지를 알아서 받습니다.
-     (첫 실행은 다운로드 때문에 조금 걸립니다. 파이썬을 따로 깔 필요 없어요.)
-   - 터미널을 선호하면: `uv run uvicorn app:app`
+2. 실행
+   - **런처(권장):** 맥 `run.command` 더블클릭 · 윈도우 `run.bat` 더블클릭.
+     `uv`가 없으면 런처가 자동 설치하고, uv가 알맞은 파이썬·패키지를 받습니다
+     (첫 실행은 다운로드 때문에 조금 걸림, 파이썬 따로 안 깔아도 됨).
+   - **배치/스크립트 실행이 막힌 환경 — 명령어로 직접 실행:**
+     ```bash
+     # uv가 없으면 먼저 (한 번만):
+     #   Windows(PowerShell):  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+     #   macOS/Linux:          curl -LsSf https://astral.sh/uv/install.sh | sh
+     uv run uvicorn app:app --host 127.0.0.1 --port 8000
+     ```
+     그런 다음 브라우저에서 <http://127.0.0.1:8000> 접속.
+     (방금 uv를 깔았는데 `uv` 명령을 못 찾으면 터미널을 새로 열어 PATH를 갱신하세요.)
+   - **uv·PowerShell까지 다 막힌 환경 — 파이썬만으로** (Python 3.11+ 설치 필요):
+     cmd(명령 프롬프트)에서, 프로젝트 폴더에서 —
+     ```bat
+     python -m venv .venv
+     .venv\Scripts\python -m pip install -r requirements.txt
+     .venv\Scripts\python -m uvicorn app:app --host 127.0.0.1 --port 8000
+     ```
+     macOS/Linux면 `.venv\Scripts\python` 대신 `.venv/bin/python`.
+     activate 스크립트를 안 거치고 venv의 파이썬을 직접 부르므로 스크립트 실행이 막혀도 됩니다.
+     → 브라우저에서 <http://127.0.0.1:8000>
 
 3. 브라우저가 열리면 **접속 정보**에 본인 사이트 URL·이메일·API 토큰을 입력.
    토큰은 <https://id.atlassian.com/manage-profile/security/api-tokens>에서 발급합니다.
