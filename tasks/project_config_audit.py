@@ -261,6 +261,18 @@ def _group_note(r: "SchemeRow") -> str:
     return f"{base} · {tail}"
 
 
+def _shared_spaces_table(r: "SchemeRow") -> ResultTable:
+    """The full list of other spaces sharing this scheme — the header only shows
+    the first couple, so expanding answers 'shared with exactly which spaces?'."""
+    return ResultTable(
+        key=f"shared_spaces_{r.isolate_key or r.kind}",
+        title="함께 쓰는 스페이스",
+        columns=[Column(key="space", title="스페이스 (키 · 이름)")],
+        rows=[{"space": s} for s in r.others],
+        note=f"이 {r.kind}을 함께 쓰는 다른 스페이스 {len(r.others)}개",
+    )
+
+
 # --------------------------------------------------------------------------
 # plan
 # --------------------------------------------------------------------------
@@ -382,6 +394,9 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
             body = [ResultTable(key="permission_head", title="", group=r.kind)]
         else:
             body = [await _contents_table(client, r.kind, r.scheme_id)]
+        # for shared schemes, lead with the exact list of spaces it is shared with
+        if r.verdict == "공유됨" and r.others:
+            body = [_shared_spaces_table(r), *body]
         for i, t in enumerate(body):
             t.group = r.kind
             t.collapsed = True

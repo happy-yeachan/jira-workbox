@@ -178,7 +178,7 @@
   tbody tr:last-child td { border-bottom: 0; }
   tbody tr:hover td { background: #fcfcfd; }
   td.mono, .mono { font-family: var(--mono); font-size: 12px; color: var(--ink); }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   /* pre-wrap belongs on the content span, not the cell: the cell also holds the
      source indentation between Alpine's <template> nodes, and pre-wrap would
      render every one of those newlines as a blank line */
@@ -923,7 +923,8 @@
                       <table>
                         <thead><tr>
                           <template x-for="col in t.columns" :key="col.key">
-                            <th x-text="col.kind === 'action' ? '' : (col.title || col.key)"></th>
+                            <th :class="col.kind === 'number' ? 'num' : ''"
+                                x-text="col.kind === 'action' ? '' : (col.title || col.key)"></th>
                           </template>
                         </tr></thead>
                         <tbody>
