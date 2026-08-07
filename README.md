@@ -17,6 +17,38 @@ uv sync
 
 변경 작업은 미리보기 없이 실행할 수 없고, 미리보기에 나온 대상만 정확히 변경합니다.
 
+## 팀원용 시작하기
+
+각자 자기 PC에서 켜서 **자기 Atlassian 토큰**으로 씁니다. 공유되는 코드에는 토큰이
+들어가지 않습니다.
+
+1. 저장소 받기
+   ```bash
+   git clone https://github.com/happy-yeachan/jira-workbox
+   cd jira-workbox
+   ```
+   (private 저장소라 collaborator 초대를 먼저 받아야 clone됩니다.)
+
+2. 실행 — **맥: `run.command` 더블클릭 · 윈도우: `run.bat` 더블클릭**
+   - `uv`가 없으면 런처가 자동 설치하고, uv가 알맞은 파이썬과 패키지를 알아서 받습니다.
+     (첫 실행은 다운로드 때문에 조금 걸립니다. 파이썬을 따로 깔 필요 없어요.)
+   - 터미널을 선호하면: `uv run uvicorn app:app`
+
+3. 브라우저가 열리면 **접속 정보**에 본인 사이트 URL·이메일·API 토큰을 입력.
+   토큰은 <https://id.atlassian.com/manage-profile/security/api-tokens>에서 발급합니다.
+
+**필요 조건 · 알아둘 점**
+- **Jira 관리자 권한**이 필요합니다 (프로젝트 생성·삭제, 스킴 변경, 그룹·권한 부여 등
+  관리 작업을 합니다).
+- 서버는 `127.0.0.1`에만 뜹니다(외부 노출 없음). 토큰은 OS 키체인에 저장되고 화면으로
+  다시 내려오지 않습니다.
+- **실제 테넌트에 바로 반영됩니다.** 단, 모든 변경은 미리보기 → 확인 → 실행이고,
+  **작업 기록**에서 되돌릴 수 있습니다.
+- 자동 설치는 `astral.sh`(uv)와 PyPI 접근이 필요합니다. 사내망이 막으면 관리자에게
+  uv 설치를 요청하세요.
+- 연결 시 `403 ... blocks access to apps`가 뜨면 `config.toml`에
+  `user_agent = "..."` 값을 넣어 우회하세요(기본값으로 대부분 통과).
+
 ---
 
 A local, single-operator web tool for Jira/Confluence administration. Two kinds
