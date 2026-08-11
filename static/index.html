@@ -96,6 +96,16 @@
   /* a rollback (실행 취소) run: accent the progress card so it can't be mistaken
      for a normal execute */
   .card.undo-run { border-color: var(--warn-line); box-shadow: inset 3px 0 0 var(--warn); }
+  /* run report: pass/fail summary + one readable row per item */
+  .report-sum { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .report-sum .badge b { font-weight: 700; }
+  .report-items { margin-top: 12px; border-top: 1px solid var(--line-soft); max-height: 320px; overflow: auto; }
+  .report-row { display: flex; align-items: center; gap: 9px; padding: 6px 2px; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+  .report-row:last-child { border-bottom: 0; }
+  .report-row b.ok { color: var(--ok); }
+  .report-row b.bad { color: var(--bad); }
+  .report-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub.bad { color: var(--bad); }
   .card > header {
     all: unset; display: flex; align-items: center; gap: 10px;
     padding: 13px 16px; border-bottom: 1px solid var(--line-soft);
@@ -828,24 +838,42 @@
       </div>
     </template>
 
-    <!-- ---------- activity ---------- -->
+    <!-- ---------- run report ---------- -->
     <template x-if="log.length">
       <div class="card" :class="runMode === 'undo' ? 'undo-run' : ''">
         <header>
-          <h2 x-text="runMode === 'undo' ? '↩ 되돌리기 진행 기록' : '진행 기록'"></h2>
+          <h2 x-text="runMode === 'undo' ? '↩ 되돌리기' : '실행 결과'"></h2>
           <span class="sub" x-text="status"></span>
           <span class="spacer"></span>
           <button class="btn small ghost" @click="logOpen = !logOpen"
-                  x-text="logOpen ? '접기' : '펼치기 (' + log.length + ')'"></button>
+                  x-text="logOpen ? '자세히 접기' : '자세히'"></button>
         </header>
-        <div class="body" x-show="logOpen">
-          <template x-if="runMode === 'undo'">
-            <div class="notice warn" style="margin-bottom:10px">
-              <b>↩ 되돌리기(실행 취소)를 진행 중입니다.</b>
-              방금 한 변경을 원래 상태로 되돌립니다 — 새 작업을 실행하는 게 아닙니다.
+        <div class="body">
+          <!-- summary: pass / fail at a glance -->
+          <div class="report-sum">
+            <span class="badge v-target_only" x-show="progress.ok">성공 <b x-text="progress.ok"></b></span>
+            <span class="badge v-shared" x-show="progress.fail">실패 <b x-text="progress.fail"></b></span>
+            <span class="badge v-unknown" x-show="!progress.ok && !progress.fail && running">진행 중</span>
+            <span class="sub" x-show="progress.total" x-text="'총 ' + progress.total + '건' + (running ? ' · ' + progress.done + ' 처리됨' : '')"></span>
+          </div>
+          <div class="bar" x-show="running" style="margin:10px 0 2px"><i :style="'width:' + pct() + '%'"></i></div>
+
+          <!-- per-item report (rollback shows the summary only — its ids aren't human) -->
+          <template x-if="runItems.length && runMode !== 'undo'">
+            <div class="report-items">
+              <template x-for="(r, i) in runItems" :key="i">
+                <div class="report-row">
+                  <b :class="r.ok ? 'ok' : 'bad'" x-text="r.ok ? '✓' : '✕'"></b>
+                  <span class="report-label" x-text="r.label"></span>
+                  <span class="spacer"></span>
+                  <span class="sub bad" x-show="!r.ok" x-text="(r.status ? '(' + r.status + ') ' : '') + (r.error || '실패')"></span>
+                </div>
+              </template>
             </div>
           </template>
-          <pre class="log" x-ref="log"><template x-for="line in log"><span><b :class="line.cls" x-text="line.tag"></b><span x-text="' ' + line.text + '\n'"></span></span></template></pre>
+
+          <!-- raw log, collapsed by default (for debugging) -->
+          <pre class="log" x-ref="log" x-show="logOpen" style="margin-top:10px"><template x-for="line in log"><span><b :class="line.cls" x-text="line.tag"></b><span x-text="' ' + line.text + '\n'"></span></span></template></pre>
         </div>
       </div>
     </template>
@@ -1119,7 +1147,7 @@ document.addEventListener('alpine:init', () => {
     health: {}, tasks: [], groups: [], selected: null, fields: [], form: {},
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
-    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run',
+    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [],
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
     history: [], historyOpen: false,
@@ -1579,14 +1607,17 @@ document.addEventListener('alpine:init', () => {
       } else if (ev.type === 'item') {
         const it = ev.item || {};
         this.progress.done = ev.index ?? this.progress.done + 1;
-        if (it.ok) { this.progress.ok++; this.push('ok', '✓', `${it.target_id} (${it.status_code ?? '-'})`); }
-        else { this.progress.fail++; this.push('bad', '✕', `${it.target_id} (${it.status_code ?? '-'}) ${it.error || ''}`); }
+        const label = this.itemLabel(it.target_id);
+        this.runItems.push({ label, ok: !!it.ok, status: it.status_code ?? null, error: it.error || '' });
+        if (it.ok) this.progress.ok++; else this.progress.fail++;
+        // keep a raw line for the collapsible 자세히 log (label, not the internal id)
+        this.push(it.ok ? 'ok' : 'bad', it.ok ? '✓' : '✕',
+                  `${label} (${it.status_code ?? '-'})${it.error ? ' ' + it.error : ''}`);
       } else if (ev.type === 'batch') {
         this.push('sys', '·', ev.message || '중간 지점');
       } else if (ev.type === 'summary') {
         const s = ev.summary || {};
-        const doneWord = this.runMode === 'undo' ? '되돌림 완료' : '완료';
-        this.status = s.failed ? `${doneWord} · 실패 ${s.failed}건` : doneWord;
+        this.status = s.failed ? `완료 · 실패 ${s.failed}건` : '완료';
         this.push('sys', '·', `종료: 시도 ${s.attempted} · 성공 ${s.succeeded} · 실패 ${s.failed}`);
         if (s.rollback_id && this.runMode !== 'undo') this.push('sys', '·', '작업 기록에서 되돌릴 수 있습니다 (상단 [작업 기록])');
       } else if (ev.type === 'error') {
@@ -1682,6 +1713,14 @@ document.addEventListener('alpine:init', () => {
     resetRun() {
       this.progress = { done: 0, total: 0, ok: 0, fail: 0 };
       this.log = []; this.status = ''; this.phase = ''; this.logOpen = true; this.runMode = 'run';
+      this.runItems = [];
+    },
+
+    // human label for a result row: the plan's Change.label when we have it
+    // (emails, issue keys, scheme names…), else the raw id as a last resort.
+    itemLabel(tid) {
+      const c = (this.plan && this.plan.changes || []).find(x => x.target_id === tid);
+      return (c && c.label) ? c.label : (tid || '항목');
     },
 
     push(cls, tag, text) {
