@@ -93,6 +93,9 @@
     background: var(--surface); border: 1px solid var(--line);
     border-radius: var(--radius); box-shadow: var(--shadow);
   }
+  /* a rollback (실행 취소) run: accent the progress card so it can't be mistaken
+     for a normal execute */
+  .card.undo-run { border-color: var(--warn-line); box-shadow: inset 3px 0 0 var(--warn); }
   .card > header {
     all: unset; display: flex; align-items: center; gap: 10px;
     padding: 13px 16px; border-bottom: 1px solid var(--line-soft);
@@ -827,15 +830,21 @@
 
     <!-- ---------- activity ---------- -->
     <template x-if="log.length">
-      <div class="card">
+      <div class="card" :class="runMode === 'undo' ? 'undo-run' : ''">
         <header>
-          <h2>진행 기록</h2>
+          <h2 x-text="runMode === 'undo' ? '↩ 되돌리기 진행 기록' : '진행 기록'"></h2>
           <span class="sub" x-text="status"></span>
           <span class="spacer"></span>
           <button class="btn small ghost" @click="logOpen = !logOpen"
                   x-text="logOpen ? '접기' : '펼치기 (' + log.length + ')'"></button>
         </header>
         <div class="body" x-show="logOpen">
+          <template x-if="runMode === 'undo'">
+            <div class="notice warn" style="margin-bottom:10px">
+              <b>↩ 되돌리기(실행 취소)를 진행 중입니다.</b>
+              방금 한 변경을 원래 상태로 되돌립니다 — 새 작업을 실행하는 게 아닙니다.
+            </div>
+          </template>
           <pre class="log" x-ref="log"><template x-for="line in log"><span><b :class="line.cls" x-text="line.tag"></b><span x-text="' ' + line.text + '\n'"></span></span></template></pre>
         </div>
       </div>
@@ -1086,7 +1095,7 @@
   <div class="modal-bg" @click.self="rbConfirm = null" @keydown.escape.window="rbConfirm = null">
     <div class="modal">
       <div class="body">
-        <h3>이 작업을 되돌릴까요?</h3>
+        <h3>정말 되돌리시겠습니까?</h3>
         <p class="sub" style="margin:0" x-text="rbConfirm.title"></p>
         <dl class="kv">
           <dt>되돌릴 항목</dt><dd x-text="rbConfirm.count + '건'"></dd>
@@ -1110,7 +1119,7 @@ document.addEventListener('alpine:init', () => {
     health: {}, tasks: [], groups: [], selected: null, fields: [], form: {},
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
-    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '',
+    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run',
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
     history: [], historyOpen: false,
@@ -1495,14 +1504,15 @@ document.addEventListener('alpine:init', () => {
       if (this.running) return;
       this.historyOpen = false;
       await this.stream(`/api/history/${h.id}/rollback`, {}, h.count,
-                        `되돌리는 중 · ${h.title}`);
+                        `되돌리는 중 · ${h.title}`, 'undo');
     },
 
     // one streaming-execute path for both a plan run and a rollback run
-    async stream(url, body, total, startMsg) {
+    async stream(url, body, total, startMsg, mode = 'run') {
       this.resetRun();
+      this.runMode = mode;
       this.progress.total = total || 0;
-      this.running = true; this.status = '실행 중'; this.error = '';
+      this.running = true; this.status = mode === 'undo' ? '되돌리는 중' : '실행 중'; this.error = '';
       this.push('sys', '·', startMsg);
       this.controller = new AbortController();
       try {
@@ -1575,9 +1585,10 @@ document.addEventListener('alpine:init', () => {
         this.push('sys', '·', ev.message || '중간 지점');
       } else if (ev.type === 'summary') {
         const s = ev.summary || {};
-        this.status = s.failed ? `완료 · 실패 ${s.failed}건` : '완료';
+        const doneWord = this.runMode === 'undo' ? '되돌림 완료' : '완료';
+        this.status = s.failed ? `${doneWord} · 실패 ${s.failed}건` : doneWord;
         this.push('sys', '·', `종료: 시도 ${s.attempted} · 성공 ${s.succeeded} · 실패 ${s.failed}`);
-        if (s.rollback_id) this.push('sys', '·', '작업 기록에서 되돌릴 수 있습니다 (상단 [작업 기록])');
+        if (s.rollback_id && this.runMode !== 'undo') this.push('sys', '·', '작업 기록에서 되돌릴 수 있습니다 (상단 [작업 기록])');
       } else if (ev.type === 'error') {
         this.status = '오류'; this.error = ev.message || '알 수 없는 오류';
         this.push('bad', '✕', ev.message || '');
@@ -1670,7 +1681,7 @@ document.addEventListener('alpine:init', () => {
 
     resetRun() {
       this.progress = { done: 0, total: 0, ok: 0, fail: 0 };
-      this.log = []; this.status = ''; this.phase = ''; this.logOpen = true;
+      this.log = []; this.status = ''; this.phase = ''; this.logOpen = true; this.runMode = 'run';
     },
 
     push(cls, tag, text) {
