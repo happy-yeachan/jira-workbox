@@ -54,12 +54,25 @@ class Params(BaseModel):
         description="제품별 프리셋에서 고르거나, '템플릿 키 직접 입력'으로 templateKey를 넣습니다",
         json_schema_extra={"widget": "template_picker"},
     )
+    permission_scheme: str = Field(
+        default="", title="권한 스킴",
+        description="검색해서 지정하면 생성 시 이 권한 스킴이 적용됩니다. 비우면 Jira 기본값.",
+        json_schema_extra={"widget": "permission_scheme_picker"},
+    )
     project_type_key: str = Field(
         default="", title="프로젝트 타입",
         description="템플릿을 고르면 자동으로 채워집니다 (software · service_desk · business · product_discovery)",
         json_schema_extra={"advanced": True},
     )
     description: str = Field(default="", title="설명", json_schema_extra={"advanced": True})
+
+    @field_validator("permission_scheme")
+    @classmethod
+    def _perm(cls, v: str) -> str:
+        v = v.strip()
+        if v and not v.isdigit():
+            raise ValueError("권한 스킴 id가 올바르지 않습니다. 목록에서 다시 선택하세요.")
+        return v
 
     @field_validator("name")
     @classmethod
@@ -129,6 +142,21 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
     if resp.status_code not in (404,):
         raise TaskInputError(f"키 확인 실패 ({resp.status_code}): {WorkboxClient.short_error(resp)}")
 
+    # optional permission scheme: resolve its name so the preview is readable,
+    # and confirm it exists before we build the create body
+    perm_name = ""
+    if params.permission_scheme:
+        yield ProgressEvent(type="phase", phase="permission", message="권한 스킴 확인")
+        try:
+            payload = await client.get_json("/permissionscheme")
+        except UpstreamError as exc:
+            raise TaskInputError(f"권한 스킴 목록을 읽지 못했습니다: {exc}") from None
+        match = next((s for s in (payload.get("permissionSchemes") or [])
+                      if str(s.get("id")) == params.permission_scheme), None)
+        if match is None:
+            raise TaskInputError("선택한 권한 스킴을 찾을 수 없습니다. 목록에서 다시 선택하세요.")
+        perm_name = str(match.get("name") or params.permission_scheme)
+
     create_body: dict[str, Any] = {
         "key": params.key,
         "name": params.name,
@@ -138,13 +166,15 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
     }
     if params.description.strip():
         create_body["description"] = params.description.strip()
+    if params.permission_scheme:
+        create_body["permissionScheme"] = int(params.permission_scheme)
 
     change = Change(
         target_id=params.key,
         label=params.name,
         after={"op": "create", "key": params.key, "name": params.name,
                "lead_name": lead_name, "template_label": params.template_key.strip(),
-               "create_body": create_body},
+               "perm_name": perm_name, "create_body": create_body},
     )
     table = _preview_table([change])
     result = planstore.register(
@@ -167,6 +197,7 @@ def _preview_table(changes: list[Change]):
             "key": a.get("key"), "name": a.get("name"),
             "lead": a.get("lead_name", "-"),
             "template": a.get("template_label", a.get("create_body", {}).get("projectTemplateKey", "")),
+            "perm": a.get("perm_name") or "기본값",
         })
     return ResultTable(
         key="preview", title="생성할 스페이스",
@@ -176,6 +207,7 @@ def _preview_table(changes: list[Change]):
             Column(key="name", title="이름"),
             Column(key="lead", title="어드민"),
             Column(key="template", title="템플릿"),
+            Column(key="perm", title="권한 스킴"),
         ],
         rows=rows,
     )

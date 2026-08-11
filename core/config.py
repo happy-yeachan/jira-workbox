@@ -99,6 +99,12 @@ class Settings(BaseModel):
     #: Overrides the stored site URL for this process only. Not a secret.
     site_url_override: str | None = None
 
+    #: Internal (unsupported) endpoint the Create-project UI uses to list the
+    #: instance's project templates, relative to the site root (NOT /rest/api/3).
+    #: Overridable because Atlassian may change it without notice; empty disables
+    #: the "인스턴스 템플릿" group and the picker falls back to presets + manual key.
+    space_templates_path: str = "/rest/simplified/2.0/project-templates?recommendations=true"
+
     def security_notes(self) -> list[str]:
         """Weakened settings, for the startup log, /api/health and the UI."""
         notes: list[str] = []

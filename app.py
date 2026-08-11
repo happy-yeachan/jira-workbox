@@ -253,16 +253,22 @@ async def setup_credentials(body: SetupRequest, request: Request) -> dict[str, o
         raise HTTPException(status_code=422, detail="API 토큰이 비어 있습니다.")
 
     store_credentials(site_url, email, token)
-    del token
 
     old = None
     try:
         old = get_client()
     except RuntimeError:
         pass
-    creds = load_credentials()
-    if creds is None:  # pragma: no cover - keyring wrote but did not read back
-        raise HTTPException(status_code=500, detail="저장한 접속 정보를 다시 읽지 못했습니다.")
+    # Build the client from the values just submitted instead of re-reading the
+    # keychain — that read-back is what pops the macOS keychain prompt right after
+    # first setup. site_url_override still wins, matching load_credentials().
+    override = load_settings().site_url_override
+    creds = Credentials(
+        site_url=normalize_site_url(override) if override else site_url,
+        email=email,
+        api_token=SecretStr(token),
+    )
+    del token
     _install_client(creds)
     if old is not None:
         await old.aclose()
@@ -332,6 +338,99 @@ async def search_users(q: str = "", limit: int = 20) -> list[dict[str, str | Non
                     "name": u.get("displayName"),
                     "email": u.get("emailAddress")})
     return out
+
+
+@app.get("/api/permissionschemes")
+async def list_permission_schemes(q: str = "", limit: int = 100) -> list[dict[str, str]]:
+    """All permission schemes (public API), filtered client-side by name in the
+    picker — the endpoint has no query param, but the list is small."""
+    client = _require_client()
+    try:
+        payload = await client.get_json("/permissionscheme")
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    rows = payload.get("permissionSchemes") or []
+    ql = q.strip().lower()
+    out = [{"id": str(s.get("id")), "name": str(s.get("name") or "")}
+           for s in rows if s.get("id")]
+    if ql:
+        out = [s for s in out if ql in s["name"].lower()]
+    return out[: max(1, min(limit, 200))]
+
+
+def _tpl_label(node: dict[str, object]) -> str:
+    """The display name — the internal endpoint puts it in title.label, an object."""
+    title = node.get("title")
+    if isinstance(title, dict) and isinstance(title.get("label"), str) and title["label"].strip():
+        return title["label"]
+    for f in ("name", "title", "label", "displayName"):
+        v = node.get(f)
+        if isinstance(v, str) and v.strip():
+            return v
+    return ""
+
+
+def _tpl_create_key(node: dict[str, object]) -> str:
+    """The projectTemplateKey POST /project needs — inside projectTypeTemplates
+    ({companyManaged|teamManaged}.key), falling back to the top-level key."""
+    ptt = node.get("projectTypeTemplates")
+    if isinstance(ptt, dict):
+        for variant in ("companyManaged", "teamManaged"):
+            v = ptt.get(variant)
+            if isinstance(v, dict) and isinstance(v.get("key"), str) and v["key"]:
+                return v["key"]
+    key = node.get("key")
+    return key if isinstance(key, str) else ""
+
+
+def _extract_templates(data: object) -> list[dict[str, str]]:
+    """The instance's CUSTOM (org-created) project templates from the internal
+    endpoint's `templates[]`. Built-in templates are skipped — they are already
+    in the picker's presets. Custom ones carry categoryTypes containing
+    'custom-template-category' and/or a key like 'custom:<uuid>'."""
+    if not (isinstance(data, dict) and isinstance(data.get("templates"), list)):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for t in data["templates"]:
+        if not isinstance(t, dict):
+            continue
+        cats = t.get("categoryTypes") or []
+        top_key = t.get("key") if isinstance(t.get("key"), str) else ""
+        is_custom = ("custom-template-category" in cats) or top_key.startswith("custom:")
+        if not is_custom:
+            continue
+        create_key = _tpl_create_key(t)
+        name = _tpl_label(t) or top_key
+        ptype = t.get("productKey") if isinstance(t.get("productKey"), str) else ""
+        if create_key and create_key not in seen:
+            seen.add(create_key)
+            out.append({"key": create_key, "name": name, "type": ptype})
+    return out
+
+
+@app.get("/api/space-templates")
+async def list_space_templates(raw: bool = False) -> dict[str, object]:
+    """Best-effort: the instance's project templates via the internal endpoint
+    the Create-project UI uses (configurable, unsupported). Falls back to an
+    empty list on any error so the picker keeps its presets + manual key.
+
+    ``?raw=1`` returns the upstream JSON as-is, for diagnosing its shape when the
+    tolerant parser extracts nothing.
+    """
+    client = _require_client()
+    path = (load_settings().space_templates_path or "").strip()
+    if not path:
+        return {"available": False, "templates": []}
+    url = path if path.startswith("http") else f"{client.site_url}{path if path.startswith('/') else '/' + path}"
+    try:
+        data = await client.json("GET", url)
+    except (UpstreamError, ValueError) as exc:
+        log.info("space templates unavailable: %s", str(exc)[:120])
+        return {"available": False, "templates": []}
+    if raw:
+        return {"available": True, "raw": data}
+    return {"available": True, "templates": _extract_templates(data)}
 
 
 @app.get("/api/tasks")
