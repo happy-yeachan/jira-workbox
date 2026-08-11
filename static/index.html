@@ -292,6 +292,12 @@
   .tgroup-h .tg-name { font-weight: 600; }
   .tgroup-h .badge { flex: none; }
   .tgroup-body { padding: 12px 13px 2px; border-top: 1px solid var(--line-soft); }
+  /* config-tree node rows: indented by depth, badge + name + optional 분리하기 */
+  .treerow {
+    display: flex; align-items: center; gap: 8px; min-height: 30px;
+    padding: 5px 2px; border-bottom: 1px solid var(--line-soft); font-size: 13px;
+  }
+  .treerow:last-child { border-bottom: 0; }
 
   .picker {
     margin-top: 6px; border: 1px solid var(--line); border-radius: 8px;
@@ -592,6 +598,7 @@
                   <div class="chips" x-show="form[key]" style="margin-top:8px">
                     <span class="tag pick" @click="form[key]=''" x-text="'✕ ' + (projectNames[form[key]] || form[key])"></span>
                   </div>
+                  <div class="notice err" x-show="pp.err" x-text="pp.err" style="margin-top:6px"></div>
                 </div>
               </template>
 
@@ -615,6 +622,7 @@
                   <div class="chips" x-show="form[key]" style="margin-top:8px">
                     <span class="tag pick" @click="form[key]=''" x-text="'✕ ' + (userNames[form[key]] || form[key])"></span>
                   </div>
+                  <div class="notice err" x-show="up.err" x-text="up.err" style="margin-top:6px"></div>
                 </div>
               </template>
 
@@ -652,6 +660,30 @@
                 </div>
               </template>
 
+              <template x-if="prop.widget === 'permission_scheme_picker'">
+                <div class="field">
+                  <span class="name" x-text="prop.title || key"></span>
+                  <span class="hint" x-show="prop.description" x-text="prop.description"></span>
+                  <template x-if="!form[key]">
+                    <input type="text" placeholder="권한 스킴 이름으로 검색…" x-model="psp.q"
+                           @focus="psp.open = true; loadPermissionSchemes(); filterPermissionSchemes()"
+                           @input="filterPermissionSchemes()"
+                           @blur="setTimeout(() => psp.open = false, 150)" autocomplete="off">
+                  </template>
+                  <div class="picker" x-show="!form[key] && psp.open && psp.matches.length">
+                    <template x-for="s in psp.matches" :key="s.id">
+                      <div class="pick-row" @click="pickPermissionScheme(key, s)">
+                        <span x-text="s.name"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="chips" x-show="form[key]" style="margin-top:8px">
+                    <span class="tag pick" @click="form[key]=''" x-text="'✕ ' + (permNames[form[key]] || form[key])"></span>
+                  </div>
+                  <div class="notice err" x-show="psp.err" x-text="psp.err" style="margin-top:6px"></div>
+                </div>
+              </template>
+
               <template x-if="prop.widget === 'group_picker'">
                 <div class="field">
                   <span class="name" x-text="prop.title || key"></span>
@@ -676,6 +708,7 @@
                             x-text="'✕ ' + (groupNames[id] || id)"></span>
                     </template>
                   </div>
+                  <div class="notice err" x-show="gp.err" x-text="gp.err" style="margin-top:6px"></div>
                 </div>
               </template>
 
@@ -697,7 +730,7 @@
                 </label>
               </template>
 
-              <template x-if="!prop.enum && prop.type === 'string' && !['user_picker','template_picker','group_picker','project_picker'].includes(prop.widget)">
+              <template x-if="!prop.enum && prop.type === 'string' && !['user_picker','template_picker','group_picker','project_picker','permission_scheme_picker'].includes(prop.widget)">
                 <label class="field">
                   <span class="name" x-text="prop.title || key"></span>
                   <span class="hint" x-show="prop.description" x-text="prop.description"></span>
@@ -839,7 +872,7 @@
           </div>
 
           <!-- write tasks: before/after diff -->
-          <template x-if="!plan.tables.length">
+          <template x-if="!configTree() && !plan.tables.length">
             <div class="tablewrap">
               <table>
                 <thead><tr><th>대상</th><th>요약</th><th>변경 전</th><th>변경 후</th></tr></thead>
@@ -872,15 +905,59 @@
             </div>
           </template>
 
-          <!-- verdict legend — shown once for the whole diagnosis, since every
-               scheme group's header carries one of these badges -->
-          <template x-if="groupedTables().some(g => g.badge)">
+          <!-- verdict legend — on top, since every node carries one of these -->
+          <template x-if="configTree() || groupedTables().some(g => g.badge)">
             <div class="legend" style="margin-bottom:12px">
               <span><b class="badge v-target_only">전용</b> 이 프로젝트만 사용 — 그대로 수정해도 안전</span>
               <span><b class="badge v-shared">공유됨</b> 다른 프로젝트도 사용 — 복제 필요</span>
               <span><b class="badge v-shared_workflow_unproven">공유 의심</b> 워크플로우가 참조, 전용임을 증명 못 함</span>
               <span><b class="badge v-unknown">확인 불가</b> 조회가 불완전해 판단 보류</span>
               <span><b class="badge v-orphan">미사용</b> 참조하는 곳 없음</span>
+            </div>
+          </template>
+
+          <!-- config tree (설정 공유 진단): one card per Jira category, indented
+               nodes with a per-node verdict and [분리하기] on shared nodes -->
+          <template x-if="configTree()">
+            <div>
+              <template x-for="(sec, si) in configTree()" :key="si">
+                <div class="tgroup" x-data="{ open: true }">
+                  <div class="tgroup-h" @click="open = !open">
+                    <span class="tg-caret" x-text="open ? '▾' : '▸'"></span>
+                    <template x-if="sec.nodes[0] && sec.nodes[0].badge">
+                      <span class="badge" :class="'v-' + sec.nodes[0].badge" x-text="label(sec.nodes[0].badge)"></span>
+                    </template>
+                    <span class="tg-name" x-text="sec.category"></span>
+                    <span class="sub" x-text="sec.nodes[0] ? sec.nodes[0].label : ''"></span>
+                    <template x-if="sec.nodes[0] && sec.nodes[0].note">
+                      <span class="sub" x-text="'· ' + sec.nodes[0].note"></span>
+                    </template>
+                    <span class="spacer"></span>
+                    <template x-if="sec.nodes[0] && sec.nodes[0].isolate">
+                      <button class="btn small" style="flex:none" @click.stop="isolate(sec.nodes[0].isolate)">분리하기</button>
+                    </template>
+                  </div>
+                  <div class="tgroup-body" x-show="open && sec.nodes.length > 1">
+                    <template x-for="(n, ni) in sec.nodes.slice(1)" :key="ni">
+                      <div class="treerow" :style="'padding-left:' + (n.depth * 20) + 'px'">
+                        <template x-if="n.badge">
+                          <span class="badge" :class="'v-' + n.badge" x-text="label(n.badge)"></span>
+                        </template>
+                        <span x-text="n.label" :style="n.kind === 'note' ? 'color:var(--muted)' : ''"></span>
+                        <template x-if="n.tag"><span class="pill" x-text="n.tag"></span></template>
+                        <template x-if="n.sub"><span class="sub" x-text="n.sub"></span></template>
+                        <template x-if="n.shared_with && n.shared_with.length">
+                          <span class="sub" x-text="'· 공유: ' + n.shared_with.slice(0,3).join(', ') + (n.shared_with.length > 3 ? ' 외 ' + (n.shared_with.length - 3) + '개' : '')"></span>
+                        </template>
+                        <span class="spacer"></span>
+                        <template x-if="n.isolate">
+                          <button class="btn small" style="flex:none" @click.stop="isolate(n.isolate)">분리하기</button>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
             </div>
           </template>
 
@@ -900,7 +977,7 @@
                   <span class="sub" x-text="grp.note"></span>
                   <span class="spacer"></span>
                   <template x-if="grp.action">
-                    <button class="btn small" @click.stop="isolate(grp)"
+                    <button class="btn small" @click.stop="isolate(grp.actionParams)"
                             title="복제본을 만들어 이 프로젝트만 전용으로 갈아끼웁니다"
                             x-text="grp.action"></button>
                   </template>
@@ -1032,14 +1109,15 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('workbox', () => ({
     health: {}, tasks: [], groups: [], selected: null, fields: [], form: {},
     basicFields: [], advancedFields: [],
-    plan: null, planning: false, running: false, error: '', isolateType: '', rbConfirm: null,
+    plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
     batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '',
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
     history: [], historyOpen: false,
-    gp: { q: '', results: [], loading: false }, groupNames: {},
-    up: { q: '', results: [], loading: false }, userNames: {},
-    pp: { q: '', results: [], loading: false }, projectNames: {},
+    gp: { q: '', results: [], loading: false, err: '' }, groupNames: {},
+    up: { q: '', results: [], loading: false, err: '' }, userNames: {},
+    pp: { q: '', results: [], loading: false, err: '' }, projectNames: {},
+    psp: { all: [], loaded: false, q: '', matches: [], err: '', open: false }, permNames: {},
     tp: { all: [], loaded: false, manual: false },
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
@@ -1131,10 +1209,11 @@ document.addEventListener('alpine:init', () => {
 
     select(task) {
       this.selected = task;
-      this.plan = null; this.error = ''; this.isolateType = ''; this.resetRun();
-      this.gp = { q: '', results: [], loading: false }; this.groupNames = {};
-      this.up = { q: '', results: [], loading: false }; this.userNames = {};
-      this.pp = { q: '', results: [], loading: false }; this.projectNames = {};
+      this.plan = null; this.error = ''; this.isolateParams = null; this.resetRun();
+      this.gp = { q: '', results: [], loading: false, err: '' }; this.groupNames = {};
+      this.up = { q: '', results: [], loading: false, err: '' }; this.userNames = {};
+      this.pp = { q: '', results: [], loading: false, err: '' }; this.projectNames = {};
+      this.psp = { all: [], loaded: false, q: '', matches: [], err: '', open: false }; this.permNames = {};
       this.tp = { all: [], loaded: false, manual: false };
       const props = task.schema.properties || {};
       // hidden params never render — the server fills them from their defaults
@@ -1168,37 +1247,54 @@ document.addEventListener('alpine:init', () => {
         else if (prop.type === 'integer' || prop.type === 'number') out[key] = Number(value);
         else out[key] = value;
       }
-      // config_isolate's scheme_type is hidden and set by the [분리하기] button,
-      // so it isn't a rendered field — carry it through explicitly
-      if (this.selected?.spec.name === 'config_isolate' && this.isolateType) {
-        out.scheme_type = this.isolateType;
+      // config_isolate's node params (scheme_type, node_kind, node_id, …) are
+      // hidden and set by the [분리하기] button — carry them through explicitly.
+      if (this.selected?.spec.name === 'config_isolate' && this.isolateParams) {
+        for (const [k, v] of Object.entries(this.isolateParams)) {
+          if (k !== 'project') out[k] = v;  // project is a rendered form field
+        }
       }
       return out;
     },
 
-    // Run 설정 분리 for one scheme group, prefilled from the diagnosis result.
+    configTree() {
+      return this.plan && this.plan.data ? (this.plan.data.config_tree || null) : null;
+    },
+
+    // Run 설정 분리 for one node in the diagnosis tree, prefilled from its params.
     // Opens the isolate task's normal preview→실행 flow (no immediate write).
-    isolate(grp) {
+    isolate(p) {
       const task = this.tasks.find(t => t.spec.name === 'config_isolate');
-      const p = grp.actionParams || {};
-      if (!task || !p.scheme_type) { this.error = '분리할 대상을 확인하지 못했습니다.'; return; }
+      if (!task || !p || !p.scheme_type) { this.error = '분리할 대상을 확인하지 못했습니다.'; return; }
       this.select(task);
-      this.isolateType = p.scheme_type;
+      this.isolateParams = { ...p };
       this.form.project = p.project || '';
       this.projectNames = { [this.form.project]: this.form.project };
       window.scrollTo({ top: 0, behavior: 'smooth' });
       this.doPlan();
     },
 
+    // Surface why a picker search failed instead of silently showing nothing.
+    // A 502 means our call to Jira failed — show its reason (status + hint).
+    async pickerFail(state, res) {
+      state.results = [];
+      const msg = this.errText(await res.json().catch(() => ({})))
+                  || ('요청 실패 (HTTP ' + res.status + ')');
+      state.err = res.status === 502 ? 'Jira 호출 실패 · ' + msg
+                : res.status === 503 ? '먼저 접속 정보를 연결하세요.'
+                : msg;
+    },
+
     async searchGroups() {
       const q = this.gp.q.trim();
-      this.gp.loading = true;
+      this.gp.loading = true; this.gp.err = '';
       try {
         const res = await fetch('/api/groups?q=' + encodeURIComponent(q) + '&limit=50');
-        this.gp.results = res.ok ? await res.json() : [];
+        if (!res.ok) { await this.pickerFail(this.gp, res); return; }
+        this.gp.results = await res.json();
         for (const g of this.gp.results) this.groupNames[g.id] = g.name;
       } catch (e) {
-        this.gp.results = [];
+        this.gp.results = []; this.gp.err = '검색 실패: ' + e;
       } finally {
         this.gp.loading = false;
       }
@@ -1230,36 +1326,38 @@ document.addEventListener('alpine:init', () => {
 
     async searchUsers() {
       const q = this.up.q.trim();
-      if (!q) { this.up.results = []; return; }
-      this.up.loading = true;
+      if (!q) { this.up.results = []; this.up.err = ''; return; }
+      this.up.loading = true; this.up.err = '';
       try {
         const res = await fetch('/api/users?q=' + encodeURIComponent(q) + '&limit=20');
-        this.up.results = res.ok ? await res.json() : [];
-      } catch (e) { this.up.results = []; }
+        if (!res.ok) { await this.pickerFail(this.up, res); return; }
+        this.up.results = await res.json();
+      } catch (e) { this.up.results = []; this.up.err = '검색 실패: ' + e; }
       finally { this.up.loading = false; }
     },
 
     pickUser(key, u) {
       this.form[key] = u.account_id;
       this.userNames[u.account_id] = (u.name || u.account_id) + (u.email ? ` <${u.email}>` : '');
-      this.up = { q: '', results: [], loading: false };
+      this.up = { q: '', results: [], loading: false, err: '' };
     },
 
     async searchProjects() {
       const q = this.pp.q.trim();
-      this.pp.loading = true;
+      this.pp.loading = true; this.pp.err = '';
       try {
         const res = await fetch('/api/projects?q=' + encodeURIComponent(q) + '&limit=20');
-        this.pp.results = res.ok ? await res.json() : [];
+        if (!res.ok) { await this.pickerFail(this.pp, res); return; }
+        this.pp.results = await res.json();
         for (const pr of this.pp.results) this.projectNames[pr.key] = pr.key + ' — ' + pr.name;
-      } catch (e) { this.pp.results = []; }
+      } catch (e) { this.pp.results = []; this.pp.err = '검색 실패: ' + e; }
       finally { this.pp.loading = false; }
     },
 
     pickProject(key, pr) {
       this.form[key] = pr.key;  // tasks take a project key
       this.projectNames[pr.key] = pr.key + ' — ' + pr.name;
-      this.pp = { q: '', results: [], loading: false };
+      this.pp = { q: '', results: [], loading: false, err: '' };
     },
 
     // Built-in preset templates. Jira has no public template-list API, so
@@ -1270,13 +1368,51 @@ document.addEventListener('alpine:init', () => {
       { product: '소프트웨어', name: '칸반 · 회사 관리형',  type: 'software', key: 'com.pyxis.greenhopper.jira:gh-kanban-template' },
       { product: '소프트웨어', name: '스크럼 · 회사 관리형', type: 'software', key: 'com.pyxis.greenhopper.jira:gh-scrum-template' },
       { product: '서비스 관리', name: 'IT 서비스 관리 (JSM)', type: 'service_desk', key: 'com.atlassian.servicedesk:simplified-it-service-management' },
-      { product: '업무 관리',  name: '업무 관리 (회사 관리형)', type: 'business', key: 'com.atlassian.jira-core-project-templates:jira-core-simplified-project-management' },
     ],
 
-    loadTemplates() {
+    async loadTemplates() {
       if (this.tp.loaded) return;
       this.tp.all = [...this.BUILTIN_TEMPLATES];
       this.tp.loaded = true;
+      // best-effort: prepend the instance's own templates (internal endpoint).
+      // On any failure we simply keep the presets + manual-key fallback.
+      try {
+        const res = await fetch('/api/space-templates');
+        if (res.ok) {
+          const d = await res.json();
+          if (d && d.available && Array.isArray(d.templates) && d.templates.length) {
+            const inst = d.templates.map(t => ({
+              product: '인스턴스 템플릿', name: t.name, type: t.type || '', key: t.key }));
+            this.tp.all = [...inst, ...this.tp.all];
+          }
+        }
+      } catch (e) { /* keep presets */ }
+    },
+
+    async loadPermissionSchemes() {
+      if (this.psp.loaded) { this.filterPermissionSchemes(); return; }
+      this.psp.err = '';
+      try {
+        const res = await fetch('/api/permissionschemes?limit=200');
+        if (!res.ok) {
+          this.psp.err = this.errText(await res.json().catch(() => ({}))) || '권한 스킴 조회 실패';
+          return;
+        }
+        this.psp.all = await res.json();
+        this.psp.loaded = true;
+        for (const s of this.psp.all) this.permNames[s.id] = s.name;
+        this.filterPermissionSchemes();
+      } catch (e) { this.psp.err = '권한 스킴을 불러오지 못했습니다: ' + e; }
+    },
+    filterPermissionSchemes() {
+      const q = (this.psp.q || '').toLowerCase().trim();
+      const hit = q ? this.psp.all.filter(s => (s.name || '').toLowerCase().includes(q)) : this.psp.all;
+      this.psp.matches = hit.slice(0, 30);
+    },
+    pickPermissionScheme(key, s) {
+      this.form[key] = s.id;
+      this.permNames[s.id] = s.name;
+      this.psp.q = ''; this.psp.matches = []; this.psp.open = false;
     },
 
     // presets grouped by product, order preserved — the picker renders one row per group

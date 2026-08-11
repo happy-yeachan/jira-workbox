@@ -45,12 +45,18 @@ uv sync
    - **uv·PowerShell까지 다 막힌 환경 — 파이썬만으로** (Python 3.11+ 설치 필요):
      cmd(명령 프롬프트)에서, 프로젝트 폴더에서 —
      ```bat
-     python -m venv .venv
+     py -m venv .venv
      .venv\Scripts\python -m pip install -r requirements.txt
      .venv\Scripts\python -m uvicorn app:app --host 127.0.0.1 --port 8000
      ```
-     macOS/Linux면 `.venv\Scripts\python` 대신 `.venv/bin/python`.
-     activate 스크립트를 안 거치고 venv의 파이썬을 직접 부르므로 스크립트 실행이 막혀도 됩니다.
+     - Windows에선 `python`이 PATH에 없을 수 있으니 `py`(파이썬 런처)를 씁니다.
+       macOS/Linux면 `py -m venv` 대신 `python3 -m venv`, 그리고
+       `.venv\Scripts\python` 대신 `.venv/bin/python`.
+     - `uvicorn app:app`을 그냥 치면 "명령을 찾을 수 없음"이 납니다 — uvicorn은 전역
+       명령이 아니라 위 venv 안에 설치되므로 반드시 `.venv\Scripts\python -m uvicorn …`로 실행.
+     - 고정 버전 설치가 실패하면 버전 고정 없이:
+       `.venv\Scripts\python -m pip install fastapi "uvicorn[standard]" httpx keyring pydantic`
+     - activate 스크립트를 안 거치고 venv 파이썬을 직접 부르므로 스크립트 실행이 막혀도 됩니다.
      → 브라우저에서 <http://127.0.0.1:8000>
 
 3. 브라우저가 열리면 **접속 정보**에 본인 사이트 URL·이메일·API 토큰을 입력.
@@ -286,6 +292,9 @@ verify_tls = true
 # user_agent = "test"                 # 테넌트가 앱을 막으면 임의값으로
 # client_id_header = "jira-workbox/1.0"  # 감사 로그 식별용 (앱 차단 정책이면 비워 둘 것)
 # site_url_override = "https://<your-sandbox>.atlassian.net"   # not a secret
+# space_templates_path = "/rest/simplified/2.0/project-templates?recommendations=true"
+#   # 스페이스 생성의 '인스턴스 템플릿' 목록을 가져오는 내부(비공개) 엔드포인트.
+#   # 바뀌면 여기만 고치면 됨. 비우면 인스턴스 템플릿 없이 프리셋+수동 키로 폴백.
 ```
 
 ## Audit log
@@ -304,11 +313,21 @@ issues with JQL and adds/removes labels via `PUT /rest/api/3/issue/{key}` with
 `update.labels` (not a full field replacement). Copy it when adding a new write
 task; delete it if you don't want the reference.
 
-## Task: screen sharing analysis (read-only)
+## Task: config sharing audit — 설정 공유 진단 (read-only)
 
-For one company-managed project, works out which screens, screen schemes and
-issue type screen schemes are **shared with other projects** — the objects a
-later clone step must copy rather than edit in place.
+Category 스페이스. Enter one company-managed project and see its configuration
+laid out **the way Jira's project settings pages are** — four sections (작업
+유형·워크플로우·화면·권한), each a scheme and its contents, with a per-node
+verdict badge and, on shared nodes, a **[분리하기]** button. The 화면 section
+shows the full depth: `ITSS → 화면 스킴(DEFAULT) → 사용 작업 유형 + 만들기/편집/
+보기 → 스크린`, so you can tell exactly *where* sharing starts.
+
+The screen depth is computed by `tasks/screen_share_analysis.py` (reused, not a
+standalone task): it works out which screens, screen schemes and ITSS are
+**shared with other projects** — the objects an isolate step must clone rather
+than edit in place. The audit joins that analysis's `target_chain` + `candidates`
+into the tree. (Issue security schemes are intentionally out of scope; permission
+scheme sharing has no bulk API, so it shows the scheme name with 확인 불가.)
 
 **Verdicts come from reverse reachability, not reference counts.** A shared
 screen very often has exactly one referencing screen scheme; the sharing happens
@@ -332,9 +351,9 @@ it reaches, and the reason it is not target-only. The `anomalies` table lists
 every degradation and which of them downgraded a verdict.
 
 Workflow transition screens are checked too, conservatively: a screen used by a
-global workflow is not called target-only unless that is proved. The
-`WF target-only?` column and the `workflow_screen_refs` table show the
-attribution behind each call, so you can decide to skip a clone yourself.
+global workflow is not called target-only unless that is proved. The full
+attribution lives in the JSON download (`?raw`/report), not on-screen — the tree
+keeps only the verdict + name + which spaces share it.
 `workflow_verdict_mode = "attributed"` relaxes this and is gated behind an
 explicit acknowledgement, because it is the one setting that can turn a shared
 screen into "safe to edit".
@@ -342,6 +361,7 @@ screen into "safe to edit".
 Cost: page-based scans, not per-object requests — roughly 75 requests for a site
 with ~200 projects, ~400 screens and ~800 workflows. Team-managed target
 projects are rejected at plan time (422), never returned as an empty result.
+The **[분리하기]** buttons drive 설정 분리 (below).
 
 ## Task: group membership (grant / revoke) — 그룹 멤버십 일괄 변경
 
@@ -369,11 +389,23 @@ product's group. Site token only; no org admin API.
 
 Category 스페이스. Jira calls a project a space; the form maps to
 `POST /rest/api/3/project`: 이름→name, 키→key, 어드민→leadAccountId (resolved
-from an email, exact match), 템플릿→projectTemplateKey (a curated preset, or a
-raw key via 고급 설정). One space per run. Preview checks the admin resolves and
-the key is free before anything is created. **Rollback** trashes the created
-project (`DELETE`, recoverable ~60 days) and journals the create body so a redo
-re-creates it. Needs Jira admin rights.
+from an email, exact match), 템플릿→projectTemplateKey, 권한 스킴→permissionScheme.
+One space per run. Preview checks the admin resolves and the key is free before
+anything is created. **Rollback** trashes the created project (`DELETE`,
+recoverable ~60 days) and journals the create body so a redo re-creates it.
+Needs Jira admin rights.
+
+- **템플릿 picker**: product presets (소프트웨어·서비스 관리) + a manual `templateKey`
+  fallback, and — best-effort — an **인스턴스 템플릿** group listing the org's
+  *custom* templates. Those come from the internal (unsupported) endpoint the
+  Create-project UI uses, set by `space_templates_path` in `config.toml`; the
+  parser keeps only custom templates (`categoryTypes: custom-template-category`
+  / `key: custom:<uuid>`), reading the name from `title.label` and the create key
+  from `projectTypeTemplates`. On any failure it silently falls back to presets.
+  `GET /api/space-templates?raw=1` returns the upstream JSON for diagnosis.
+- **권한 스킴 picker**: `GET /permissionscheme` (public API) listed and filtered by
+  name; the chosen id is sent as `permissionScheme` at creation (blank = Jira
+  default). The preview's 권한 스킴 column shows the scheme name.
 
 ## Task: isolate shared config — 설정 분리 (button-driven)
 
@@ -387,15 +419,25 @@ project and `scheme_type`. Supported types:
     issuetypescreen   이슈 유형 화면 스킴      /issuetypescreenscheme
     security          보안 스킴               /issuesecurityschemes
 
-For each it clones the shared scheme (same contents, `{KEY}: {name}`), re-points
-the project to the clone (PUT …/project), and leaves every other project on the
-original. `_apply_one` is type-agnostic — the plan pre-computes each endpoint and
-body into the change. Safety: it refuses if the scheme is already dedicated;
-`security` re-points remap each issue's old security level to the clone's new one
-by name; `workflow`/`security` re-points can trigger a background Jira migration,
-so the preview warns, and if a re-point is refused the just-created clone is
-deleted rather than left orphaned. **Rollback** re-points to the original and
-DELETEs the clone.
+**Two granularities.** Scheme-level (whole issue-type/workflow/ITSS/security
+scheme) clones the scheme and re-points the project (`_apply_one` is type-agnostic
+— the plan pre-computes each endpoint and body into the change). The 화면 tree
+also offers **node-level "path clone"**: isolating one *screen scheme* or one
+*screen* clones only that node **and the shared nodes above it** (screen scheme,
+ITSS), rewriting on-path references to the clones and leaving off-path branches
+pointing at the shared originals — so other projects are never touched. Executed
+as an ordered list of clone steps (screen → screen scheme → ITSS) plus a
+re-point; a step can reference an earlier clone's id via an `@ref` token.
+
+**Clone names** read `{스페이스키}: {이슈타입} {종류}` (e.g. `ADJS: Story 화면 스킴`,
+`ADJS: 전체 워크플로우 스킴`) — the issue type is what the node serves, `전체` for
+scheme-wide.
+
+Safety: scheme-level refuses if already dedicated; `security` re-points remap each
+issue's old security level to the clone's new one by name; `workflow`/`security`
+re-points can trigger a background Jira migration, so the preview warns; and if a
+re-point is refused, every clone created so far is deleted (no orphans).
+**Rollback** re-points to the original and DELETEs the clones (dependents first).
 
 ## Adding a task
 
