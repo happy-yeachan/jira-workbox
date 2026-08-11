@@ -62,6 +62,26 @@ def _sid(v: Any) -> str:
     return "" if v is None else str(v)
 
 
+async def _issue_type_names(client: WorkboxClient) -> dict[str, str]:
+    try:
+        data = await client.get_json("/issuetype")
+    except UpstreamError:
+        return {}
+    rows = data.get("value", []) if isinstance(data, dict) else (data or [])
+    return {_sid(t.get("id")): str(t.get("name") or t.get("id")) for t in rows}
+
+
+def _it_label(issue_type_ids: list[str], names: dict[str, str]) -> str:
+    """The issue-type part of a clone name: 'Story', 'Story 외 2', or '전체'
+    (when it covers the default mapping / all types)."""
+    if "default" in issue_type_ids:
+        return "전체"
+    real = [names.get(i, i) for i in issue_type_ids if i]
+    if not real:
+        return "전체"
+    return real[0] if len(real) == 1 else f"{real[0]} 외 {len(real) - 1}"
+
+
 # --------------------------------------------------------------------------
 # per-scheme-type strategy
 # --------------------------------------------------------------------------
@@ -208,6 +228,13 @@ class Params(BaseModel):
         description="분리할 스킴 종류 (진단 화면의 [분리하기] 버튼이 자동으로 채웁니다)",
         json_schema_extra={"hidden": True},
     )
+    # granular (path-clone) isolation for the screens family — set by the tree's
+    # per-node [분리하기]. node_kind=scheme means whole-scheme (the default).
+    node_kind: Literal["scheme", "screen_scheme", "screen"] = Field(
+        default="scheme", json_schema_extra={"hidden": True})
+    node_id: str = Field(default="", json_schema_extra={"hidden": True})
+    itss_id: str = Field(default="", json_schema_extra={"hidden": True})
+    screen_scheme_id: str = Field(default="", json_schema_extra={"hidden": True})
     clone_name: str = Field(
         default="",
         title="새 스킴 이름",
@@ -262,18 +289,153 @@ async def _resolve_scheme(
 
 
 # --------------------------------------------------------------------------
+# granular (path-clone) isolation — screens family only
+#
+# To make ONE screen (or screen scheme) private to the target without touching
+# other projects, we clone it and every SHARED node on the path from the
+# project's ITSS down to it, rewriting on-path references to the clones and
+# leaving off-path branches pointing at the shared originals. Executed as an
+# ordered list of clone "steps" (screen → screen scheme → ITSS) plus a final
+# re-point; each step may reference an earlier clone's id via an "@ref" token.
+# --------------------------------------------------------------------------
+
+_P_ITSS_ONE = "/issuetypescreenscheme"
+_P_ITSS_MAPPING = "/issuetypescreenscheme/mapping"
+_P_ITSS_PROJECT = "/issuetypescreenscheme/project"
+_P_SS_ONE = "/screenscheme"
+_P_SCREEN_ONE = "/screens"
+
+
+def _subst(value: Any, ids: dict[str, str]) -> Any:
+    """Replace '@ref' tokens with the id an earlier step created for that ref."""
+    if isinstance(value, str) and value.startswith("@"):
+        return ids.get(value[1:], value)
+    if isinstance(value, dict):
+        return {k: _subst(v, ids) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_subst(v, ids) for v in value]
+    return value
+
+
+async def _plan_screen_fork(
+    client: WorkboxClient, params: Params, target_id: str, target_key: str
+) -> AsyncIterator[ProgressEvent]:
+    itss_id = _sid(params.itss_id)
+    ss_id = _sid(params.screen_scheme_id if params.node_kind == "screen" else params.node_id)
+    if not itss_id or not ss_id:
+        raise TaskInputError("분리할 대상 화면 스킴 정보가 부족합니다. 진단을 다시 실행해 주세요.")
+
+    yield ProgressEvent(type="phase", phase="chain", message="화면 구성 경로 확인")
+    # ITSS name + mappings (issueType -> screenSchemeId)
+    meta = await client.get_json(_P_ITSS_ONE, params={"id": [itss_id]})
+    itss_row = next((x for x in (meta.get("values") or []) if _sid(x.get("id")) == itss_id), {})
+    itss_name = _sid(itss_row.get("name")) or f"#{itss_id}"
+    mappings: list[dict[str, str]] = []
+    async for m in client.paginate_offset(_P_ITSS_MAPPING, items_key="values",
+                                           params={"issueTypeScreenSchemeId": [itss_id]}, page_size=100):
+        if _sid(m.get("issueTypeScreenSchemeId")) == itss_id:
+            mappings.append({"issueTypeId": _sid(m.get("issueTypeId")),
+                             "screenSchemeId": _sid(m.get("screenSchemeId"))})
+    # the target screen scheme (name + operation->screen map)
+    ss_meta = await client.get_json(_P_SS_ONE, params={"id": [ss_id]})
+    ss_row = next((x for x in (ss_meta.get("values") or []) if _sid(x.get("id")) == ss_id), {})
+    ss_name = _sid(ss_row.get("name")) or f"#{ss_id}"
+    ss_screens = {k: _sid(v) for k, v in (ss_row.get("screens") or {}).items()}
+
+    # clone names: "{KEY}: {issue type} {kind}" — the issue type is whatever the
+    # forked screen scheme serves; the top ITSS covers all types -> "전체".
+    it_names = await _issue_type_names(client)
+    served = [m["issueTypeId"] for m in mappings if m["screenSchemeId"] == ss_id]
+    it_lab = _it_label(served, it_names)
+    kp = target_key
+    ss_clone = f"{kp}: {it_lab} 화면 스킴"
+    itss_clone = f"{kp}: 전체 이슈 유형 화면 스킴"
+    steps: list[dict[str, Any]] = []
+    plan_rows: list[dict[str, Any]] = []
+
+    if params.node_kind == "screen":
+        screen_id = _sid(params.node_id)
+        sc_meta = await client.get_json(_P_SCREEN_ONE, params={"id": [screen_id]})
+        sc_row = next((x for x in (sc_meta.get("values") or []) if _sid(x.get("id")) == screen_id), {})
+        sc_name = _sid(sc_row.get("name")) or f"#{screen_id}"
+        sc_clone = f"{kp}: {it_lab} 스크린"
+        steps.append({"ref": "screen", "create_path": _P_SCREEN_ONE, "one_path": _P_SCREEN_ONE + "/{id}",
+                      "created_id_keys": ["id"],
+                      "body": {"name": sc_clone,
+                               **({"description": sc_row["description"][:255]} if sc_row.get("description") else {})}})
+        new_screens = {op: ("@screen" if sid == screen_id else sid) for op, sid in ss_screens.items()}
+        steps.append({"ref": "screen_scheme", "create_path": _P_SS_ONE, "one_path": _P_SS_ONE + "/{id}",
+                      "created_id_keys": ["id"],
+                      "body": {"name": ss_clone, "screens": new_screens}})
+        plan_rows.append({"kind": "스크린", "from": sc_name, "to": sc_clone})
+        plan_rows.append({"kind": "화면 스킴", "from": ss_name, "to": ss_clone})
+        rewritten_ss = "@screen_scheme"
+    else:  # screen_scheme
+        steps.append({"ref": "screen_scheme", "create_path": _P_SS_ONE, "one_path": _P_SS_ONE + "/{id}",
+                      "created_id_keys": ["id"],
+                      "body": {"name": ss_clone, "screens": ss_screens}})
+        plan_rows.append({"kind": "화면 스킴", "from": ss_name, "to": ss_clone})
+        rewritten_ss = "@screen_scheme"
+
+    new_mappings = [{"issueTypeId": m["issueTypeId"],
+                     "screenSchemeId": (rewritten_ss if m["screenSchemeId"] == ss_id else m["screenSchemeId"])}
+                    for m in mappings]
+    steps.append({"ref": "itss", "create_path": _P_ITSS_ONE, "one_path": _P_ITSS_ONE + "/{id}",
+                  "created_id_keys": ["id"],
+                  "body": {"name": itss_clone, "issueTypeMappings": new_mappings}})
+    plan_rows.append({"kind": "이슈 유형 화면 스킴", "from": itss_name, "to": itss_clone})
+
+    change = Change(
+        target_id=f"screenfork:{target_id}:{params.node_kind}:{params.node_id}",
+        label=f"{target_key} 화면 구성 분리 ({params.node_kind})",
+        before={"itss_id": itss_id, "itss_name": itss_name},
+        after={
+            "op": "isolate", "scheme_type": "issuetypescreen",
+            "label": "화면 구성", "project_id": target_id, "project_key": target_key,
+            "steps": steps,
+            "repoint": {"project_path": _P_ITSS_PROJECT,
+                        "id_body_key": "issueTypeScreenSchemeId", "ref": "itss"},
+            "restore_scheme_id": itss_id,
+        },
+        note=f"경로 복제: {len(steps)}개 복제 후 이 프로젝트만 재지정",
+    )
+    table = ResultTable(
+        key="isolate", title="분리 계획 (경로 복제)",
+        columns=[Column(key="kind", title="복제 대상"), Column(key="from", title="원본(공유)"),
+                 Column(key="to", title="새 전용")],
+        rows=plan_rows,
+        note="선택한 노드와 그 위의 상위(화면 스킴·ITSS)만 복제해 이 프로젝트만 옮깁니다. "
+             "다른 프로젝트·다른 가지는 공유 원본 그대로입니다.",
+    )
+    result = planstore.register(
+        task=TASK_NAME,
+        params_echo={"project": target_key, "scheme_type": "issuetypescreen",
+                     "node_kind": params.node_kind},
+        changes=[change],
+        tables=[table],
+    )
+    audit.record_plan(result)
+    yield ProgressEvent(type="plan", total=1, plan=result)
+
+
+# --------------------------------------------------------------------------
 # plan
 # --------------------------------------------------------------------------
 
 
 async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
     client = get_client()
-    strat = _STRATEGIES[params.scheme_type]
-    yield ProgressEvent(type="start", message=f"{params.project} {strat.label} 분리 준비")
+    yield ProgressEvent(type="start", message=f"{params.project} 설정 분리 준비")
 
     yield ProgressEvent(type="phase", phase="target", message="프로젝트 확인")
     target_id, target_key, target_name = await _resolve_target(client, params.project)
 
+    if params.scheme_type == "issuetypescreen" and params.node_kind in ("screen_scheme", "screen"):
+        async for ev in _plan_screen_fork(client, params, target_id, target_key):
+            yield ev
+        return
+
+    strat = _STRATEGIES[params.scheme_type]
     yield ProgressEvent(type="phase", phase="scheme", message=f"현재 {strat.label} 확인")
     source_id, source_name, others = await _resolve_scheme(client, strat, target_id)
     if not others:
@@ -284,7 +446,8 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
     yield ProgressEvent(type="phase", phase="contents", message="스킴 내용 수집")
     body_partial, count, name_from_contents = await strat.contents(client, source_id)
     source_name = source_name or name_from_contents or f"#{source_id}"
-    new_name = params.clone_name.strip() or f"{target_key}: {source_name}"
+    # a whole-scheme clone covers all issue types -> "{KEY}: 전체 {종류}"
+    new_name = params.clone_name.strip() or f"{target_key}: 전체 {strat.label}"
     create_body = {"name": new_name, **body_partial}
 
     warnings: list[str] = []
@@ -362,10 +525,80 @@ async def _repoint(client: WorkboxClient, path: str, body: dict[str, Any]) -> tu
     return False, resp.status_code, WorkboxClient.short_error(resp)
 
 
+async def _apply_fork_isolate(
+    client: WorkboxClient, change: Change, a: dict[str, Any]
+) -> tuple[ItemResult, dict[str, Any]]:
+    """Multi-step path clone: create each step (screen → screen scheme → ITSS),
+    substituting earlier clones' ids, then re-point the project. On any failure,
+    delete everything created so far so no orphan clones remain."""
+    ids: dict[str, str] = {}
+    created: list[list[str]] = []  # [one_path_template, id] in creation order
+    try:
+        for step in a["steps"]:
+            body = _subst(step["body"], ids)
+            resp = await client.json("POST", step["create_path"], json=body)
+            nid = _pick_id(resp, step["created_id_keys"])
+            if not nid:
+                raise UpstreamError(f"{step['ref']} 복제본 id를 응답에서 찾지 못했습니다.")
+            ids[step["ref"]] = nid
+            created.append([step["one_path"], nid])
+        rp = a["repoint"]
+        ok, code, err = await _repoint(
+            client, rp["project_path"], {rp["id_body_key"]: ids[rp["ref"]], "projectId": a["project_id"]})
+        if not ok:
+            for one_path, nid in reversed(created):
+                await client.request("DELETE", one_path.format(id=nid))
+            return ItemResult(target_id=change.target_id, ok=False, status_code=code,
+                              error=f"재지정 실패({code}) — 만든 복제본을 삭제하고 복구했습니다. {err}"[:200]), {}
+        undo = {"op": "restore_fork", "scheme_type": a["scheme_type"], "label": a["label"],
+                "project_id": a["project_id"], "project_key": a["project_key"],
+                "project_path": rp["project_path"], "id_body_key": rp["id_body_key"],
+                "restore_scheme_id": a["restore_scheme_id"],
+                "delete": [[p, i] for p, i in reversed(created)],
+                "steps": a["steps"], "repoint": a["repoint"]}
+        return ItemResult(target_id=change.target_id, ok=True, status_code=code or 201), undo
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — clean up partial clones on any error
+        for one_path, nid in reversed(created):
+            try:
+                await client.request("DELETE", one_path.format(id=nid))
+            except Exception:  # noqa: BLE001
+                pass
+        return ItemResult(target_id=change.target_id, ok=False,
+                          error=f"{type(exc).__name__}: {exc}"[:200]), {}
+
+
+async def _apply_fork_restore(
+    client: WorkboxClient, change: Change, a: dict[str, Any]
+) -> tuple[ItemResult, dict[str, Any]]:
+    """Undo a path clone: re-point to the original ITSS, then delete the clones
+    (already in dependents-first order)."""
+    ok, code, err = await _repoint(
+        client, a["project_path"], {a["id_body_key"]: a["restore_scheme_id"], "projectId": a["project_id"]})
+    if not ok:
+        return ItemResult(target_id=change.target_id, ok=False, status_code=code,
+                          error=f"원복 재지정 실패({code}). {err}"[:200]), {}
+    gone = True
+    for one_path, nid in a.get("delete", []):
+        resp = await client.request("DELETE", one_path.format(id=nid))
+        if not (resp.status_code < 400 or resp.status_code == 404):
+            gone = False
+    undo = {"op": "isolate", "scheme_type": a["scheme_type"], "label": a["label"],
+            "project_id": a["project_id"], "project_key": a["project_key"],
+            "steps": a["steps"], "repoint": a["repoint"], "restore_scheme_id": a["restore_scheme_id"]}
+    return ItemResult(target_id=change.target_id, ok=gone,
+                      error=None if gone else "일부 복제본 삭제 실패"), undo
+
+
 async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult, dict[str, Any]]:
     """Do the change. Returns (result, undo) where undo describes the inverse."""
     a = change.after
     op = a.get("op")
+    if op == "isolate" and a.get("steps"):
+        return await _apply_fork_isolate(client, change, a)
+    if op == "restore_fork":
+        return await _apply_fork_restore(client, change, a)
     try:
         if op == "isolate":
             created = await client.json("POST", a["create_path"], json=a["create_body"])

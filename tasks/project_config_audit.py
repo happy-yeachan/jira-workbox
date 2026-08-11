@@ -52,21 +52,6 @@ _ID_CHUNK = 50
 _VERDICT_KEY = {"전용": "target_only", "공유됨": "shared", "없음": "orphan",
                 "확인 불가": "unknown", "미확인": "unknown"}
 
-# The screen chain carries a lot of evidence columns (근거 경로, 공유 시작 지점, WF
-# 참조 …). Inside the audit we only want state at a glance, so keep just the name
-# and the verdict per row; the full evidence stays in the JSON download.
-_SCREEN_KEEP = {
-    "issue_type_screen_schemes": ("verdict", "itss_name", "project_count"),
-    "screen_schemes": ("verdict", "screen_scheme_name", "reachable_project_count"),
-    "screens": ("verdict", "screen_name", "reachable_project_count"),
-}
-
-
-def _slim(t: ResultTable) -> ResultTable:
-    keep = _SCREEN_KEEP.get(t.key)
-    if keep:
-        t.columns = [c for c in t.columns if c.key in keep]
-    return t
 
 
 def _sid(v: Any) -> str:
@@ -74,11 +59,10 @@ def _sid(v: Any) -> str:
 
 
 _CHECK_OPTIONS = [
-    ("issue_type", "이슈 타입 스킴"),
-    ("workflow", "워크플로우 스킴"),
-    ("screens", "화면 구성 (ITSS·화면) — 느림"),
-    ("security", "보안 스킴"),
-    ("permission", "권한 스킴"),
+    ("issue_type", "작업 유형 (이슈 타입 스킴)"),
+    ("workflow", "워크플로우"),
+    ("screens", "화면 (ITSS·화면 스킴·스크린) — 느림"),
+    ("permission", "권한"),
 ]
 _ALL_CHECKS = [v for v, _ in _CHECK_OPTIONS]
 
@@ -154,8 +138,7 @@ _TYPES = [
     SchemeType("워크플로우 스킴", "/workflowscheme/project", "values", "workflowScheme", "id", "name", False, check="workflow", isolate_key="workflow"),
     SchemeType("이슈 유형 화면 스킴", "/issuetypescreenscheme/project", "values",
                "issueTypeScreenScheme", "id", "name", True, check="screens",
-               detail="화면 단위 상세는 아래 표를 보세요.", isolate_key="issuetypescreen"),
-    SchemeType("보안 스킴", "/issuesecurityschemes/project", "values", "", "issueSecuritySchemeId", "", True, check="security", isolate_key="security"),
+               isolate_key="issuetypescreen"),
 ]
 
 
@@ -252,30 +235,94 @@ async def _contents_table(client: WorkboxClient, kind: str, scheme_id: str | Non
     return empty
 
 
-def _group_note(r: "SchemeRow") -> str:
-    base = r.scheme_name if r.scheme_id else "없음"
-    if r.verdict == "공유됨":
-        tail = "공유됨 · " + ", ".join(r.others[:2]) + (f" 외 {len(r.others) - 2}개" if len(r.others) > 2 else "")
-    else:
-        tail = r.verdict
-    return f"{base} · {tail}"
-
-
-def _shared_spaces_table(r: "SchemeRow") -> ResultTable:
-    """The full list of other spaces sharing this scheme — the header only shows
-    the first couple, so expanding answers 'shared with exactly which spaces?'."""
-    return ResultTable(
-        key=f"shared_spaces_{r.isolate_key or r.kind}",
-        title="함께 쓰는 스페이스",
-        columns=[Column(key="space", title="스페이스 (키 · 이름)")],
-        rows=[{"space": s} for s in r.others],
-        note=f"이 {r.kind}을 함께 쓰는 다른 스페이스 {len(r.others)}개",
-    )
-
-
 # --------------------------------------------------------------------------
-# plan
+# config tree — present each category the way Jira's project settings do:
+# a scheme, then its contents, with a per-node verdict and (for shared nodes)
+# an [분리하기] button carrying the isolate parameters.
 # --------------------------------------------------------------------------
+
+_OP_LABEL = {"default": "기본", "create": "만들기", "edit": "편집", "view": "보기"}
+#: verdicts that mean "not proven private", so isolation is worth offering
+_ISOLATABLE = {"shared", "shared_workflow_unproven"}
+
+
+async def _issue_type_names(client: WorkboxClient) -> dict[str, str]:
+    try:
+        data = await client.get_json(_P_ISSUETYPE)
+    except UpstreamError:
+        return {}
+    rows = data.get("value", []) if isinstance(data, dict) else (data or [])
+    return {_sid(t.get("id")): str(t.get("name") or t.get("id")) for t in rows}
+
+
+def _screen_tree_children(
+    r: "SchemeRow", report: dict[str, Any], projects: dict[str, str],
+    it_names: dict[str, str], target_key: str, target_id: str,
+) -> list[dict[str, Any]]:
+    """The ITSS → screen scheme (DEFAULT) → issue types + operation → screen tree,
+    built by joining the analysis report's target_chain (structure) with its
+    candidates (name + verdict per object)."""
+    tc = report.get("target_chain") or {}
+    itss_map = tc.get("itss") or {}
+    ss_map = tc.get("screen_schemes") or {}
+    vby = {(c.get("kind"), _sid(c.get("id"))): c for c in (report.get("candidates") or [])}
+
+    def plabels(ids: list[str]) -> list[str]:
+        return [projects.get(_sid(p), _sid(p)) for p in ids if _sid(p) != target_id]
+
+    out: list[dict[str, Any]] = []
+    itss_id = _sid(r.scheme_id)
+    itss = itss_map.get(itss_id) or {}
+    by_ss: dict[str, list[str]] = {}
+    default_ss: str | None = None
+    for m in (itss.get("mappings") or []):
+        it, ss = _sid(m.get("issue_type_id")), _sid(m.get("screen_scheme_id"))
+        by_ss.setdefault(ss, []).append(it)
+        if it == "default":
+            default_ss = ss
+
+    for ss_id, its in by_ss.items():
+        scheme = ss_map.get(ss_id) or {}
+        c = vby.get(("screen_scheme", ss_id)) or {}
+        v = c.get("verdict", "")
+        out.append({
+            "depth": 1, "kind": "screen_scheme",
+            "label": scheme.get("name") or c.get("name") or f"#{ss_id}",
+            "sub": "", "badge": v, "tag": "DEFAULT" if ss_id == default_ss else "",
+            "shared_with": plabels(c.get("reachable_project_ids", [])) if v == "shared" else [],
+            "isolate": ({"project": target_key, "scheme_type": "issuetypescreen",
+                         "node_kind": "screen_scheme", "node_id": ss_id, "itss_id": itss_id}
+                        if v in _ISOLATABLE else None),
+            "note": "",
+        })
+        names = ", ".join(sorted(it_names.get(i, i) for i in its if i != "default"))
+        if "default" in its:
+            names = "모든 작업 유형(기본)" + (f" · {names}" if names else "")
+        if names:
+            out.append({"depth": 2, "kind": "note", "label": "사용 작업 유형", "sub": names,
+                        "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": ""})
+
+        # one row per distinct screen, listing the operations that use it
+        screen_ops: dict[str, list[str]] = {}
+        for op in ("default", "create", "edit", "view"):
+            sid = _sid((scheme.get("screens") or {}).get(op))
+            if sid:
+                screen_ops.setdefault(sid, []).append(op)
+        for sid, ops in screen_ops.items():
+            sc = vby.get(("screen", sid)) or {}
+            v2 = sc.get("verdict", "")
+            out.append({
+                "depth": 2, "kind": "screen", "label": sc.get("name") or f"#{sid}",
+                "sub": " · ".join(_OP_LABEL.get(o, o) for o in ops),
+                "badge": v2, "tag": "",
+                "shared_with": plabels(sc.get("reachable_project_ids", [])) if v2 == "shared" else [],
+                "isolate": ({"project": target_key, "scheme_type": "issuetypescreen",
+                             "node_kind": "screen", "node_id": sid,
+                             "itss_id": itss_id, "screen_scheme_id": ss_id}
+                            if v2 in _ISOLATABLE else None),
+                "note": "",
+            })
+    return out
 
 
 async def _resolve_target(client: WorkboxClient, key_or_id: str):
@@ -352,58 +399,52 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
             rows.append(SchemeRow("권한 스킴", None, "없음", [], [], "확인 불가",
                                   note="이 프로젝트의 권한 스킴을 읽지 못했습니다."))
 
-    # --- deep screen chain for the ITSS node's body -----------------------
-    screen_tables: list[ResultTable] = []
+    # --- deep screen chain (structure + per-node verdicts for the 화면 tree) -
     screen_report: dict[str, Any] = {}
     screen_complete = True
     if "screens" in params.checks:
-      try:
-        async for ev in _screens.plan_stream(_screens.Params(project=target_key)):
-            if ev.type in ("phase", "warning"):
-                yield ev
-                if ev.type == "warning" and ev.message:
-                    warnings.append(ev.message)
-            elif ev.type == "plan" and ev.plan is not None:
-                screen_tables = ev.plan.tables
-                screen_report = ev.plan.data.get(_screens.REPORT_KEY, {})
-                screen_complete = ev.plan.complete
-      except TaskInputError:
-        warnings.append("화면 상세 분석을 건너뛰었습니다 (프로젝트 상태 확인 필요).")
-    # anomalies·워크플로우 전환 화면 표는 상세 증거라 진단 화면에서는 제외(전체는
-    # JSON 내려받기에 있음). 남은 표는 계층 순서로 두고 컬럼을 핵심만 남긴다.
-    _drop = {"anomalies", "workflow_screen_refs"}
-    screen_tables = [t for t in screen_tables if t.key not in _drop]
-    _order = ["issue_type_screen_schemes", "screen_schemes", "screens"]
-    screen_tables.sort(key=lambda t: _order.index(t.key) if t.key in _order else 99)
-    screen_tables = [_slim(t) for t in screen_tables]
+        try:
+            async for ev in _screens.plan_stream(_screens.Params(project=target_key)):
+                if ev.type in ("phase", "warning"):
+                    yield ev
+                    if ev.type == "warning" and ev.message:
+                        warnings.append(ev.message)
+                elif ev.type == "plan" and ev.plan is not None:
+                    screen_report = ev.plan.data.get(_screens.REPORT_KEY, {})
+                    screen_complete = ev.plan.complete
+        except TaskInputError:
+            warnings.append("화면 상세 분석을 건너뛰었습니다 (프로젝트 상태 확인 필요).")
 
-    # --- one accordion group per scheme type; header = brief, body = contents -
-    tables: list[ResultTable] = []
+    it_names = await _issue_type_names(client)
+
+    # --- build the Jira-shaped config tree, one section per category ------
+    sections: list[dict[str, Any]] = []
     for r in rows:
-        badge, note = _VERDICT_KEY.get(r.verdict, "unknown"), _group_note(r)
+        badge = _VERDICT_KEY.get(r.verdict, "unknown")
         can_isolate = r.verdict == "공유됨" and bool(r.isolate_key)
-        action = "분리하기" if can_isolate else ""
-        action_params = (
-            {"project": target_key, "scheme_type": r.isolate_key} if can_isolate else {}
-        )
-        if r.kind == "이슈 유형 화면 스킴" and screen_tables:
-            body = screen_tables
-        elif r.kind == "권한 스킴":
-            # header only — just shared-or-not, no grant list (a columnless table
-            # so the UI renders the header without an expand caret)
-            body = [ResultTable(key="permission_head", title="", group=r.kind)]
-        else:
-            body = [await _contents_table(client, r.kind, r.scheme_id)]
-        # for shared schemes, lead with the exact list of spaces it is shared with
-        if r.verdict == "공유됨" and r.others:
-            body = [_shared_spaces_table(r), *body]
-        for i, t in enumerate(body):
-            t.group = r.kind
-            t.collapsed = True
-            if i == 0:
-                t.group_badge, t.group_note, t.group_action = badge, note, action
-                t.group_action_params = action_params
-        tables.extend(body)
+        scheme_node = {
+            "depth": 0, "kind": "scheme",
+            "label": r.scheme_name if r.scheme_id else "없음",
+            "sub": "", "badge": badge, "tag": "",
+            "shared_with": r.others if r.verdict == "공유됨" else [],
+            "isolate": ({"project": target_key, "scheme_type": r.isolate_key,
+                         "node_kind": "scheme", "node_id": r.scheme_id}
+                        if can_isolate else None),
+            "note": r.note if r.kind == "권한 스킴" else "",
+        }
+        nodes = [scheme_node]
+        if r.kind == "이슈 유형 화면 스킴" and r.scheme_id:
+            nodes += _screen_tree_children(r, screen_report, projects, it_names, target_key, target_id)
+        elif r.kind in ("이슈 타입 스킴", "워크플로우 스킴") and r.scheme_id:
+            contents = await _contents_table(client, r.kind, r.scheme_id)
+            for row in contents.rows:
+                if r.kind == "이슈 타입 스킴":
+                    label, sub = row.get("name", ""), ""
+                else:
+                    label, sub = row.get("workflow", ""), row.get("issue_type", "")
+                nodes.append({"depth": 1, "kind": "leaf", "label": label, "sub": sub,
+                              "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": ""})
+        sections.append({"category": r.kind, "nodes": nodes})
 
     shared = [r for r in rows if r.verdict == "공유됨"]
     if shared:
@@ -425,8 +466,8 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         task=TASK_NAME,
         params_echo={"project": target_key},
         warnings=warnings,
-        tables=tables,
-        data={TASK_NAME: report, _screens.REPORT_KEY: screen_report},
+        tables=[],
+        data={TASK_NAME: report, _screens.REPORT_KEY: screen_report, "config_tree": sections},
         readonly=True,
         complete=screen_complete,
     )
