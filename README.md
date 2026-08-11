@@ -59,6 +59,16 @@ uv sync
      - activate 스크립트를 안 거치고 venv 파이썬을 직접 부르므로 스크립트 실행이 막혀도 됩니다.
      → 브라우저에서 <http://127.0.0.1:8000>
 
+   **uv 설치 (런처 자동 설치가 막혔을 때 수동으로):**
+   - **macOS/Linux:** `curl -LsSf https://astral.sh/uv/install.sh | sh`
+   - **Windows(PowerShell):** `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+   - **대안:** `pip install uv` (파이썬이 이미 있으면) · `winget install --id=astral-sh.uv` (Windows) ·
+     `brew install uv` (macOS Homebrew) · 또는 <https://github.com/astral-sh/uv/releases>에서 `uv` 바이너리 직접 내려받기.
+   - 설치 후 **터미널을 새로 열고** `uv --version` 으로 확인(설치 직후엔 PATH가 아직 안 잡혀 있을 수 있음).
+     기본 설치 위치는 `~/.local/bin`(Windows: `%USERPROFILE%\.local\bin`) — 명령을 못 찾으면 이 경로를 PATH에 추가.
+   - 사내망이 `astral.sh`·PyPI 접근을 막으면 설치가 실패합니다 → 관리자에게 uv 설치를 요청하거나,
+     위 **'uv·PowerShell까지 다 막힌 환경 — 파이썬만으로'** 경로를 쓰세요.
+
 3. 브라우저가 열리면 **접속 정보**에 본인 사이트 URL·이메일·API 토큰을 입력.
    토큰은 <https://id.atlassian.com/manage-profile/security/api-tokens>에서 발급합니다.
 
