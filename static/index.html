@@ -330,6 +330,13 @@
   .lic-log-search { padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; min-width: 150px; }
   .tag-grant { font-size: 11px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok-line); background: var(--ok-bg); padding: 1px 8px; border-radius: 999px; }
   .tag-revoke { font-size: 11px; font-weight: 700; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 1px 8px; border-radius: 999px; }
+  .lic-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px 2px; }
+  .lic-chips .chip {
+    font: inherit; font-size: 12.5px; padding: 4px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
+  }
+  .lic-chips .chip:hover { border-color: var(--accent); }
+  .lic-chips .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   details.advanced { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
   details.advanced > summary {
@@ -684,14 +691,20 @@
                     <option value="30">최근 30일</option>
                     <option value="90">최근 90일</option>
                   </select>
-                  <select class="lic-sel" x-model="liclog.filter">
+                  <select class="lic-sel" x-model="liclog.filter" @change="liclog.page = 1">
                     <option value="all">전체</option>
                     <option value="grant">추가</option>
                     <option value="revoke">삭제</option>
                   </select>
-                  <input type="text" class="lic-log-search" placeholder="사용자·제품 검색" x-model="liclog.q">
+                  <input type="text" class="lic-log-search" placeholder="사용자·제품 검색" x-model="liclog.q" @input="liclog.page = 1">
                   <button class="btn small ghost" @click="loadEvents()" :disabled="liclog.loading">새로고침</button>
                 </span>
+              </template>
+            </div>
+            <!-- product filter chips -->
+            <div class="lic-chips" x-show="health.org_configured && !liclog.err">
+              <template x-for="c in logProducts" :key="c.k">
+                <button class="chip" :class="{ on: liclog.product === c.k }" @click="setLogProduct(c.k)" x-text="c.label"></button>
               </template>
             </div>
             <template x-if="!health.org_configured">
@@ -710,7 +723,7 @@
                       <th>사용자</th><th>제품</th><th style="width:22%">수행자</th>
                     </tr></thead>
                     <tbody>
-                      <template x-for="(e, i) in filteredEvents()" :key="i">
+                      <template x-for="(e, i) in pagedEvents()" :key="i">
                         <tr>
                           <td class="u-off" x-text="fmtTime(e.time)"></td>
                           <td>
@@ -731,6 +744,11 @@
                     </tbody>
                   </table>
                   <div class="sub" x-show="!liclog.loading && !filteredEvents().length" style="padding:12px 14px">표시할 로그가 없습니다.</div>
+                </div>
+                <div class="lic-users-foot" x-show="!liclog.err && logPages() > 1">
+                  <button class="btn small ghost" @click="setLogPage(liclog.page - 1)" :disabled="liclog.page <= 1">이전</button>
+                  <span class="sub"><b x-text="liclog.page"></b> / <span x-text="logPages()"></span> 페이지</span>
+                  <button class="btn small ghost" @click="setLogPage(liclog.page + 1)" :disabled="liclog.page >= logPages()">다음</button>
                 </div>
               </div>
             </template>
@@ -1389,7 +1407,12 @@ document.addEventListener('alpine:init', () => {
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
     orgSetup: { api_key: '' }, orgSetupBusy: false, orgSetupError: '',
-    liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '' },
+    liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '',
+              product: '', page: 1, pageSize: 100 },
+    logProducts: [
+      { label: '전체', k: '' }, { label: 'Jira', k: 'jira' }, { label: 'Confluence', k: 'confluence' },
+      { label: 'JSM (에이전트)', k: 'jsm' }, { label: 'JPD', k: 'jpd' },
+    ],
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], userQ: '', userPage: 1, userPageSize: 100,
             userCache: {}, _preloadCtrl: null },
@@ -1478,7 +1501,7 @@ document.addEventListener('alpine:init', () => {
     // ---------- license change log (org audit events) ----------
     async loadEvents() {
       if (!this.health.org_configured) return;
-      this.liclog.loading = true; this.liclog.err = '';
+      this.liclog.loading = true; this.liclog.err = ''; this.liclog.page = 1;
       try {
         const res = await fetch('/api/license/events?days=' + encodeURIComponent(this.liclog.days));
         const data = await res.json().catch(() => ({}));
@@ -1487,14 +1510,36 @@ document.addEventListener('alpine:init', () => {
       } catch (e) { this.liclog.err = '로그 조회 실패: ' + e; }
       finally { this.liclog.loading = false; }
     },
+    // normalise a product label to a filter-chip key (Jira Software / Work Mgmt
+    // fold into "jira"; JSM and JPD stay distinct)
+    productKey(p) {
+      p = (p || '').toLowerCase();
+      if (p.includes('confluence')) return 'confluence';
+      if (p.includes('service management') || p.includes('service desk') || p.includes('servicedesk')) return 'jsm';
+      if (p.includes('product discovery')) return 'jpd';
+      if (p.includes('jira')) return 'jira';
+      return 'other';
+    },
+    setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
     filteredEvents() {
-      const f = this.liclog.filter, q = (this.liclog.q || '').trim().toLowerCase();
+      const f = this.liclog.filter, pk = this.liclog.product, q = (this.liclog.q || '').trim().toLowerCase();
       return this.liclog.events.filter(e =>
         (f === 'all' || e.kind === f) &&
+        (!pk || this.productKey(e.product) === pk) &&
         (!q || (e.user_name || '').toLowerCase().includes(q)
             || (e.user_email || '').toLowerCase().includes(q)
-            || (e.product || '').toLowerCase().includes(q)));
+            || (e.product || '').toLowerCase().includes(q)
+            || (e.group || '').toLowerCase().includes(q)));
     },
+    pagedEvents() {
+      const list = this.filteredEvents(), size = this.liclog.pageSize;
+      let page = this.liclog.page;
+      const pages = Math.max(1, Math.ceil(list.length / size));
+      if (page > pages) { page = pages; this.liclog.page = pages; }
+      return list.slice((page - 1) * size, page * size);
+    },
+    logPages() { return Math.max(1, Math.ceil(this.filteredEvents().length / this.liclog.pageSize)); },
+    setLogPage(p) { this.liclog.page = Math.max(1, Math.min(p, this.logPages())); },
     logCountLabel() {
       const n = this.filteredEvents().length, total = this.liclog.events.length;
       return (n === total ? ('총 ' + total + '건') : (n + ' / ' + total + '건'));
