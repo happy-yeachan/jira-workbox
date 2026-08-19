@@ -198,6 +198,7 @@ def classify_license_event(ev: dict[str, Any]) -> dict[str, Any] | None:
         "action": _s(attrs.get("action")),
         "product": product,
         "group": group_name,
+        "account_id": _s(user.get("id")),
         "user_name": _s(ua.get("name") or ua.get("displayName") or user.get("name")),
         "user_email": _s(ua.get("email") or ua.get("emailAddress")),
         "actor_name": _s(actor.get("name") or actor.get("displayName")),

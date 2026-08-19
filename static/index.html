@@ -337,6 +337,13 @@
   }
   .lic-chips .chip:hover { border-color: var(--accent); }
   .lic-chips .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* indeterminate loading bar */
+  .progbar { height: 3px; background: var(--accent-soft); overflow: hidden; position: relative; }
+  .progbar::before {
+    content: ''; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%;
+    background: var(--accent); border-radius: 2px; animation: progslide 1.1s ease-in-out infinite;
+  }
+  @keyframes progslide { 0% { left: -40%; } 60% { left: 100%; } 100% { left: 100%; } }
 
   details.advanced { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
   details.advanced > summary {
@@ -605,6 +612,7 @@
             <span style="flex:1"></span>
             <button class="btn small ghost" @click="loadDashboard()" :disabled="dash.loading">새로고침</button>
           </div>
+          <div class="progbar" x-show="dash.loading || anyPreloading()" style="margin-bottom:10px; border-radius:2px"></div>
           <div class="notice err" x-show="dash.err" x-text="dash.err" style="margin-bottom:10px"></div>
           <div class="dash-cards">
             <template x-for="a in dash.apps" :key="a.key">
@@ -653,6 +661,7 @@
               <input type="text" placeholder="이름·이메일 검색" x-model="dash.userQ" @input="dash.userPage = 1">
               <button class="btn small ghost" @click="closeUsers()">닫기</button>
             </div>
+            <div class="progbar" x-show="usersBusy()"></div>
             <div class="sub" x-show="!usersBusy() && !usersErr() && seatNote()"
                  x-text="seatNote()" style="padding:8px 14px 0"></div>
             <div class="notice err" x-show="usersErr()" x-text="usersErr()" style="margin:10px 14px"></div>
@@ -701,6 +710,7 @@
                 </span>
               </template>
             </div>
+            <div class="progbar" x-show="liclog.loading"></div>
             <!-- product filter chips -->
             <div class="lic-chips" x-show="health.org_configured && !liclog.err">
               <template x-for="c in logProducts" :key="c.k">

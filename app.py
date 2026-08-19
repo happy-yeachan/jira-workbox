@@ -439,6 +439,33 @@ async def license_summary() -> dict[str, object]:
     return {"applications": apps}
 
 
+async def _enrich_display_names(rows: list[dict[str, object]]) -> None:
+    """Org events carry only the target's email; look up real display names by
+    accountId via the site token's /user/bulk (best-effort, bounded, in place)."""
+    ids = list({str(r.get("account_id")) for r in rows if r.get("account_id")})[:300]
+    if not ids:
+        return
+    try:
+        client = get_client()
+    except RuntimeError:
+        return
+    names: dict[str, str] = {}
+    for i in range(0, len(ids), 90):
+        chunk = ids[i:i + 90]
+        try:
+            data = await client.get_json("/user/bulk", params={"accountId": chunk, "maxResults": 200})
+        except UpstreamError:
+            break
+        for u in (data.get("values") or []):
+            aid, dn = str(u.get("accountId") or ""), str(u.get("displayName") or "")
+            if aid and dn:
+                names[aid] = dn
+    for r in rows:
+        dn = names.get(str(r.get("account_id")))
+        if dn:
+            r["user_name"] = dn
+
+
 def _org_client_or_none() -> OrgClient | None:
     """Build an org-admin client from the stored org key, or None if not set up.
     The caller must ``aclose()`` it."""
@@ -498,6 +525,7 @@ async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
                     break
         out.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
         out = out[:1000]
+        await _enrich_display_names(out)
     except UpstreamError as exc:
         if exc.status_code == 429:
             raise HTTPException(
