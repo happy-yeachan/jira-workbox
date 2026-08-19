@@ -324,6 +324,9 @@ TASK = register(
             title="라이선스 현황",
             description="Jira 애플리케이션별 시트(총·사용·남음)와 요금제를 한 번에 봅니다. 조회 전용입니다.",
             readonly=True,
+            # shown as the home dashboard instead — keep the module (the dashboard
+            # reuses its functions) but drop the now-duplicate launcher card
+            launcher=False,
         ),
         params_model=Params,
         plan_stream=plan_stream,
