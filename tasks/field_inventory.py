@@ -63,7 +63,13 @@ def type_label(custom_key: str) -> str:
     if not custom_key:
         return "-"
     suffix = custom_key.split(":")[-1]
-    return _TYPE_LABEL.get(suffix, suffix)
+    if suffix in _TYPE_LABEL:
+        return _TYPE_LABEL[suffix]
+    # app-provided (Connect/Forge) fields carry opaque keys like
+    # "extension/<app>/<env>/static/<key>" — the raw string is noise, not a type.
+    if "extension/" in custom_key or "/" in suffix or len(suffix) > 24:
+        return "앱 필드"
+    return suffix
 
 
 async def fetch_fields(client: WorkboxClient, query: str = "") -> list[dict[str, Any]]:

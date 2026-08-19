@@ -347,6 +347,10 @@
   .opt { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: #f6f7f9; }
   .opt.off { color: var(--muted); text-decoration: line-through; opacity: .7; }
   .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+  /* field list: fixed layout so a long value can't force a horizontal scroll */
+  .fields-table { table-layout: fixed; width: 100%; }
+  .fields-table td, .fields-table th { overflow: hidden; text-overflow: ellipsis; word-break: break-word; }
+  .fields-table td:nth-child(2) { white-space: nowrap; }
   .chk input { width: auto; }
   .ctx-opts-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .ctx-editor { margin-top: 10px; }
@@ -826,7 +830,7 @@
             <div class="notice err" x-show="fieldmgr.err" x-text="fieldmgr.err" style="margin-bottom:10px"></div>
             <div class="lic-users" x-show="!fieldmgr.err">
               <div class="lic-users-body">
-                <table>
+                <table class="fields-table">
                   <thead><tr>
                     <th style="width:34%">이름</th><th>유형</th>
                     <th style="width:90px">컨텍스트</th><th style="width:140px">스페이스 스코프</th>
