@@ -589,11 +589,17 @@
                     <span x-text="a.name"></span>
                     <span class="plan-pill" x-show="a.plan_label" x-text="a.plan_label"></span>
                   </div>
-                  <div class="lic-seats" x-show="!a.unlimited">
-                    <b x-text="a.used ?? '—'"></b> / <span x-text="a.total ?? '—'"></span> 시트
-                  </div>
-                  <div class="lic-seats" x-show="a.unlimited"><b x-text="a.used ?? '—'"></b> 사용 · 무제한</div>
-                  <div class="lic-remain" x-show="!a.unlimited && a.remaining !== null" x-text="'남음 ' + a.remaining + ' 시트'"></div>
+                  <template x-if="!a.unlimited && a.total !== null">
+                    <div class="lic-seats"><b x-text="a.used ?? '—'"></b> / <span x-text="a.total"></span> <span x-text="a.seat_noun"></span></div>
+                  </template>
+                  <template x-if="!a.unlimited && a.total === null">
+                    <div class="lic-seats"><b x-text="a.used ?? '—'"></b> <span x-text="a.seat_noun"></span> 사용</div>
+                  </template>
+                  <template x-if="a.unlimited">
+                    <div class="lic-seats"><b x-text="a.used ?? '—'"></b> 사용 · 무제한</div>
+                  </template>
+                  <div class="lic-remain" x-show="!a.unlimited && a.remaining !== null" x-text="'남음 ' + a.remaining + ' ' + a.seat_noun"></div>
+                  <div class="lic-remain" x-show="a.total === null && !a.unlimited">접근 그룹 구성원 기준 · 총 시트 미제공</div>
                 </div>
               </button>
             </template>
@@ -604,10 +610,10 @@
           <div class="lic-users" x-show="dash.selApp">
             <div class="lic-users-h">
               <h3><span x-text="dash.selAppName"></span> 사용자</h3>
-              <span class="sub" x-show="dash.usersLoading">불러오는 중…</span>
-              <span class="sub" x-show="!dash.usersLoading && !dash.usersErr" x-text="userCountLabel()"></span>
+              <span class="sub" x-show="!dash.usersErr" x-text="userCountLabel()"></span>
+              <span class="sub" x-show="dash.usersLoading">· 불러오는 중…</span>
               <input type="text" placeholder="이름·이메일 검색" x-model="dash.userQ" @input="dash.userPage = 1">
-              <button class="btn small ghost" @click="dash.selApp=''">닫기</button>
+              <button class="btn small ghost" @click="closeUsers()">닫기</button>
             </div>
             <div class="sub" x-show="!dash.usersLoading && !dash.usersErr && seatNote()"
                  x-text="seatNote()" style="padding:8px 14px 0"></div>
@@ -1287,7 +1293,7 @@ document.addEventListener('alpine:init', () => {
     setup: { site_url: '', email: '', api_token: '' },
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], usersLoading: false, usersErr: '', userQ: '', capped: false,
-            userPage: 1, userPageSize: 100 },
+            userPage: 1, userPageSize: 100, _ctrl: null },
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
@@ -1355,19 +1361,51 @@ document.addEventListener('alpine:init', () => {
       } catch (e) { this.dash.err = '라이선스 조회 실패: ' + e; }
       finally { this.dash.loading = false; }
     },
+    closeUsers() {
+      if (this.dash._ctrl) { this.dash._ctrl.abort(); this.dash._ctrl = null; }
+      this.dash.selApp = ''; this.dash.users = []; this.dash.usersLoading = false;
+    },
     async selectDashApp(key) {
-      if (this.dash.selApp === key) { this.dash.selApp = ''; return; }  // toggle off
+      if (this.dash.selApp === key) { this.closeUsers(); return; }  // toggle off
+      if (this.dash._ctrl) this.dash._ctrl.abort();  // drop a previous stream
       const a = this.dash.apps.find(x => x.key === key);
       this.dash.selApp = key; this.dash.selAppName = a ? a.name : key;
       this.dash.users = []; this.dash.userQ = ''; this.dash.usersErr = '';
       this.dash.capped = false; this.dash.usersLoading = true; this.dash.userPage = 1;
+      // Stream the (possibly huge) member union so rows appear as they arrive
+      // and the count climbs live, instead of freezing until the whole set loads.
+      const ctrl = new AbortController(); this.dash._ctrl = ctrl;
       try {
-        const res = await fetch('/api/license/users?app=' + encodeURIComponent(key));
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) { this.dash.usersErr = this.errText(data) || '사용자 조회 실패'; return; }
-        this.dash.users = data.users || []; this.dash.capped = !!data.capped;
-      } catch (e) { this.dash.usersErr = '사용자 조회 실패: ' + e; }
-      finally { this.dash.usersLoading = false; }
+        const res = await fetch('/api/license/users/stream?app=' + encodeURIComponent(key),
+                                { signal: ctrl.signal });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          this.dash.usersErr = this.errText(d) || '사용자 조회 실패';
+          this.dash.usersLoading = false; return;
+        }
+        const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+            if (ev.type === 'batch') this.dash.users.push(...ev.users);
+            else if (ev.type === 'done') this.dash.capped = !!ev.capped;
+            else if (ev.type === 'error') this.dash.usersErr = ev.message || '사용자 조회 실패';
+          }
+        }
+        // one stable sort once loaded (streaming appends in arrival order)
+        this.dash.users.sort((x, y) =>
+          (x.name || '').toLowerCase().localeCompare((y.name || '').toLowerCase()));
+      } catch (e) {
+        if (e.name !== 'AbortError') this.dash.usersErr = '사용자 조회 실패: ' + e;
+      } finally {
+        if (this.dash._ctrl === ctrl) { this.dash.usersLoading = false; this.dash._ctrl = null; }
+      }
     },
     filteredUsers() {
       const q = (this.dash.userQ || '').trim().toLowerCase();
@@ -1388,6 +1426,7 @@ document.addEventListener('alpine:init', () => {
     setUserPage(p) { this.dash.userPage = Math.max(1, Math.min(p, this.userPages())); },
     userCountLabel() {
       const n = this.filteredUsers().length, total = this.dash.users.length;
+      if (this.dash.usersLoading) return n + '명';  // climbs live while streaming
       const base = (n === total) ? ('총 ' + total + '명') : (n + ' / ' + total + '명');
       return base + (this.dash.capped ? ' (상한 도달)' : '');
     },

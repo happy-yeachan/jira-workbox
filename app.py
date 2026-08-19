@@ -395,6 +395,32 @@ async def license_users(
     return result
 
 
+@app.get("/api/license/users/stream")
+async def license_users_stream(app_key: str = Query(alias="app")) -> StreamingResponse:
+    """Progressive user list for one application, as newline-delimited JSON. The
+    union of a 10k+ member license streams in batches so the dashboard fills as
+    it loads instead of blocking on the whole thing."""
+    from tasks import license_status
+    client = _require_client()
+    if not app_key.strip():
+        raise HTTPException(status_code=422, detail="애플리케이션 키가 필요합니다.")
+
+    async def lines() -> AsyncIterator[str]:
+        try:
+            async for ev in license_status.stream_application_users(client, app_key.strip()):
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — surface it in the stream
+            log.exception("license user stream failed: app=%s", app_key)
+            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}) + "\n"
+
+    return StreamingResponse(
+        lines(), media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 def _tpl_label(node: dict[str, object]) -> str:
     """The display name — the internal endpoint puts it in title.label, an object."""
     title = node.get("title")

@@ -39,6 +39,15 @@ TASK_NAME = "license_status"
 _P_ROLES = "/applicationrole"
 _P_LICENSE = "/instance/license"
 _P_GROUP_MEMBER = "/group/member"
+_P_GROUPS_PICKER = "/groups/picker"
+
+#: synthetic application key for the Confluence card (not a Jira application role)
+_CONFLUENCE_KEY = "confluence"
+#: what one seat is called, per application (JSM bills agents, not users)
+_SEAT_NOUN = {"jira-servicedesk": "에이전트"}
+#: group-name prefixes that grant Confluence product access (best-effort — the
+#: site token has no Confluence seat API, so we count the access group instead)
+_CONFLUENCE_GROUP_PREFIX = "confluence-users"
 
 #: how close to full before we call it out
 _LOW_REMAINING = 5
@@ -111,19 +120,71 @@ async def fetch_applications(client: WorkboxClient) -> list[dict[str, Any]]:
             "plan": plan_raw, "plan_label": _PLAN_LABEL.get(plan_raw, plan_raw),
             "total": total, "used": used, "remaining": remaining,
             "unlimited": unlimited, "pct": pct,
+            "seat_noun": _SEAT_NOUN.get(key, "시트"),
         })
+
+    conf = await _confluence_card(client)
+    if conf is not None:
+        out.append(conf)
     return out
 
 
-async def application_users(
-    client: WorkboxClient, app_key: str, q: str = "", limit: int = _USER_CAP
-) -> dict[str, Any] | None:
-    """Licensed users of one application = the union of its access-group members.
+async def _confluence_groups(client: WorkboxClient) -> list[dict[str, str]]:
+    """Best-effort Confluence access groups: those named ``confluence-users*``
+    (``confluence-users`` on older sites, ``confluence-users-<site>`` on newer).
+    Returns ``[{id, name}]`` — empty if none are visible to the site token."""
+    try:
+        picked = await client.get_json(_P_GROUPS_PICKER,
+                                       params={"query": _CONFLUENCE_GROUP_PREFIX, "maxResults": 50})
+    except UpstreamError:
+        return []
+    out: list[dict[str, str]] = []
+    for g in (picked.get("groups") or []):
+        name = _sid(g.get("name"))
+        if g.get("groupId") and name.startswith(_CONFLUENCE_GROUP_PREFIX):
+            out.append({"id": _sid(g["groupId"]), "name": name})
+    return out
 
-    Returns ``{key, name, count, capped, users:[{account_id, name, email,
-    active}]}`` or ``None`` if the application key is unknown. Groups are read
-    concurrently; results are deduped by accountId and app/system accounts are
-    dropped."""
+
+async def _group_total(client: WorkboxClient, gid: str) -> int | None:
+    """Active member count of a group in one cheap call (the page bean's total)."""
+    try:
+        page = await client.get_json(
+            _P_GROUP_MEMBER,
+            params={"groupId": gid, "includeInactiveUsers": "false", "maxResults": 1})
+    except UpstreamError:
+        return None
+    return _int(page.get("total"))
+
+
+async def _confluence_card(client: WorkboxClient) -> dict[str, Any] | None:
+    """A Confluence seat card built from access-group membership. Total seats are
+    not available via the site token, so ``total`` is None; ``used`` is the group
+    member count. ``None`` when no Confluence access group is found."""
+    groups = await _confluence_groups(client)
+    if not groups:
+        return None
+    totals = [t for t in [await _group_total(client, g["id"]) for g in groups] if t is not None]
+    # one group is the norm; more than one can double-count, so flag it
+    used = max(totals) if totals else None
+    return {
+        "key": _CONFLUENCE_KEY, "name": "Confluence", "plan": "", "plan_label": "",
+        "total": None, "used": used, "remaining": None,
+        "unlimited": False, "pct": None, "seat_noun": "시트",
+        "approx": len(groups) > 1,
+        "group_ids": [g["id"] for g in groups],
+    }
+
+
+async def _resolve_groups(
+    client: WorkboxClient, app_key: str
+) -> tuple[str | None, list[str]]:
+    """(display name, access-group ids) for an application, or ``(None, [])`` if
+    the key is unknown. Handles the synthetic Confluence card and Jira roles."""
+    if app_key == _CONFLUENCE_KEY:
+        groups = await _confluence_groups(client)
+        return ("Confluence" if groups else None), [g["id"] for g in groups]
+
     try:
         roles = await client.get_json(_P_ROLES)
     except UpstreamError as exc:
@@ -137,25 +198,90 @@ async def application_users(
     roles = roles if isinstance(roles, list) else []
     role = next((r for r in roles if _sid(r.get("key")) == app_key), None)
     if role is None:
-        return None
+        return None, []
 
     group_ids = [_sid(g.get("groupId")) for g in (role.get("groupDetails") or []) if g.get("groupId")]
-    # fall back to resolving names when groupDetails carries no ids
-    if not group_ids:
+    if not group_ids:  # fall back to resolving names when groupDetails has no ids
         for name in (role.get("groups") or []):
             try:
-                picked = await client.get_json("/groups/picker", params={"query": name, "maxResults": 1})
+                picked = await client.get_json(_P_GROUPS_PICKER, params={"query": name, "maxResults": 1})
             except UpstreamError:
                 continue
             for g in (picked.get("groups") or []):
                 if g.get("name") == name and g.get("groupId"):
                     group_ids.append(_sid(g["groupId"]))
+    return (_sid(role.get("name")) or app_key), group_ids
+
+
+def _member_user(m: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalise a group member to a licensed user, or None to skip it (app or
+    system accounts, and deactivated users — they hold no seat)."""
+    aid = _sid(m.get("accountId"))
+    if not aid or m.get("accountType") not in (None, "atlassian") or m.get("active") is False:
+        return None
+    return {"account_id": aid, "name": _sid(m.get("displayName")) or aid,
+            "email": m.get("emailAddress"), "active": True}
+
+
+async def stream_application_users(
+    client: WorkboxClient, app_key: str, batch_size: int = 200, limit: int = _USER_CAP
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield the licensed users of an application progressively so the UI can
+    fill in as members arrive instead of blocking on the whole (possibly 10k+)
+    union. Events: ``{type:'meta', name}``, ``{type:'batch', users:[…]}`` (new,
+    deduped), ``{type:'done', count, capped}``, or ``{type:'error', message}``."""
+    try:
+        name, group_ids = await _resolve_groups(client, app_key)
+    except TaskInputError as exc:
+        yield {"type": "error", "message": str(exc)}
+        return
+    if name is None:
+        yield {"type": "error", "message": f"없는 애플리케이션입니다: {app_key}"}
+        return
+
+    yield {"type": "meta", "name": name}
+    seen: set[str] = set()
+    buf: list[dict[str, Any]] = []
+    capped = False
+    for gid in group_ids:
+        try:
+            async for m in client.paginate_offset(
+                _P_GROUP_MEMBER, items_key="values",
+                params={"groupId": gid, "includeInactiveUsers": "false"}, page_size=50):
+                u = _member_user(m)
+                if u is None or u["account_id"] in seen:
+                    continue
+                seen.add(u["account_id"])
+                if len(seen) > limit:
+                    capped = True
+                    break
+                buf.append(u)
+                if len(buf) >= batch_size:
+                    yield {"type": "batch", "users": buf}
+                    buf = []
+        except UpstreamError:
+            pass
+        if capped:
+            break
+    if buf:
+        yield {"type": "batch", "users": buf}
+    yield {"type": "done", "count": len(seen) - (1 if capped else 0), "capped": capped}
+
+
+async def application_users(
+    client: WorkboxClient, app_key: str, q: str = "", limit: int = _USER_CAP
+) -> dict[str, Any] | None:
+    """Non-streaming union of an application's access-group members. Kept for the
+    plan/task and tests; the dashboard uses ``stream_application_users``.
+
+    Returns ``{key, name, count, capped, users:[…]}`` or ``None`` if unknown."""
+    name, group_ids = await _resolve_groups(client, app_key)
+    if name is None:
+        return None
 
     async def members(gid: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         try:
-            # active only — deactivated users don't consume a seat, so including
-            # them would make the list disagree with the application's seat count
             async for m in client.paginate_offset(
                 _P_GROUP_MEMBER, items_key="values",
                 params={"groupId": gid, "includeInactiveUsers": "false"}, page_size=50):
@@ -167,13 +293,9 @@ async def application_users(
     users: dict[str, dict[str, Any]] = {}
     async for _i, _gid, rows in map_bounded(group_ids, members, limit=8):
         for m in rows:
-            aid = _sid(m.get("accountId"))
-            if not aid or m.get("accountType") not in (None, "atlassian") or m.get("active") is False:
-                continue
-            users.setdefault(aid, {
-                "account_id": aid, "name": _sid(m.get("displayName")) or aid,
-                "email": m.get("emailAddress"), "active": True,
-            })
+            u = _member_user(m)
+            if u is not None:
+                users.setdefault(u["account_id"], u)
 
     rows = sorted(users.values(), key=lambda u: (u["name"] or "").lower())
     if q.strip():
@@ -182,8 +304,7 @@ async def application_users(
                 or needle in (u.get("email") or "").lower()]
     total = len(rows)
     capped = total > limit
-    return {"key": app_key, "name": _sid(role.get("name")) or app_key,
-            "count": total, "capped": capped, "users": rows[:limit]}
+    return {"key": app_key, "name": name, "count": total, "capped": capped, "users": rows[:limit]}
 
 
 async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:

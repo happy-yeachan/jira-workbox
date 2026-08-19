@@ -494,6 +494,69 @@ async def suite_license_users() -> None:
     set_client(None)
 
 
+def _license_stream_site():
+    """One big Jira Software group (to exercise batching), a JSM role, and a
+    discoverable confluence-users group."""
+    big = [{"accountId": f"u{i}", "displayName": f"User {i:04d}", "emailAddress": f"u{i}@x",
+            "active": True, "accountType": "atlassian"} for i in range(250)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p, q = request.url.path, request.url.params
+        if p == "/rest/api/3/applicationrole":
+            return httpx.Response(200, json=[
+                {"key": "jira-software", "name": "Jira Software", "numberOfSeats": 15000,
+                 "userCount": 250, "hasUnlimitedSeats": False,
+                 "groupDetails": [{"name": "jira-software-users", "groupId": "g-sw"}]},
+                {"key": "jira-servicedesk", "name": "Jira Service Management", "numberOfSeats": 200,
+                 "userCount": 139, "hasUnlimitedSeats": False,
+                 "groupDetails": [{"name": "jsm-agents", "groupId": "g-jsm"}]}])
+        if p == "/rest/api/3/instance/license":
+            return httpx.Response(200, json={"applications": []})
+        if p == "/rest/api/3/groups/picker":
+            if "confluence" in (q.get("query") or ""):
+                return httpx.Response(200, json={"groups": [
+                    {"name": "confluence-users-site", "groupId": "g-conf"},
+                    {"name": "confluence-admins", "groupId": "g-cadm"}]})
+            return httpx.Response(200, json={"groups": []})
+        if p == "/rest/api/3/group/member":
+            rows = big if q.get("groupId") == "g-sw" else big[:80]
+            start = int(q.get("startAt", 0)); mx = int(q.get("maxResults", 50))
+            page = rows[start:start + mx]
+            return httpx.Response(200, json={"values": page, "startAt": start, "maxResults": mx,
+                                             "total": len(rows), "isLast": start + mx >= len(rows)})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+    return handler
+
+
+async def suite_license_stream() -> None:
+    print("license_status: streaming users, JSM agent seats, Confluence card")
+    import tasks.license_status as lic
+    client = _client_for(_license_stream_site())
+    set_client(client)
+
+    apps = {a["key"]: a for a in await lic.fetch_applications(client)}
+    check("JSM seat noun is 에이전트", apps["jira-servicedesk"]["seat_noun"] == "에이전트")
+    check("other apps keep 시트", apps["jira-software"]["seat_noun"] == "시트")
+    check("Confluence card added from confluence-users group",
+          "confluence" in apps and apps["confluence"]["used"] == 80
+          and apps["confluence"]["total"] is None, apps.get("confluence"))
+
+    events = [e async for e in lic.stream_application_users(client, "jira-software")]
+    check("stream starts meta, ends done", events[0]["type"] == "meta" and events[-1]["type"] == "done")
+    streamed = sum(len(e["users"]) for e in events if e["type"] == "batch")
+    check("streamed in multiple batches", sum(1 for e in events if e["type"] == "batch") >= 2)
+    check("all members streamed", streamed == 250 and events[-1]["count"] == 250)
+
+    capped = [e async for e in lic.stream_application_users(client, "jira-software", limit=100)]
+    check("cap flagged and stream stops at limit",
+          capped[-1]["capped"] is True
+          and sum(len(e["users"]) for e in capped if e["type"] == "batch") <= 100)
+    err = [e async for e in lic.stream_application_users(client, "nope")]
+    check("unknown app streams an error event", err[0]["type"] == "error")
+    await client.aclose()
+    set_client(None)
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -502,6 +565,8 @@ async def main() -> None:
     await suite_license()
     print()
     await suite_license_users()
+    print()
+    await suite_license_stream()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")
