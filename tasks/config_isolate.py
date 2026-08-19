@@ -498,8 +498,20 @@ def _wf_create_payload(read: dict[str, Any], orig_name: str, new_name: str) -> d
             return [remap(x) for x in node]
         return node
 
-    wf: dict[str, Any] = {"name": new_name,
-                          "statuses": remap(w.get("statuses") or []),
+    # workflow.statuses must declare EVERY status the transitions reference, or
+    # create 400s with "Transition refers to a status that does not exist within
+    # this workflow". The top-level statuses ARE this workflow's statuses (we read
+    # one workflow), so build workflow.statuses from all of them, carrying any
+    # layout/properties the read gave per status.
+    extra_by_ref: dict[str, dict[str, Any]] = {}
+    for s in (w.get("statuses") or []):
+        u = ref_map.get(_sid(s.get("statusReference")))
+        if u:
+            extra_by_ref[u] = {k: s[k] for k in ("layout", "properties") if s.get(k) is not None}
+    wf_statuses = [{"statusReference": s["statusReference"], **extra_by_ref.get(s["statusReference"], {})}
+                   for s in top]
+
+    wf: dict[str, Any] = {"name": new_name, "statuses": wf_statuses,
                           "transitions": remap(w.get("transitions") or [])}
     for k in ("description", "startPointLayout"):
         if w.get(k):
