@@ -326,7 +326,7 @@
   .lic-users .u-tag { font-size: 10.5px; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 0 6px; border-radius: 999px; }
   .lic-users-foot { display: flex; align-items: center; justify-content: center; gap: 12px;
                     padding: 10px 14px; border-top: 1px solid var(--line-soft); }
-  .lic-sel { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; background: var(--surface); }
+  .lic-sel { padding: 6px 26px 6px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; background: var(--surface); flex: none; min-width: 96px; }
   .lic-log-search { padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; min-width: 150px; }
   .tag-grant { font-size: 11px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok-line); background: var(--ok-bg); padding: 1px 8px; border-radius: 999px; }
   .tag-revoke { font-size: 11px; font-weight: 700; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 1px 8px; border-radius: 999px; }
@@ -1694,7 +1694,10 @@ document.addEventListener('alpine:init', () => {
 
     // ---------- 필드 관리 ----------
     openFields() {
-      this.selected = null; this.landingView = 'fields'; this.fields.detail = null;
+      this.selected = null; this.landingView = 'fields';
+      // back to the list from a clean state (a stale detail/search/page could
+      // otherwise leave the view looking blank)
+      this.fields.detail = null; this.fields.q = ''; this.fields.page = 1;
       // cached: only fetch the first time (or after 새로고침), not on every visit
       if (!this.fields.list.length && !this.fields.loading) this.loadFields();
     },
@@ -1822,13 +1825,19 @@ document.addEventListener('alpine:init', () => {
     setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
     filteredEvents() {
       const f = this.liclog.filter, pk = this.liclog.product, q = (this.liclog.q || '').trim().toLowerCase();
-      return this.liclog.events.filter(e =>
-        (f === 'all' || e.kind === f) &&
-        (!pk || this.productKey(e.product) === pk) &&
-        (!q || (e.user_name || '').toLowerCase().includes(q)
-            || (e.user_email || '').toLowerCase().includes(q)
-            || (e.product || '').toLowerCase().includes(q)
-            || (e.group || '').toLowerCase().includes(q)));
+      // client-side date window too: the org /events `from` filter is unreliable,
+      // so the 7/30/90일 selector is guaranteed to narrow here.
+      const cutoff = Date.now() - (this.liclog.days || 90) * 86400000;
+      return this.liclog.events.filter(e => {
+        if (f !== 'all' && e.kind !== f) return false;
+        if (pk && this.productKey(e.product) !== pk) return false;
+        if (e.time) { const t = Date.parse(e.time); if (!isNaN(t) && t < cutoff) return false; }
+        if (q && !((e.user_name || '').toLowerCase().includes(q)
+                || (e.user_email || '').toLowerCase().includes(q)
+                || (e.product || '').toLowerCase().includes(q)
+                || (e.group || '').toLowerCase().includes(q))) return false;
+        return true;
+      });
     },
     pagedEvents() {
       const list = this.filteredEvents(), size = this.liclog.pageSize;
