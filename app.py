@@ -448,32 +448,42 @@ def _org_client_or_none() -> OrgClient | None:
     return OrgClient(creds, load_settings())
 
 
+#: the org events API is heavily rate-limited, so keep the scan small: stop after
+#: this many events read (a handful of pages) or once `limit` license events found.
+_EVENT_SCAN_CAP = 1000
+
+
 @app.get("/api/license/events")
-async def license_events(days: int = 30, limit: int = 500) -> dict[str, object]:
+async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
     """License add/remove log from the org audit events (product-access grants
-    and revokes). Needs the org admin key (403 otherwise). Newest first."""
+    and revokes). Needs the org admin key (403 otherwise). Newest first.
+
+    The org events API rate-limits aggressively, so this reads only a few pages
+    (``_EVENT_SCAN_CAP``) and surfaces a 429 as a clear "try again shortly"."""
     from core import org_client
     org = _org_client_or_none()
     if org is None:
         raise HTTPException(status_code=403,
                             detail="조직 admin API 키가 설정되지 않았습니다. 접속 정보에서 연결하세요.")
     days = max(1, min(days, 365))
-    limit = max(1, min(limit, 2000))
+    limit = max(1, min(limit, 1000))
     from_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
     scanned = 0
     out: list[dict[str, object]] = []
     try:
         org_id = await org.org_id()
-        async for ev in org.iter_events(org_id, from_ms=from_ms):
+        async for ev in org.iter_events(org_id, from_ms=from_ms, page_size=100):
             scanned += 1
-            if scanned > 20000:  # backstop against an unbounded window
-                break
             row = org_client.classify_license_event(ev)
             if row is not None:
                 out.append(row)
-                if len(out) >= limit:
-                    break
+            if len(out) >= limit or scanned >= _EVENT_SCAN_CAP:
+                break
     except UpstreamError as exc:
+        if exc.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="조직 이벤트 API 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.") from None
         code = 403 if exc.status_code in (401, 403) else 502
         raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     finally:
