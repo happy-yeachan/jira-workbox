@@ -433,6 +433,19 @@ async def list_space_templates(raw: bool = False) -> dict[str, object]:
     return {"available": True, "templates": _extract_templates(data)}
 
 
+@app.get("/api/debug/workflow")
+async def debug_workflow(name: str) -> dict[str, object]:
+    """Raw v2 workflow read (POST /workflows) for one workflow name — so the
+    exact statuses/transitions shape can be inspected when a clone create fails.
+    Read-only; nothing is written."""
+    client = _require_client()
+    try:
+        data = await client.json("POST", "/workflows", json={"workflowNames": [name]})
+    except (UpstreamError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return data
+
+
 @app.get("/api/tasks")
 async def list_tasks() -> list[dict[str, object]]:
     """Specs plus the params JSON schema the UI renders the form from."""
