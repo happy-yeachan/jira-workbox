@@ -179,11 +179,6 @@ def store_org_credentials(api_key: str, org_id: str = "") -> None:
     keyring.set_password(SERVICE, _KEY_ORG_ID, (org_id or "").strip())
 
 
-def store_org_id(org_id: str) -> None:
-    """Persist the org id once discovered, so later runs skip the lookup."""
-    keyring.set_password(SERVICE, _KEY_ORG_ID, (org_id or "").strip())
-
-
 def delete_org_credentials() -> None:
     for key in (_KEY_ORG_API_KEY, _KEY_ORG_ID):
         try:

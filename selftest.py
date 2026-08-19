@@ -27,6 +27,30 @@ import tempfile
 # app reads. Honours an already-set WORKBOX_LOG_DIR if the caller provided one.
 os.environ.setdefault("WORKBOX_LOG_DIR", tempfile.mkdtemp(prefix="workbox-selftest-"))
 
+# Force an in-memory keyring so the tests can NEVER read or write the operator's
+# real OS credential store (a mocked org client must not persist a test org id).
+import keyring
+import keyring.backend
+
+
+class _MemoryKeyring(keyring.backend.KeyringBackend):
+    priority = 1
+
+    def __init__(self) -> None:
+        self._store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, user: str) -> str | None:
+        return self._store.get((service, user))
+
+    def set_password(self, service: str, user: str, password: str) -> None:
+        self._store[(service, user)] = password
+
+    def delete_password(self, service: str, user: str) -> None:
+        self._store.pop((service, user), None)
+
+
+keyring.set_keyring(_MemoryKeyring())
+
 from typing import Any
 
 import httpx

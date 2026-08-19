@@ -12,16 +12,21 @@ when it is not configured the license-log view simply prompts to connect it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
-from core.auth import OrgCredentials, store_org_id
+from core.auth import OrgCredentials
 from core.config import Settings
 from core.http import BaseApiClient, UpstreamError, build_async_client
 
 ORG_API_BASE = "https://api.atlassian.com/admin/v1"
+
+#: real org ids are UUIDs; anything else stored (e.g. a stale test value) is
+#: ignored so we re-discover instead of hitting /events with a bogus id.
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 #: action-string keywords that mark a product-access grant vs revoke. Matched
 #: case-insensitively against the event's ``action`` (exact strings vary by
@@ -56,7 +61,7 @@ class OrgClient(BaseApiClient):
             settings,
             build_async_client(settings, auth=_BearerAuth(creds), transport=transport),
         )
-        self._org_id = creds.org_id or ""
+        self._org_id = creds.org_id if _UUID_RE.match(creds.org_id or "") else ""
 
     def url_for(self, path: str) -> str:
         if path.startswith("http://") or path.startswith("https://"):
@@ -66,8 +71,10 @@ class OrgClient(BaseApiClient):
         return f"{ORG_API_BASE}{path}"
 
     async def org_id(self) -> str:
-        """The organisation id — stored value, else the first from GET /orgs
-        (persisted so later runs skip the lookup)."""
+        """The organisation id — the credentials' stored value, else the first
+        from GET /orgs. Discovery here is in-memory only; persistence happens in
+        the setup endpoint (store_org_credentials), never as a read side effect —
+        so tests that mock GET /orgs can't write to the real keyring."""
         if self._org_id:
             return self._org_id
         data = await self.get_json("/orgs")
@@ -75,8 +82,6 @@ class OrgClient(BaseApiClient):
         if not orgs:
             raise UpstreamError("이 API 키로 볼 수 있는 조직이 없습니다.", status_code=404)
         self._org_id = str(orgs[0].get("id") or "")
-        if self._org_id:
-            store_org_id(self._org_id)
         return self._org_id
 
     async def iter_events(
