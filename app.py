@@ -491,6 +491,41 @@ async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
     return {"events": out, "days": days, "scanned": scanned, "capped": len(out) >= limit}
 
 
+@app.get("/api/debug/org-events")
+async def debug_org_events(days: int = 30, samples: int = 8) -> dict[str, object]:
+    """Diagnostic: what the org events API actually returns, so classification can
+    be matched to the real shape. Returns the distinct `action` values seen (with
+    counts) plus a few raw events. Read-only; bounded scan to spare the rate limit."""
+    org = _org_client_or_none()
+    if org is None:
+        raise HTTPException(status_code=403, detail="조직 admin API 키가 설정되지 않았습니다.")
+    days = max(1, min(days, 365))
+    samples = max(1, min(samples, 30))
+    from_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    actions: dict[str, int] = {}
+    raw: list[dict[str, object]] = []
+    scanned = 0
+    try:
+        org_id = await org.org_id()
+        async for ev in org.iter_events(org_id, from_ms=from_ms, page_size=100):
+            scanned += 1
+            action = str(((ev.get("attributes") or {}).get("action")) or "")
+            actions[action] = actions.get(action, 0) + 1
+            if len(raw) < samples:
+                raw.append(ev)
+            if scanned >= _EVENT_SCAN_CAP:
+                break
+    except UpstreamError as exc:
+        if exc.status_code == 429:
+            raise HTTPException(status_code=429, detail="요청 한도 초과 · 잠시 후 다시 시도하세요.") from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
+    finally:
+        await org.aclose()
+    top = sorted(actions.items(), key=lambda kv: -kv[1])
+    return {"scanned": scanned, "distinct_actions": top, "samples": raw}
+
+
 @app.get("/api/license/users")
 async def license_users(
     app_key: str = Query(alias="app"), q: str = ""
