@@ -578,15 +578,9 @@
 <main x-show="health.configured !== false && !setupOpen">
   <nav>
     <div style="margin-bottom:14px">
-      <button @click="selected = null; homeView = 'dashboard'"
-              :aria-current="String(!selected && homeView === 'dashboard')">
+      <button @click="selected = null" :aria-current="String(!selected)">
         <span class="t">라이선스 현황</span>
-        <span class="d">애플리케이션별 시트 사용량</span>
-      </button>
-      <button @click="selected = null; homeView = 'log'"
-              :aria-current="String(!selected && homeView === 'log')">
-        <span class="t">라이선스 변경 로그</span>
-        <span class="d">제품 접근 추가·삭제 이력</span>
+        <span class="d">시트 사용량 · 변경 로그</span>
       </button>
     </div>
     <template x-for="group in groups" :key="group.name">
@@ -609,13 +603,13 @@
   <section class="work">
     <template x-if="!selected">
       <div class="landing-wrap">
-        <div class="hero" x-show="homeView === 'dashboard'">
+        <div class="hero">
           <h1>워크박스</h1>
-          <p class="sub">왼쪽에서 작업을 고르거나, 라이선스 현황·변경 로그를 확인하세요. 변경 작업은 실행 전에 항상 미리보기로 대상을 확인하고, 실행한 뒤에는 <b>작업 기록</b>에서 되돌릴 수 있습니다.</p>
+          <p class="sub">왼쪽에서 작업을 고르거나, 아래 라이선스 현황·변경 로그를 확인하세요. 변경 작업은 실행 전에 항상 미리보기로 대상을 확인하고, 실행한 뒤에는 <b>작업 기록</b>에서 되돌릴 수 있습니다.</p>
         </div>
 
         <!-- license dashboard — auto-loaded, the landing headline -->
-        <div class="dash" x-show="health.configured && homeView === 'dashboard'">
+        <div class="dash" x-show="health.configured">
           <div class="dash-h">
             <h2>라이선스 현황</h2>
             <span class="sub" x-show="dash.loading">불러오는 중…</span>
@@ -697,8 +691,8 @@
           </div>
         </div>
 
-        <!-- license change log — its own home view, chosen from the sidebar -->
-        <div class="dash" x-show="health.configured && homeView === 'log'">
+        <!-- license change log — stacked below the dashboard on the same view -->
+        <div class="dash" x-show="health.configured">
           <div class="lic-users">
             <div class="lic-users-h">
               <h3>라이선스 변경 로그</h3>
@@ -1411,7 +1405,6 @@ document.addEventListener('alpine:init', () => {
     orgSetup: { api_key: '' }, orgSetupBusy: false, orgSetupError: '',
     liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100 },
-    homeView: 'dashboard',
     logProducts: [
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
       { label: 'JSM (agent)', k: 'jsm' }, { label: 'Confluence', k: 'confluence' },
