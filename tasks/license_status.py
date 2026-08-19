@@ -43,8 +43,8 @@ _P_GROUP_MEMBER = "/group/member"
 #: how close to full before we call it out
 _LOW_REMAINING = 5
 _HIGH_USAGE = 0.9
-#: hard cap so a huge group can't return an unbounded user list to the browser
-_USER_CAP = 5000
+#: hard cap so a pathological group can't return an unbounded list to the browser
+_USER_CAP = 50000
 
 _PLAN_LABEL = {
     "PAID": "유료", "FREE": "무료", "TRIAL": "평가판",
@@ -154,9 +154,11 @@ async def application_users(
     async def members(gid: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         try:
+            # active only — deactivated users don't consume a seat, so including
+            # them would make the list disagree with the application's seat count
             async for m in client.paginate_offset(
                 _P_GROUP_MEMBER, items_key="values",
-                params={"groupId": gid, "includeInactiveUsers": "true"}, page_size=50):
+                params={"groupId": gid, "includeInactiveUsers": "false"}, page_size=50):
                 rows.append(m)
         except UpstreamError:
             pass
@@ -166,11 +168,11 @@ async def application_users(
     async for _i, _gid, rows in map_bounded(group_ids, members, limit=8):
         for m in rows:
             aid = _sid(m.get("accountId"))
-            if not aid or m.get("accountType") not in (None, "atlassian"):
+            if not aid or m.get("accountType") not in (None, "atlassian") or m.get("active") is False:
                 continue
             users.setdefault(aid, {
                 "account_id": aid, "name": _sid(m.get("displayName")) or aid,
-                "email": m.get("emailAddress"), "active": bool(m.get("active")),
+                "email": m.get("emailAddress"), "active": True,
             })
 
     rows = sorted(users.values(), key=lambda u: (u["name"] or "").lower())

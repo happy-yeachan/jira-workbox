@@ -483,13 +483,12 @@ async def suite_license_users() -> None:
 
     res = await lic.application_users(client, "jira-software")
     names = [u["name"] for u in res["users"]]
-    check("union deduped + sorted, app account dropped", names == ["Alice", "Bob", "Carol"], names)
-    check("count + not capped", res["count"] == 3 and not res["capped"])
-    check("inactive user flagged",
-          next(u for u in res["users"] if u["name"] == "Carol")["active"] is False)
+    check("union deduped + sorted; app account + inactive dropped (seat-count aligned)",
+          names == ["Alice", "Bob"], names)
+    check("count + not capped", res["count"] == 2 and not res["capped"])
 
-    res_q = await lic.application_users(client, "jira-software", q="carol")
-    check("server-side q filter", [u["name"] for u in res_q["users"]] == ["Carol"])
+    res_q = await lic.application_users(client, "jira-software", q="alice")
+    check("server-side q filter", [u["name"] for u in res_q["users"]] == ["Alice"])
     check("unknown app -> None (404 upstream)", await lic.application_users(client, "nope") is None)
     await client.aclose()
     set_client(None)

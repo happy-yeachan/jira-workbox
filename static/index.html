@@ -324,6 +324,8 @@
   .lic-users th { position: sticky; top: 0; background: var(--surface); color: var(--muted); font-weight: 600; font-size: 11.5px; }
   .lic-users .u-off { color: var(--muted); }
   .lic-users .u-tag { font-size: 10.5px; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 0 6px; border-radius: 999px; }
+  .lic-users-foot { display: flex; align-items: center; justify-content: center; gap: 12px;
+                    padding: 10px 14px; border-top: 1px solid var(--line-soft); }
 
   details.advanced { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
   details.advanced > summary {
@@ -604,24 +606,30 @@
               <h3><span x-text="dash.selAppName"></span> 사용자</h3>
               <span class="sub" x-show="dash.usersLoading">불러오는 중…</span>
               <span class="sub" x-show="!dash.usersLoading && !dash.usersErr" x-text="userCountLabel()"></span>
-              <input type="text" placeholder="이름·이메일 검색" x-model="dash.userQ">
+              <input type="text" placeholder="이름·이메일 검색" x-model="dash.userQ" @input="dash.userPage = 1">
               <button class="btn small ghost" @click="dash.selApp=''">닫기</button>
             </div>
+            <div class="sub" x-show="!dash.usersLoading && !dash.usersErr && seatNote()"
+                 x-text="seatNote()" style="padding:8px 14px 0"></div>
             <div class="notice err" x-show="dash.usersErr" x-text="dash.usersErr" style="margin:10px 14px"></div>
             <div class="lic-users-body" x-show="!dash.usersErr">
               <table>
-                <thead><tr><th style="width:34%">이름</th><th>이메일</th><th style="width:70px">상태</th></tr></thead>
+                <thead><tr><th style="width:40%">이름</th><th>이메일</th></tr></thead>
                 <tbody>
-                  <template x-for="u in filteredUsers()" :key="u.account_id">
+                  <template x-for="u in pagedUsers()" :key="u.account_id">
                     <tr>
                       <td x-text="u.name"></td>
                       <td class="u-off" x-text="u.email || '—'"></td>
-                      <td><span x-show="u.active">활성</span><span class="u-tag" x-show="!u.active">비활성</span></td>
                     </tr>
                   </template>
                 </tbody>
               </table>
               <div class="sub" x-show="!dash.usersLoading && !filteredUsers().length" style="padding:12px 14px">해당 사용자가 없습니다.</div>
+            </div>
+            <div class="lic-users-foot" x-show="!dash.usersErr && userPages() > 1">
+              <button class="btn small ghost" @click="setUserPage(dash.userPage - 1)" :disabled="dash.userPage <= 1">이전</button>
+              <span class="sub"><b x-text="dash.userPage"></b> / <span x-text="userPages()"></span> 페이지</span>
+              <button class="btn small ghost" @click="setUserPage(dash.userPage + 1)" :disabled="dash.userPage >= userPages()">다음</button>
             </div>
           </div>
         </div>
@@ -1278,7 +1286,8 @@ document.addEventListener('alpine:init', () => {
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
-            users: [], usersLoading: false, usersErr: '', userQ: '', capped: false },
+            users: [], usersLoading: false, usersErr: '', userQ: '', capped: false,
+            userPage: 1, userPageSize: 100 },
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
@@ -1351,7 +1360,7 @@ document.addEventListener('alpine:init', () => {
       const a = this.dash.apps.find(x => x.key === key);
       this.dash.selApp = key; this.dash.selAppName = a ? a.name : key;
       this.dash.users = []; this.dash.userQ = ''; this.dash.usersErr = '';
-      this.dash.capped = false; this.dash.usersLoading = true;
+      this.dash.capped = false; this.dash.usersLoading = true; this.dash.userPage = 1;
       try {
         const res = await fetch('/api/license/users?app=' + encodeURIComponent(key));
         const data = await res.json().catch(() => ({}));
@@ -1366,10 +1375,30 @@ document.addEventListener('alpine:init', () => {
       return this.dash.users.filter(u =>
         (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q));
     },
+    // render only the current page so a 10k-member license stays snappy
+    pagedUsers() {
+      const list = this.filteredUsers();
+      const size = this.dash.userPageSize;
+      let page = this.dash.userPage;
+      const pages = Math.max(1, Math.ceil(list.length / size));
+      if (page > pages) { page = pages; this.dash.userPage = pages; }
+      return list.slice((page - 1) * size, page * size);
+    },
+    userPages() { return Math.max(1, Math.ceil(this.filteredUsers().length / this.dash.userPageSize)); },
+    setUserPage(p) { this.dash.userPage = Math.max(1, Math.min(p, this.userPages())); },
     userCountLabel() {
       const n = this.filteredUsers().length, total = this.dash.users.length;
       const base = (n === total) ? ('총 ' + total + '명') : (n + ' / ' + total + '명');
       return base + (this.dash.capped ? ' (상한 도달)' : '');
+    },
+    // active licensed users can differ from the billed seat count (agents vs
+    // users, cross-application seats) — say so instead of looking wrong
+    seatNote() {
+      const a = this.dash.apps.find(x => x.key === this.dash.selApp);
+      if (!a || a.unlimited || a.used == null) return '';
+      const total = this.dash.users.length;
+      if (total === a.used) return '';
+      return '접근 그룹의 활성 사용자 기준 · 시트 사용 수(' + a.used + ')와 다를 수 있습니다';
     },
     donutDash(a) {
       const C = 2 * Math.PI * 30;
