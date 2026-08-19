@@ -120,11 +120,15 @@ class ExecuteRequest(BaseModel):
 
 
 class SetupRequest(BaseModel):
-    """Write-only. Nothing in this model is ever sent back to a client."""
+    """Write-only. Nothing in this model is ever sent back to a client.
+
+    ``keep_token`` re-saves the site/email while leaving the stored token as-is,
+    so reconnecting doesn't force the operator to paste the token again."""
 
     site_url: str = Field(min_length=1, max_length=200)
     email: str = Field(min_length=3, max_length=200)
-    api_token: SecretStr = Field(min_length=1)
+    api_token: SecretStr | None = None
+    keep_token: bool = False
 
 
 class OrgSetupRequest(BaseModel):
@@ -258,6 +262,9 @@ async def health() -> dict[str, object]:
         "detail": detail,
         "site_url": client.site_url,
         "account_email": mask_email(client.email),
+        # the operator's own login email, for prefilling the setup form (not a
+        # secret; localhost single-operator tool). Never returns the token.
+        "login_email": client.email,
         "account_name": account,
         **common,
     }
@@ -280,9 +287,15 @@ async def setup_credentials(body: SetupRequest, request: Request) -> dict[str, o
     if "@" not in email:
         raise HTTPException(status_code=422, detail="이메일 주소 형식이 아닙니다.")
 
-    token = body.api_token.get_secret_value().strip()
-    if not token:
-        raise HTTPException(status_code=422, detail="API 토큰이 비어 있습니다.")
+    if body.keep_token:
+        existing = load_credentials()
+        if existing is None:
+            raise HTTPException(status_code=422, detail="저장된 토큰이 없습니다. API 토큰을 입력하세요.")
+        token = existing.api_token.get_secret_value()
+    else:
+        token = body.api_token.get_secret_value().strip() if body.api_token else ""
+        if not token:
+            raise HTTPException(status_code=422, detail="API 토큰이 비어 있습니다.")
 
     store_credentials(site_url, email, token)
 

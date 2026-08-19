@@ -449,7 +449,7 @@
   <button class="btn small ghost" @click="toggleHistory()" x-show="health.configured">
     작업 기록<span x-show="history.length" x-text="' (' + history.length + ')'"></span>
   </button>
-  <button class="btn small ghost" @click="setupOpen = !setupOpen" x-show="health.configured">접속 정보</button>
+  <button class="btn small ghost" @click="setupOpen ? (setupOpen = false) : openSetup()" x-show="health.configured">접속 정보</button>
 </header>
 
 <template x-for="w in (health.security_warnings || [])">
@@ -483,14 +483,16 @@
         </label>
 
         <label class="field">
-          <span class="name">API 토큰</span>
+          <span class="name">API 토큰 <span class="pill" x-show="setup.api_token === KEEP_TOKEN">저장됨</span></span>
           <span class="hint">
             <a href="https://id.atlassian.com/manage-profile/security/api-tokens"
                target="_blank" rel="noopener noreferrer">id.atlassian.com</a>에서 발급합니다.
-            저장되는 즉시 이 화면에서 지워집니다.
+            <span x-show="setup.api_token === KEEP_TOKEN">저장된 토큰이 유지됩니다 · 변경할 때만 새 토큰을 입력하세요.</span>
+            <span x-show="setup.api_token !== KEEP_TOKEN">저장되는 즉시 이 화면에서 지워집니다.</span>
           </span>
           <input type="password" x-model="setup.api_token" autocomplete="new-password"
                  spellcheck="false" data-1p-ignore data-lpignore="true"
+                 @focus="if (setup.api_token === KEEP_TOKEN) setup.api_token = ''"
                  @keydown.enter="saveCredentials()">
         </label>
 
@@ -519,7 +521,9 @@
             <span class="name">조직 admin API 키</span>
             <input type="password" x-model="orgSetup.api_key" autocomplete="new-password"
                    spellcheck="false" data-1p-ignore data-lpignore="true"
-                   placeholder="붙여넣기" @keydown.enter="saveOrgKey()">
+                   placeholder="붙여넣기"
+                   @focus="if (orgSetup.api_key === KEEP_ORG) orgSetup.api_key = ''"
+                   @keydown.enter="saveOrgKey()">
           </label>
           <div class="notice err" x-show="orgSetupError" x-text="orgSetupError" style="margin-top:10px"></div>
           <div class="row" style="margin-top:12px">
@@ -726,7 +730,7 @@
             <template x-if="!health.org_configured">
               <div class="sub" style="padding:14px">
                 조직 admin API 키를 연결하면 라이선스 추가·삭제 로그를 볼 수 있습니다 (사이트 토큰으로는 불가).
-                <a href="#" @click.prevent="setupOpen = true">접속 정보에서 연결 →</a>
+                <a href="#" @click.prevent="openSetup()">접속 정보에서 연결 →</a>
               </div>
             </template>
             <template x-if="health.org_configured">
@@ -1403,6 +1407,8 @@ document.addEventListener('alpine:init', () => {
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
     orgSetup: { api_key: '' }, orgSetupBusy: false, orgSetupError: '',
+    // sentinels shown as masked dots meaning "keep the stored secret unchanged"
+    KEEP_TOKEN: ' keep-token ', KEEP_ORG: ' keep-org ',
     liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100 },
     logProducts: [
@@ -1444,15 +1450,36 @@ document.addEventListener('alpine:init', () => {
       } catch (e) { this.error = '상태 확인 실패: ' + e; }
     },
 
+    // Open the setup panel prefilled with the current connection: real site +
+    // email, and the token shown as masked dots (a sentinel) so it reads as
+    // "connected" rather than a blank form. The token is never sent back by the
+    // server — the dots are a placeholder, kept unless the operator types a new
+    // one. Same for the org key.
+    openSetup() {
+      if (this.health.configured) {
+        this.setup = {
+          site_url: this.health.site_url || '',
+          email: this.health.login_email || '',
+          api_token: this.KEEP_TOKEN,
+        };
+        this.orgSetup.api_key = this.health.org_configured ? this.KEEP_ORG : '';
+      }
+      this.setupError = ''; this.orgSetupError = '';
+      this.setupOpen = true;
+    },
     async saveCredentials() {
       this.setupBusy = true; this.setupError = '';
       try {
+        const keep = this.setup.api_token === this.KEEP_TOKEN;  // token unchanged
+        const body = keep
+          ? { site_url: this.setup.site_url, email: this.setup.email, keep_token: true }
+          : { site_url: this.setup.site_url, email: this.setup.email, api_token: this.setup.api_token };
         const res = await fetch('/api/setup/credentials', {
           method: 'POST',
           // The custom header is the CSRF guard: a page on another origin
           // cannot send it without a preflight this server never answers.
           headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
-          body: JSON.stringify(this.setup),
+          body: JSON.stringify(body),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { this.setupError = this.errText(data); return; }
@@ -1468,6 +1495,8 @@ document.addEventListener('alpine:init', () => {
       }
     },
     async saveOrgKey() {
+      // unchanged sentinel = already connected, nothing to do
+      if (this.orgSetup.api_key === this.KEEP_ORG) { this.orgSetupError = '이미 연결되어 있습니다.'; return; }
       this.orgSetupBusy = true; this.orgSetupError = '';
       try {
         const res = await fetch('/api/setup/org', {
@@ -1477,7 +1506,7 @@ document.addEventListener('alpine:init', () => {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { this.orgSetupError = this.errText(data); return; }
-        this.orgSetup.api_key = '';
+        this.orgSetup.api_key = this.KEEP_ORG;
         await this.refreshHealth();
         this.loadEvents();  // the log is available now
       } catch (e) { this.orgSetupError = '저장 실패: ' + e; }
@@ -1488,6 +1517,7 @@ document.addEventListener('alpine:init', () => {
       try {
         const res = await fetch('/api/setup/org', { method: 'DELETE', headers: { 'X-Workbox-Setup': '1' } });
         if (!res.ok) { const d = await res.json().catch(() => ({})); this.orgSetupError = this.errText(d); return; }
+        this.orgSetup.api_key = '';
         await this.refreshHealth();
         this.liclog.events = [];
       } catch (e) { this.orgSetupError = '해제 실패: ' + e; }
