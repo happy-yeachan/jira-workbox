@@ -560,6 +560,59 @@ async def suite_license_stream() -> None:
     set_client(None)
 
 
+def _org_events_client():
+    """OrgClient over a MockTransport for the admin events API: a product-access
+    grant, a revoke, and one unrelated event (must be skipped)."""
+    from core.auth import OrgCredentials
+    from core.org_client import OrgClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/admin/v1/orgs":
+            return httpx.Response(200, json={"data": [{"id": "org-1"}]})
+        if p == "/admin/v1/orgs/org-1/events":
+            return httpx.Response(200, json={"data": [
+                {"id": "e1", "attributes": {
+                    "time": "2026-08-01T10:00:00Z", "action": "user_product_access_granted",
+                    "actor": {"name": "Admin A", "email": "admin@x"},
+                    "context": [{"type": "user", "attributes": {"name": "Alice", "email": "alice@x"}},
+                                {"type": "product", "attributes": {"name": "Jira Software"}}]}},
+                {"id": "e2", "attributes": {
+                    "time": "2026-08-02T11:00:00Z", "action": "user_product_access_revoked",
+                    "actor": {"name": "Admin A", "email": "admin@x"},
+                    "context": [{"type": "user", "attributes": {"name": "Bob", "email": "bob@x"}},
+                                {"type": "product", "attributes": {"name": "Confluence"}}]}},
+                {"id": "e3", "attributes": {"time": "2026-08-03T12:00:00Z", "action": "user_logged_in",
+                                            "actor": {"name": "Bob"}}},
+            ], "links": {}})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+
+    creds = OrgCredentials(api_key=SecretStr("org-key"))
+    return OrgClient(creds, load_settings(), transport=httpx.MockTransport(handler))
+
+
+async def suite_license_events() -> None:
+    print("license log: org audit events classified into grant/revoke")
+    from core import org_client
+    org = _org_events_client()
+    org_id = await org.org_id()
+    check("org id discovered from /orgs", org_id == "org-1", org_id)
+    rows = []
+    async for ev in org.iter_events(org_id):
+        row = org_client.classify_license_event(ev)
+        if row is not None:
+            rows.append(row)
+    check("only product-access events kept (login skipped)", len(rows) == 2, [r["action"] for r in rows])
+    grant = next((r for r in rows if r["kind"] == "grant"), None)
+    revoke = next((r for r in rows if r["kind"] == "revoke"), None)
+    check("grant: user + product extracted",
+          grant and grant["user_name"] == "Alice" and grant["product"] == "Jira Software"
+          and grant["actor_name"] == "Admin A", grant)
+    check("revoke classified with its product",
+          revoke and revoke["user_name"] == "Bob" and revoke["product"] == "Confluence", revoke)
+    await org.aclose()
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -570,6 +623,8 @@ async def main() -> None:
     await suite_license_users()
     print()
     await suite_license_stream()
+    print()
+    await suite_license_events()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")

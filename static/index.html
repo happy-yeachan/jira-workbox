@@ -326,6 +326,10 @@
   .lic-users .u-tag { font-size: 10.5px; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 0 6px; border-radius: 999px; }
   .lic-users-foot { display: flex; align-items: center; justify-content: center; gap: 12px;
                     padding: 10px 14px; border-top: 1px solid var(--line-soft); }
+  .lic-sel { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; background: var(--surface); }
+  .lic-log-search { padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; min-width: 150px; }
+  .tag-grant { font-size: 11px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok-line); background: var(--ok-bg); padding: 1px 8px; border-radius: 999px; }
+  .tag-revoke { font-size: 11px; font-weight: 700; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 1px 8px; border-radius: 999px; }
 
   details.advanced { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
   details.advanced > summary {
@@ -485,6 +489,33 @@
           </button>
           <button class="btn ghost" x-show="health.configured" @click="setupOpen = false">닫기</button>
         </div>
+
+        <!-- optional: organisation admin API key → license change log -->
+        <details class="advanced" style="margin-top:20px" x-show="health.configured">
+          <summary>
+            조직 API 키 (라이선스 변경 로그 · 선택)
+            <span class="pill" x-show="health.org_configured" style="margin-left:6px">연결됨</span>
+          </summary>
+          <p class="hint" style="margin:10px 0">
+            라이선스 추가/삭제 로그는 조직 감사 이벤트에서 옵니다(사이트 토큰으로는 불가).
+            <a href="https://admin.atlassian.net" target="_blank" rel="noopener noreferrer">admin.atlassian.net</a>
+            → 설정 → API 키에서 만든 <b>조직 admin API 키</b>를 넣으세요.
+            키는 OS 키체인에 저장만 하고 이 화면으로 다시 내려오지 않습니다.
+          </p>
+          <label class="field">
+            <span class="name">조직 admin API 키</span>
+            <input type="password" x-model="orgSetup.api_key" autocomplete="new-password"
+                   spellcheck="false" data-1p-ignore data-lpignore="true"
+                   placeholder="붙여넣기" @keydown.enter="saveOrgKey()">
+          </label>
+          <div class="notice err" x-show="orgSetupError" x-text="orgSetupError" style="margin-top:10px"></div>
+          <div class="row" style="margin-top:12px">
+            <button class="btn" @click="saveOrgKey()" :disabled="orgSetupBusy">
+              <span x-text="orgSetupBusy ? '확인 중…' : (health.org_configured ? '키 교체' : '키 저장')"></span>
+            </button>
+            <button class="btn ghost" x-show="health.org_configured" @click="deleteOrgKey()" :disabled="orgSetupBusy">연결 해제</button>
+          </div>
+        </details>
       </div>
     </div>
   </div>
@@ -637,6 +668,69 @@
               <span class="sub"><b x-text="dash.userPage"></b> / <span x-text="userPages()"></span> 페이지</span>
               <button class="btn small ghost" @click="setUserPage(dash.userPage + 1)" :disabled="dash.userPage >= userPages()">다음</button>
             </div>
+          </div>
+
+          <!-- license change log (org audit events: product access granted/revoked) -->
+          <div class="lic-users">
+            <div class="lic-users-h">
+              <h3>라이선스 변경 로그</h3>
+              <span class="sub" x-show="liclog.loading">· 불러오는 중…</span>
+              <span class="sub" x-show="!liclog.loading && !liclog.err && health.org_configured" x-text="logCountLabel()"></span>
+              <span style="flex:1"></span>
+              <template x-if="health.org_configured">
+                <span style="display:flex; gap:6px; align-items:center">
+                  <select class="lic-sel" x-model.number="liclog.days" @change="loadEvents()">
+                    <option value="7">최근 7일</option>
+                    <option value="30">최근 30일</option>
+                    <option value="90">최근 90일</option>
+                  </select>
+                  <select class="lic-sel" x-model="liclog.filter">
+                    <option value="all">전체</option>
+                    <option value="grant">추가</option>
+                    <option value="revoke">삭제</option>
+                  </select>
+                  <input type="text" class="lic-log-search" placeholder="사용자·제품 검색" x-model="liclog.q">
+                  <button class="btn small ghost" @click="loadEvents()" :disabled="liclog.loading">새로고침</button>
+                </span>
+              </template>
+            </div>
+            <template x-if="!health.org_configured">
+              <div class="sub" style="padding:14px">
+                조직 admin API 키를 연결하면 라이선스 추가·삭제 로그를 볼 수 있습니다 (사이트 토큰으로는 불가).
+                <a href="#" @click.prevent="setupOpen = true">접속 정보에서 연결 →</a>
+              </div>
+            </template>
+            <template x-if="health.org_configured">
+              <div>
+                <div class="notice err" x-show="liclog.err" x-text="liclog.err" style="margin:10px 14px"></div>
+                <div class="lic-users-body" x-show="!liclog.err">
+                  <table>
+                    <thead><tr>
+                      <th style="width:160px">시각</th><th style="width:64px">작업</th>
+                      <th>사용자</th><th>제품</th><th style="width:22%">수행자</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="(e, i) in filteredEvents()" :key="i">
+                        <tr>
+                          <td class="u-off" x-text="fmtTime(e.time)"></td>
+                          <td>
+                            <span class="tag-grant" x-show="e.kind === 'grant'">추가</span>
+                            <span class="tag-revoke" x-show="e.kind === 'revoke'">삭제</span>
+                          </td>
+                          <td>
+                            <span x-text="e.user_name || '—'"></span>
+                            <span class="sub" x-show="e.user_email" x-text="' · ' + e.user_email"></span>
+                          </td>
+                          <td x-text="e.product || '—'"></td>
+                          <td class="u-off" x-text="e.actor_name || e.actor_email || '—'"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                  <div class="sub" x-show="!liclog.loading && !filteredEvents().length" style="padding:12px 14px">표시할 로그가 없습니다.</div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -1291,6 +1385,8 @@ document.addEventListener('alpine:init', () => {
     tp: { all: [], loaded: false, manual: false },
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
+    orgSetup: { api_key: '' }, orgSetupBusy: false, orgSetupError: '',
+    liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '' },
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], userQ: '', userPage: 1, userPageSize: 100,
             userCache: {}, _preloadCtrl: null },
@@ -1349,6 +1445,64 @@ document.addEventListener('alpine:init', () => {
         this.setupBusy = false;
       }
     },
+    async saveOrgKey() {
+      this.orgSetupBusy = true; this.orgSetupError = '';
+      try {
+        const res = await fetch('/api/setup/org', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({ api_key: this.orgSetup.api_key, org_id: '' }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.orgSetupError = this.errText(data); return; }
+        this.orgSetup.api_key = '';
+        await this.refreshHealth();
+        this.loadEvents();  // the log is available now
+      } catch (e) { this.orgSetupError = '저장 실패: ' + e; }
+      finally { this.orgSetupBusy = false; }
+    },
+    async deleteOrgKey() {
+      this.orgSetupBusy = true; this.orgSetupError = '';
+      try {
+        const res = await fetch('/api/setup/org', { method: 'DELETE', headers: { 'X-Workbox-Setup': '1' } });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.orgSetupError = this.errText(d); return; }
+        await this.refreshHealth();
+        this.liclog.events = [];
+      } catch (e) { this.orgSetupError = '해제 실패: ' + e; }
+      finally { this.orgSetupBusy = false; }
+    },
+
+    // ---------- license change log (org audit events) ----------
+    async loadEvents() {
+      if (!this.health.org_configured) return;
+      this.liclog.loading = true; this.liclog.err = '';
+      try {
+        const res = await fetch('/api/license/events?days=' + encodeURIComponent(this.liclog.days));
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.liclog.err = this.errText(data) || '로그 조회 실패'; this.liclog.events = []; return; }
+        this.liclog.events = data.events || [];
+      } catch (e) { this.liclog.err = '로그 조회 실패: ' + e; }
+      finally { this.liclog.loading = false; }
+    },
+    filteredEvents() {
+      const f = this.liclog.filter, q = (this.liclog.q || '').trim().toLowerCase();
+      return this.liclog.events.filter(e =>
+        (f === 'all' || e.kind === f) &&
+        (!q || (e.user_name || '').toLowerCase().includes(q)
+            || (e.user_email || '').toLowerCase().includes(q)
+            || (e.product || '').toLowerCase().includes(q)));
+    },
+    logCountLabel() {
+      const n = this.filteredEvents().length, total = this.liclog.events.length;
+      return (n === total ? ('총 ' + total + '건') : (n + ' / ' + total + '건'));
+    },
+    fmtTime(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      if (isNaN(d)) return iso;
+      const p = (x) => String(x).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
 
     // ---------- license dashboard ----------
     async loadDashboard() {
@@ -1364,6 +1518,8 @@ document.addEventListener('alpine:init', () => {
       // opening any card is instant (the counts/donuts already show immediately).
       this.dash.userCache = {};
       this.preloadUsers();
+      // and the license change log (org audit events), if the org key is set
+      this.loadEvents();
     },
     // Minimal NDJSON reader for the per-application user stream.
     async readNdjson(res, onEvent) {

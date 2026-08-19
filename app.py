@@ -24,6 +24,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -35,12 +36,17 @@ import tasks
 from core.auth import (
     SETUP_HINT,
     Credentials,
+    OrgCredentials,
+    delete_org_credentials,
     load_credentials,
+    load_org_credentials,
     mask_email,
     normalize_site_url,
     store_credentials,
+    store_org_credentials,
 )
 from core.client import UpstreamError, WorkboxClient, get_client, set_client
+from core.org_client import OrgClient
 from core import planstore, rollback
 from core.config import BASE_DIR, load_settings
 from core.models import ExecOptions, PlanResult, ProgressEvent
@@ -119,6 +125,14 @@ class SetupRequest(BaseModel):
     site_url: str = Field(min_length=1, max_length=200)
     email: str = Field(min_length=3, max_length=200)
     api_token: SecretStr = Field(min_length=1)
+
+
+class OrgSetupRequest(BaseModel):
+    """Write-only. The org admin API key (a different secret from the site token)
+    and an optional org id (auto-discovered when omitted)."""
+
+    api_key: SecretStr = Field(min_length=1)
+    org_id: str = Field(default="", max_length=100)
 
 
 def _require_client() -> WorkboxClient:
@@ -210,6 +224,9 @@ async def health() -> dict[str, object]:
         "plan_ttl_seconds": settings.plan_ttl_seconds,
         "readonly_plan_ttl_seconds": settings.readonly_plan_ttl_seconds,
         "pending_plans": pending_count(),
+        # whether an org admin API key is stored (enables the license event log).
+        # Never returns the key itself.
+        "org_configured": load_org_credentials() is not None,
     }
 
     try:
@@ -291,6 +308,39 @@ async def setup_credentials(body: SetupRequest, request: Request) -> dict[str, o
     log.info("credentials stored via web setup: site=%s account=%s",
              site_url, mask_email(email))
     return {"ok": True, "site_url": site_url, "account_email": mask_email(email)}
+
+
+@app.post("/api/setup/org")
+async def setup_org(body: OrgSetupRequest, request: Request) -> dict[str, object]:
+    """Store the organisation admin API key (write-only). Verifies it against
+    GET /orgs before saving, so a bad key is rejected up front. The key is never
+    read back or returned."""
+    _guard_setup_request(request)
+    key = body.api_key.get_secret_value().strip()
+    if not key:
+        raise HTTPException(status_code=422, detail="조직 API 키가 비어 있습니다.")
+    creds = OrgCredentials(api_key=SecretStr(key), org_id=body.org_id.strip())
+    del key
+    client = OrgClient(creds, load_settings())
+    try:
+        org_id = await client.org_id()
+    except UpstreamError as exc:
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code,
+                            detail=f"조직 API 키를 확인하지 못했습니다: {exc}"[:200]) from None
+    finally:
+        await client.aclose()
+    store_org_credentials(creds.api_key.get_secret_value(), org_id)
+    log.info("org admin key stored via web setup: org_id=%s", org_id)
+    return {"ok": True, "org_id": org_id}
+
+
+@app.delete("/api/setup/org")
+async def delete_org(request: Request) -> dict[str, object]:
+    """Remove the stored org admin API key."""
+    _guard_setup_request(request)
+    delete_org_credentials()
+    return {"ok": True}
 
 
 @app.get("/api/groups")
@@ -387,6 +437,48 @@ async def license_summary() -> dict[str, object]:
     except UpstreamError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
     return {"applications": apps}
+
+
+def _org_client_or_none() -> OrgClient | None:
+    """Build an org-admin client from the stored org key, or None if not set up.
+    The caller must ``aclose()`` it."""
+    creds = load_org_credentials()
+    if creds is None:
+        return None
+    return OrgClient(creds, load_settings())
+
+
+@app.get("/api/license/events")
+async def license_events(days: int = 30, limit: int = 500) -> dict[str, object]:
+    """License add/remove log from the org audit events (product-access grants
+    and revokes). Needs the org admin key (403 otherwise). Newest first."""
+    from core import org_client
+    org = _org_client_or_none()
+    if org is None:
+        raise HTTPException(status_code=403,
+                            detail="조직 admin API 키가 설정되지 않았습니다. 접속 정보에서 연결하세요.")
+    days = max(1, min(days, 365))
+    limit = max(1, min(limit, 2000))
+    from_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    scanned = 0
+    out: list[dict[str, object]] = []
+    try:
+        org_id = await org.org_id()
+        async for ev in org.iter_events(org_id, from_ms=from_ms):
+            scanned += 1
+            if scanned > 20000:  # backstop against an unbounded window
+                break
+            row = org_client.classify_license_event(ev)
+            if row is not None:
+                out.append(row)
+                if len(out) >= limit:
+                    break
+    except UpstreamError as exc:
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
+    finally:
+        await org.aclose()
+    return {"events": out, "days": days, "scanned": scanned, "capped": len(out) >= limit}
 
 
 @app.get("/api/license/users")
