@@ -563,7 +563,7 @@
           <div class="dash-h">
             <h2>라이선스 현황</h2>
             <span class="sub" x-show="dash.loading">불러오는 중…</span>
-            <span class="sub" x-show="!dash.loading && dash.preloading">· 사용자 미리 불러오는 중…</span>
+            <span class="sub" x-show="!dash.loading && anyPreloading()">· 사용자 미리 불러오는 중…</span>
             <span style="flex:1"></span>
             <button class="btn small ghost" @click="loadDashboard()" :disabled="dash.loading">새로고침</button>
           </div>
@@ -606,19 +606,19 @@
           </div>
           <div class="sub" x-show="!dash.loading && !dash.apps.length && !dash.err" style="margin-top:8px">표시할 애플리케이션이 없습니다.</div>
 
-          <!-- per-license user list (loaded on demand when a card is clicked) -->
+          <!-- per-license user list: preloaded in the background, this only shows it -->
           <div class="lic-users" x-show="dash.selApp">
             <div class="lic-users-h">
               <h3><span x-text="dash.selAppName"></span> 사용자</h3>
-              <span class="sub" x-show="!dash.usersErr" x-text="userCountLabel()"></span>
-              <span class="sub" x-show="dash.usersLoading">· 불러오는 중…</span>
+              <span class="sub" x-show="!usersErr()" x-text="userCountLabel()"></span>
+              <span class="sub" x-show="usersBusy()">· 불러오는 중…</span>
               <input type="text" placeholder="이름·이메일 검색" x-model="dash.userQ" @input="dash.userPage = 1">
               <button class="btn small ghost" @click="closeUsers()">닫기</button>
             </div>
-            <div class="sub" x-show="!dash.usersLoading && !dash.usersErr && seatNote()"
+            <div class="sub" x-show="!usersBusy() && !usersErr() && seatNote()"
                  x-text="seatNote()" style="padding:8px 14px 0"></div>
-            <div class="notice err" x-show="dash.usersErr" x-text="dash.usersErr" style="margin:10px 14px"></div>
-            <div class="lic-users-body" x-show="!dash.usersErr">
+            <div class="notice err" x-show="usersErr()" x-text="usersErr()" style="margin:10px 14px"></div>
+            <div class="lic-users-body" x-show="!usersErr()">
               <table>
                 <thead><tr><th style="width:40%">이름</th><th>이메일</th></tr></thead>
                 <tbody>
@@ -630,9 +630,9 @@
                   </template>
                 </tbody>
               </table>
-              <div class="sub" x-show="!dash.usersLoading && !filteredUsers().length" style="padding:12px 14px">해당 사용자가 없습니다.</div>
+              <div class="sub" x-show="!usersBusy() && !filteredUsers().length" style="padding:12px 14px">해당 사용자가 없습니다.</div>
             </div>
-            <div class="lic-users-foot" x-show="!dash.usersErr && userPages() > 1">
+            <div class="lic-users-foot" x-show="!usersErr() && userPages() > 1">
               <button class="btn small ghost" @click="setUserPage(dash.userPage - 1)" :disabled="dash.userPage <= 1">이전</button>
               <span class="sub"><b x-text="dash.userPage"></b> / <span x-text="userPages()"></span> 페이지</span>
               <button class="btn small ghost" @click="setUserPage(dash.userPage + 1)" :disabled="dash.userPage >= userPages()">다음</button>
@@ -1292,8 +1292,8 @@ document.addEventListener('alpine:init', () => {
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
-            users: [], usersLoading: false, usersErr: '', userQ: '', capped: false,
-            userPage: 1, userPageSize: 100, _ctrl: null, userCache: {}, preloading: false },
+            users: [], userQ: '', userPage: 1, userPageSize: 100,
+            userCache: {}, _preloadCtrl: null },
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
@@ -1381,62 +1381,50 @@ document.addEventListener('alpine:init', () => {
         }
       }
     },
-    // Stream one application's users into `into` (live array), returning it.
-    async streamUsers(key, into, signal) {
-      const res = await fetch('/api/license/users/stream?app=' + encodeURIComponent(key), { signal });
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(this.errText(d) || '사용자 조회 실패'); }
-      let capped = false;
-      await this.readNdjson(res, (ev) => {
-        if (ev.type === 'batch') into.push(...ev.users);
-        else if (ev.type === 'done') capped = !!ev.capped;
-        else if (ev.type === 'error') throw new Error(ev.message || '사용자 조회 실패');
-      });
-      into.sort((x, y) => (x.name || '').toLowerCase().localeCompare((y.name || '').toLowerCase()));
-      return { users: into, capped };
+    // Warm the cache for EVERY product at startup, each streaming into its own
+    // cache entry. Clicking never fetches — it just binds to the entry (which may
+    // still be filling live). One AbortController cancels a whole preload wave on
+    // refresh.
+    preloadUsers() {
+      if (this.dash._preloadCtrl) this.dash._preloadCtrl.abort();
+      const ctrl = new AbortController(); this.dash._preloadCtrl = ctrl;
+      for (const a of this.dash.apps) this.ensureUsers(a.key, ctrl.signal);
     },
-    // Warm the cache for every product, one at a time (background, low priority).
-    async preloadUsers() {
-      this.dash.preloading = true;
-      try {
-        for (const a of this.dash.apps) {
-          if (this.dash.userCache[a.key] || a.key === this.dash.selApp) continue;
-          try {
-            const arr = [];
-            const r = await this.streamUsers(a.key, arr);
-            this.dash.userCache[a.key] = { users: r.users, capped: r.capped };
-          } catch (_) { /* skip a product that failed; clicking will retry */ }
-        }
-      } finally { this.dash.preloading = false; }
+    // Start loading a product's users into its cache entry, once. Idempotent:
+    // if an entry already exists (loading or done) it does nothing.
+    ensureUsers(key, signal) {
+      if (this.dash.userCache[key]) return;
+      const e = { users: [], loading: true, capped: false, err: '' };
+      this.dash.userCache[key] = e;
+      (async () => {
+        try {
+          const res = await fetch('/api/license/users/stream?app=' + encodeURIComponent(key),
+                                   signal ? { signal } : {});
+          if (!res.ok) { const d = await res.json().catch(() => ({})); e.err = this.errText(d) || '사용자 조회 실패'; return; }
+          await this.readNdjson(res, (ev) => {
+            if (ev.type === 'batch') e.users.push(...ev.users);
+            else if (ev.type === 'done') e.capped = !!ev.capped;
+            else if (ev.type === 'error') e.err = ev.message || '사용자 조회 실패';
+          });
+          e.users.sort((x, y) => (x.name || '').toLowerCase().localeCompare((y.name || '').toLowerCase()));
+        } catch (err) { if (err.name !== 'AbortError') e.err = '사용자 조회 실패: ' + err; }
+        finally { e.loading = false; }
+      })();
     },
-    closeUsers() {
-      if (this.dash._ctrl) { this.dash._ctrl.abort(); this.dash._ctrl = null; }
-      this.dash.selApp = ''; this.dash.users = []; this.dash.usersLoading = false;
-    },
-    async selectDashApp(key) {
+    closeUsers() { this.dash.selApp = ''; this.dash.users = []; },
+    // Clicking only SHOWS the (pre)loaded state — it never triggers a reload.
+    selectDashApp(key) {
       if (this.dash.selApp === key) { this.closeUsers(); return; }  // toggle off
-      if (this.dash._ctrl) this.dash._ctrl.abort();  // drop a previous stream
       const a = this.dash.apps.find(x => x.key === key);
       this.dash.selApp = key; this.dash.selAppName = a ? a.name : key;
-      this.dash.userQ = ''; this.dash.usersErr = ''; this.dash.userPage = 1;
-      // Instant when the background preload already cached this product.
-      const cached = this.dash.userCache[key];
-      if (cached) {
-        this.dash.users = cached.users; this.dash.capped = cached.capped; this.dash.usersLoading = false;
-        return;
-      }
-      this.dash.users = []; this.dash.capped = false; this.dash.usersLoading = true;
-      // Not cached yet — stream live so rows appear as they arrive, then cache.
-      const ctrl = new AbortController(); this.dash._ctrl = ctrl;
-      try {
-        const r = await this.streamUsers(key, this.dash.users, ctrl.signal);
-        this.dash.capped = r.capped;
-        this.dash.userCache[key] = { users: this.dash.users, capped: r.capped };
-      } catch (e) {
-        if (e.name !== 'AbortError') this.dash.usersErr = '사용자 조회 실패: ' + e;
-      } finally {
-        if (this.dash._ctrl === ctrl) { this.dash.usersLoading = false; this.dash._ctrl = null; }
-      }
+      this.dash.userQ = ''; this.dash.userPage = 1;
+      this.ensureUsers(key, this.dash._preloadCtrl && this.dash._preloadCtrl.signal);
+      this.dash.users = this.dash.userCache[key].users;  // same ref, fills live
     },
+    curEntry() { return this.dash.userCache[this.dash.selApp] || null; },
+    usersBusy() { const e = this.curEntry(); return !!(e && e.loading); },
+    usersErr() { const e = this.curEntry(); return e ? e.err : ''; },
+    anyPreloading() { return Object.values(this.dash.userCache).some(e => e && e.loading); },
     filteredUsers() {
       const q = (this.dash.userQ || '').trim().toLowerCase();
       if (!q) return this.dash.users;
@@ -1456,9 +1444,10 @@ document.addEventListener('alpine:init', () => {
     setUserPage(p) { this.dash.userPage = Math.max(1, Math.min(p, this.userPages())); },
     userCountLabel() {
       const n = this.filteredUsers().length, total = this.dash.users.length;
-      if (this.dash.usersLoading) return n + '명';  // climbs live while streaming
+      if (this.usersBusy()) return n + '명';  // climbs live while (pre)loading
+      const e = this.curEntry();
       const base = (n === total) ? ('총 ' + total + '명') : (n + ' / ' + total + '명');
-      return base + (this.dash.capped ? ' (상한 도달)' : '');
+      return base + ((e && e.capped) ? ' (상한 도달)' : '');
     },
     // active licensed users can differ from the billed seat count (agents vs
     // users, cross-application seats) — say so instead of looking wrong
@@ -1466,7 +1455,7 @@ document.addEventListener('alpine:init', () => {
       const a = this.dash.apps.find(x => x.key === this.dash.selApp);
       if (!a || a.unlimited || a.used == null) return '';
       const total = this.dash.users.length;
-      if (this.dash.usersLoading || total === a.used) return '';
+      if (this.usersBusy() || total === a.used) return '';
       return '접근 그룹의 활성 사용자 기준 · 시트 사용 수(' + a.used + ')와 다를 수 있습니다';
     },
     donutDash(a) {
