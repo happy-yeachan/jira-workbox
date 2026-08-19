@@ -563,6 +563,7 @@
           <div class="dash-h">
             <h2>라이선스 현황</h2>
             <span class="sub" x-show="dash.loading">불러오는 중…</span>
+            <span class="sub" x-show="!dash.loading && dash.confLoading">· Confluence 확인 중…</span>
             <span style="flex:1"></span>
             <button class="btn small ghost" @click="loadDashboard()" :disabled="dash.loading">새로고침</button>
           </div>
@@ -1293,7 +1294,7 @@ document.addEventListener('alpine:init', () => {
     setup: { site_url: '', email: '', api_token: '' },
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], usersLoading: false, usersErr: '', userQ: '', capped: false,
-            userPage: 1, userPageSize: 100, _ctrl: null },
+            userPage: 1, userPageSize: 100, _ctrl: null, confLoading: false },
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
@@ -1360,6 +1361,22 @@ document.addEventListener('alpine:init', () => {
         this.dash.apps = data.applications || [];
       } catch (e) { this.dash.err = '라이선스 조회 실패: ' + e; }
       finally { this.dash.loading = false; }
+      // Confluence is a separate best-effort scan — never let it block or hang
+      // the Jira cards above, so load it after and append if/when it resolves.
+      this.loadConfluence();
+    },
+    async loadConfluence() {
+      this.dash.confLoading = true;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20000);  // don't hang forever
+      try {
+        const res = await fetch('/api/license/confluence', { signal: ctrl.signal });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        const card = data.application;
+        if (card && !this.dash.apps.some(a => a.key === card.key)) this.dash.apps.push(card);
+      } catch (_) { /* best-effort: silently skip Confluence (incl. timeout) */ }
+      finally { clearTimeout(timer); this.dash.confLoading = false; }
     },
     closeUsers() {
       if (this.dash._ctrl) { this.dash._ctrl.abort(); this.dash._ctrl = null; }

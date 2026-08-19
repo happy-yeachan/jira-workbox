@@ -537,9 +537,10 @@ async def suite_license_stream() -> None:
     apps = {a["key"]: a for a in await lic.fetch_applications(client)}
     check("JSM seat noun is 에이전트", apps["jira-servicedesk"]["seat_noun"] == "에이전트")
     check("other apps keep 시트", apps["jira-software"]["seat_noun"] == "시트")
-    check("Confluence card added from confluence-users group",
-          "confluence" in apps and apps["confluence"]["used"] == 80
-          and apps["confluence"]["total"] is None, apps.get("confluence"))
+    check("summary is Jira-only (Confluence loaded separately)", "confluence" not in apps)
+    conf = await lic.confluence_card(client)
+    check("Confluence card from confluence-users group",
+          conf is not None and conf["used"] == 80 and conf["total"] is None, conf)
 
     events = [e async for e in lic.stream_application_users(client, "jira-software")]
     check("stream starts meta, ends done", events[0]["type"] == "meta" and events[-1]["type"] == "done")

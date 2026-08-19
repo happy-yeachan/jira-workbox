@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr, ValidationError
@@ -174,6 +174,21 @@ def _guard_setup_request(request: Request) -> None:
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+_FAVICON = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    "<rect width='32' height='32' rx='7' fill='#4f46e5'/>"
+    "<text x='16' y='22' font-size='18' text-anchor='middle' fill='#fff'"
+    " font-family='sans-serif' font-weight='700'>W</text></svg>"
+)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    """A tiny inline SVG mark so the browser stops 404-ing on /favicon.ico."""
+    return Response(content=_FAVICON, media_type="image/svg+xml",
+                    headers={"Cache-Control": "max-age=86400"})
 
 
 # --------------------------------------------------------------------------
@@ -372,6 +387,22 @@ async def license_summary() -> dict[str, object]:
     except UpstreamError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
     return {"applications": apps}
+
+
+@app.get("/api/license/confluence")
+async def license_confluence() -> dict[str, object]:
+    """Best-effort Confluence seat card (from the confluence-users access group),
+    loaded separately from the Jira summary so its group scan can't stall the
+    dashboard. ``{application: null}`` when no Confluence access group is found."""
+    from tasks import license_status
+    client = _require_client()
+    try:
+        card = await license_status.confluence_card(client)
+    except tasks.TaskInputError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"application": card}
 
 
 @app.get("/api/license/users")

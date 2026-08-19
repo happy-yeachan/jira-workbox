@@ -122,10 +122,8 @@ async def fetch_applications(client: WorkboxClient) -> list[dict[str, Any]]:
             "unlimited": unlimited, "pct": pct,
             "seat_noun": _SEAT_NOUN.get(key, "시트"),
         })
-
-    conf = await _confluence_card(client)
-    if conf is not None:
-        out.append(conf)
+    # NOTE: the Confluence card is fetched separately (confluence_card) so its
+    # best-effort group scan can never slow down or hang the core Jira summary.
     return out
 
 
@@ -157,7 +155,7 @@ async def _group_total(client: WorkboxClient, gid: str) -> int | None:
     return _int(page.get("total"))
 
 
-async def _confluence_card(client: WorkboxClient) -> dict[str, Any] | None:
+async def confluence_card(client: WorkboxClient) -> dict[str, Any] | None:
     """A Confluence seat card built from access-group membership. Total seats are
     not available via the site token, so ``total`` is None; ``used`` is the group
     member count. ``None`` when no Confluence access group is found."""
