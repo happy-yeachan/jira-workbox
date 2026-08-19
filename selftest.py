@@ -583,6 +583,20 @@ async def suite_license_stream() -> None:
           sorted(onames) == ["Conf One", "Conf Two"], onames)
     await org.aclose()
 
+    # org-wide scan → per-product buckets for ALL products in one pass
+    org2 = _org_client()
+    sev = [e async for e in lic.stream_org_seats(org2)]
+    buckets: dict[str, list] = {}
+    for e in sev:
+        if e["type"] == "batch":
+            for k, us in (e["buckets"] or {}).items():
+                buckets.setdefault(k, []).extend(u["name"] for u in us)
+    check("org scan buckets Confluence users", sorted(buckets.get("confluence", [])) == ["Conf One", "Conf Two"], buckets)
+    check("org scan buckets Jira Software users (Conf One + Jira Only, deactivated excluded)",
+          sorted(buckets.get("jira-software", [])) == ["Conf One", "Jira Only"], buckets)
+    check("org scan ends with done", sev[-1]["type"] == "done")
+    await org2.aclose()
+
     events = [e async for e in lic.stream_application_users(client, "jira-software")]
     check("stream starts meta, ends done", events[0]["type"] == "meta" and events[-1]["type"] == "done")
     streamed = sum(len(e["users"]) for e in events if e["type"] == "batch")

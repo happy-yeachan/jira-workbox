@@ -591,9 +591,14 @@
             <h2>라이선스 현황</h2>
             <span class="sub" x-show="dash.loading">불러오는 중…</span>
             <span class="sub" x-show="!dash.loading && dash.confLoading">· Confluence 확인 중…</span>
+            <span class="sub" x-show="dash.orgScan.running" x-text="'· org 집계 중… ' + orgScannedTotal().toLocaleString()"></span>
             <span style="flex:1"></span>
+            <button class="btn small" x-show="health.org_configured" @click="runOrgScan()" :disabled="dash.orgScan.running"
+                    :title="'조직 API로 모든 제품의 실제 사용자를 한 번에 정확 집계 (대규모면 수 분 소요)'"
+                    x-text="dash.orgScan.done ? 'org 재집계' : 'org 기준 정확 집계'"></button>
             <button class="btn small ghost" @click="loadDashboard()" :disabled="dash.loading">새로고침</button>
           </div>
+          <div class="notice err" x-show="dash.orgScan.err" x-text="dash.orgScan.err" style="margin-bottom:10px"></div>
           <div class="notice err" x-show="dash.err" x-text="dash.err" style="margin-bottom:10px"></div>
           <div class="dash-cards">
             <template x-for="a in dash.apps" :key="a.key">
@@ -627,7 +632,7 @@
                     <div class="lic-seats"><b x-text="a.used ?? '—'"></b> 사용 · 무제한</div>
                   </template>
                   <div class="lic-remain" x-show="!a.unlimited && a.remaining !== null" x-text="'남음 ' + a.remaining + ' ' + a.seat_noun"></div>
-                  <div class="lic-remain" x-show="a.total === null && !a.unlimited && a.mode === 'org'">조직 API · 제품 접근 사용자</div>
+                  <div class="lic-remain" x-show="a.mode === 'org'">조직 API 기준</div>
                   <div class="lic-remain" x-show="a.total === null && !a.unlimited && a.mode !== 'org'">접근 그룹 구성원 기준 · 총 시트 미제공</div>
                 </div>
               </button>
@@ -1324,7 +1329,8 @@ document.addEventListener('alpine:init', () => {
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], usersLoading: false, usersErr: '', userQ: '', capped: false,
             userPage: 1, userPageSize: 100, _ctrl: null, confLoading: false,
-            confUsers: [], _confCtrl: null },
+            confUsers: [], _confCtrl: null,
+            orgBuckets: {}, orgScan: { running: false, err: '', done: false }, _orgCtrl: null },
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
@@ -1469,6 +1475,49 @@ document.addEventListener('alpine:init', () => {
       finally { clearTimeout(timer); this.dash.confLoading = false;
                 if (this.dash._confCtrl === ctrl) this.dash._confCtrl = null; }
     },
+    // One org-wide scan → accurate used count + user list for EVERY product.
+    // Totals/% stay from applicationrole; this overrides `used` per product.
+    async runOrgScan() {
+      this.dash.orgScan = { running: true, err: '', done: false };
+      this.dash.orgBuckets = {};
+      if (this.dash._orgCtrl) this.dash._orgCtrl.abort();
+      const ctrl = new AbortController(); this.dash._orgCtrl = ctrl;
+      try {
+        const res = await fetch('/api/license/org-scan/stream', { signal: ctrl.signal });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.dash.orgScan.err = this.errText(d) || 'org 집계 실패'; return; }
+        await this.readNdjson(res, (ev) => {
+          if (ev.type === 'batch') {
+            for (const [k, users] of Object.entries(ev.buckets || {})) {
+              (this.dash.orgBuckets[k] = this.dash.orgBuckets[k] || []).push(...users);
+            }
+            this.applyOrgCounts();
+          } else if (ev.type === 'error') { this.dash.orgScan.err = ev.message || 'org 집계 실패'; }
+        });
+        for (const k of Object.keys(this.dash.orgBuckets))
+          this.dash.orgBuckets[k].sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
+        this.applyOrgCounts();
+        this.dash.orgScan.done = true;
+        // refresh an open panel from the org data
+        if (this.dash.selApp && this.dash.orgBuckets[this.dash.selApp])
+          this.dash.users = this.dash.orgBuckets[this.dash.selApp];
+      } catch (e) { if (e.name !== 'AbortError') this.dash.orgScan.err = 'org 집계 실패: ' + e; }
+      finally { this.dash.orgScan.running = false; if (this.dash._orgCtrl === ctrl) this.dash._orgCtrl = null; }
+    },
+    applyOrgCounts() {
+      for (const [k, users] of Object.entries(this.dash.orgBuckets)) {
+        const card = this.dash.apps.find(a => a.key === k);
+        if (!card) continue;
+        card.used = users.length;
+        card.mode = 'org';
+        if (card.total && card.total > 0) {
+          card.pct = Math.round(users.length / card.total * 100);
+          card.remaining = card.total - users.length;
+        }
+      }
+    },
+    orgScannedTotal() {
+      return Object.values(this.dash.orgBuckets).reduce((s, a) => s + a.length, 0);
+    },
     closeUsers() {
       if (this.dash._ctrl) { this.dash._ctrl.abort(); this.dash._ctrl = null; }
       this.dash.selApp = ''; this.dash.users = []; this.dash.usersLoading = false;
@@ -1479,6 +1528,13 @@ document.addEventListener('alpine:init', () => {
       const a = this.dash.apps.find(x => x.key === key);
       this.dash.selApp = key; this.dash.selAppName = a ? a.name : key;
       this.dash.userQ = ''; this.dash.usersErr = ''; this.dash.userPage = 1;
+      // Prefer the org scan's accurate per-product list when it has run.
+      if (this.dash.orgBuckets[key]) {
+        this.dash.users = this.dash.orgBuckets[key];
+        this.dash.capped = false;
+        this.dash.usersLoading = this.dash.orgScan.running;
+        return;
+      }
       // Confluence was already streamed by loadConfluence — reuse it (the array
       // grows live if the scan is still running, since it's the same reference).
       if (key === 'confluence') {
@@ -1541,10 +1597,9 @@ document.addEventListener('alpine:init', () => {
     seatNote() {
       const a = this.dash.apps.find(x => x.key === this.dash.selApp);
       if (!a) return '';
+      if (a.mode === 'org') return '조직 admin API 기준 · 제품 접근 사용자';
       if (a.key === 'confluence')
-        return a.mode === 'org'
-          ? '조직 admin API 기준 · Confluence 제품 접근 사용자'
-          : 'confluence-users 그룹 구성원 기준 · 실제 시트와 다를 수 있습니다';
+        return 'confluence-users 그룹 구성원 기준 · 실제 시트와 다를 수 있습니다';
       if (a.unlimited || a.used == null) return '';
       const total = this.dash.users.length;
       if (total === a.used) return '';

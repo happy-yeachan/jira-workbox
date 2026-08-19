@@ -192,6 +192,53 @@ async def stream_confluence(
         yield ev
 
 
+def _product_bucket(pa_key: Any) -> str:
+    """A product_access key like ``jira-software.ondemand`` -> the card key
+    ``jira-software`` (matches applicationrole keys; Confluence stays confluence)."""
+    return _sid(pa_key).split(".")[0].lower()
+
+
+async def stream_org_seats(
+    org_client: Any, batch_size: int = 400, limit: int = _USER_CAP
+) -> AsyncIterator[dict[str, Any]]:
+    """One organisation-wide user scan that classifies EVERY active account by
+    product access, so all products (Jira Software/JSM/JWM/JPD/Confluence) get an
+    accurate user count + list from a single pass. Streams so the dashboard fills
+    live. Events: ``{type:'meta'}``, ``{type:'batch', buckets:{cardKey:[users]}}``
+    (new users this batch, per product), ``{type:'done', capped}``, ``error``.
+
+    Totals/seat-% still come from applicationrole — this only supplies the
+    accurate *used* count and the user list per product."""
+    org_id = await org_client.org_id()
+    from core.org_client import confluence_user
+    yield {"type": "meta"}
+    buf: dict[str, list[dict[str, Any]]] = {}
+    pending = 0
+    scanned = 0
+    capped = False
+    async for u in org_client.iter_users(org_id):
+        if str(u.get("account_status") or "active").lower() != "active":
+            continue
+        scanned += 1
+        if scanned > limit:
+            capped = True
+            break
+        rec = confluence_user(u)  # {account_id, name, email, active}
+        for pa in (u.get("product_access") or []):
+            key = _product_bucket(pa.get("key"))
+            if not key:
+                continue
+            buf.setdefault(key, []).append(rec)
+            pending += 1
+        if pending >= batch_size:
+            yield {"type": "batch", "buckets": buf}
+            buf = {}
+            pending = 0
+    if buf:
+        yield {"type": "batch", "buckets": buf}
+    yield {"type": "done", "capped": capped}
+
+
 async def _resolve_groups(
     client: WorkboxClient, app_key: str
 ) -> tuple[str | None, list[str]]:

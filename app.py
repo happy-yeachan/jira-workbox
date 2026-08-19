@@ -522,6 +522,34 @@ async def license_users_stream(app_key: str = Query(alias="app")) -> StreamingRe
     )
 
 
+@app.get("/api/license/org-scan/stream")
+async def license_org_scan_stream() -> StreamingResponse:
+    """One org-wide scan classifying every account by product access, streamed as
+    NDJSON. Gives accurate used counts + user lists for ALL products. Requires an
+    org admin key (403 otherwise). Totals still come from applicationrole."""
+    from tasks import license_status
+    org = _org_client_or_none()
+    if org is None:
+        raise HTTPException(status_code=403, detail="조직 admin API 키가 설정되지 않았습니다.")
+
+    async def lines() -> AsyncIterator[str]:
+        try:
+            async for ev in license_status.stream_org_seats(org):
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — surface in the stream
+            log.exception("org seat scan failed")
+            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}) + "\n"
+        finally:
+            await org.aclose()
+
+    return StreamingResponse(
+        lines(), media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 def _tpl_label(node: dict[str, object]) -> str:
     """The display name — the internal endpoint puts it in title.label, an object."""
     title = node.get("title")
