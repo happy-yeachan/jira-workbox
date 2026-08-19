@@ -181,6 +181,36 @@ async def fetch_field_detail(client: WorkboxClient, field_id: str) -> dict[str, 
     }
 
 
+async def apply_context(
+    client: WorkboxClient, field_id: str, ctx_id: str, *, name: str,
+    description: str, project_ids: list[str], is_global: bool,
+) -> None:
+    """Edit one context: rename/redescribe, and (non-global only) add/remove the
+    projects it is scoped to. ``project_ids`` is the desired project set; the diff
+    against the current mapping is computed here."""
+    base = f"/field/{field_id}/context/{ctx_id}"
+    body: dict[str, Any] = {"name": name}
+    if description is not None:
+        body["description"] = description
+    await client.json("PUT", base, json=body)
+
+    if is_global:
+        return
+    cur: set[str] = set()
+    pm = await client.get_json(f"/field/{field_id}/context/projectmapping",
+                               params={"contextId": [ctx_id]})
+    for row in (pm.get("values") or []):
+        if _sid(row.get("contextId")) == ctx_id and row.get("projectId"):
+            cur.add(_sid(row.get("projectId")))
+    desired = {_sid(p) for p in project_ids if _sid(p)}
+    to_add = sorted(desired - cur)
+    to_remove = sorted(cur - desired)
+    if to_add:
+        await client.json("PUT", base + "/project", json={"projectIds": to_add})
+    if to_remove:
+        await client.json("POST", base + "/project/remove", json={"projectIds": to_remove})
+
+
 async def context_options(client: WorkboxClient, field_id: str, ctx_id: str) -> list[dict[str, Any]]:
     base = f"/field/{field_id}/context/{ctx_id}/option"
     out: list[dict[str, Any]] = []
@@ -240,4 +270,4 @@ async def apply_options(
 
 
 __all__ = ["fetch_fields", "fetch_field_detail", "context_options", "apply_options",
-           "type_label", "UpstreamError"]
+           "apply_context", "type_label", "UpstreamError"]

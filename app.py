@@ -390,7 +390,7 @@ async def search_projects(q: str = "", limit: int = 20) -> list[dict[str, str]]:
     except UpstreamError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
     return [
-        {"key": str(p.get("key")), "name": str(p.get("name") or "")}
+        {"id": str(p.get("id")), "key": str(p.get("key")), "name": str(p.get("name") or "")}
         for p in (payload.get("values") or [])
         if p.get("key")
     ]
@@ -467,6 +467,35 @@ async def field_detail(field_id: str) -> dict[str, object]:
     if detail is None:
         raise HTTPException(status_code=404, detail=f"없는 필드입니다: {field_id}")
     return detail
+
+
+class ContextApply(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=1000)
+    project_ids: list[str] = Field(default_factory=list)
+    is_global: bool = False
+
+
+@app.post("/api/fields/{field_id}/contexts/{ctx_id}/apply")
+async def apply_field_context(
+    field_id: str, ctx_id: str, body: ContextApply, request: Request
+) -> dict[str, object]:
+    """Edit one field context: name/description and (non-global) project scope.
+    Write — same-origin + X-Workbox-Setup guard."""
+    _guard_setup_request(request)
+    from tasks import field_inventory
+    client = _require_client()
+    try:
+        await field_inventory.apply_context(
+            client, field_id, ctx_id, name=body.name.strip(), description=body.description.strip(),
+            project_ids=[p for p in body.project_ids if p], is_global=body.is_global)
+        detail = await field_inventory.fetch_field_detail(client, field_id)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403,
+                                detail="컨텍스트를 변경할 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return detail or {}
 
 
 class OptionIn(BaseModel):
