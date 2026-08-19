@@ -47,6 +47,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from core import audit, planstore, rollback
 from core.client import UpstreamError, WorkboxClient, get_client
+from core.concurrency import chunked
 from core.models import (
     Change, Column, ExecOptions, ExecuteResult, ItemResult, PlanResult, ProgressEvent, ResultTable,
 )
@@ -270,22 +271,42 @@ async def _resolve_target(client: WorkboxClient, key_or_id: str):
 async def _resolve_scheme(
     client: WorkboxClient, strat: Strategy, target_id: str
 ) -> tuple[str, str, list[str]]:
-    """(scheme_id, scheme_name_or_empty, other_project_ids) for the target's scheme."""
-    assoc = await client.get_json(strat.assoc_path, params={"projectId": [target_id]})
-    for row in (assoc.get("values") or []):
-        pids = [_sid(p) for p in (row.get("projectIds") or [])]
-        if target_id not in pids:
-            continue
-        if strat.scheme_field:
-            obj = row.get(strat.scheme_field) or {}
-            sid = _sid(obj.get(strat.id_field))
-            name = _sid(obj.get(strat.name_field)) if strat.name_field else ""
-        else:
-            sid = _sid(row.get(strat.id_field))
-            name = ""
-        others = sorted(p for p in pids if p != target_id)
-        return sid, name, others
-    raise TaskInputError(f"이 프로젝트의 {strat.label}을 찾지 못했습니다.")
+    """(scheme_id, scheme_name_or_empty, other_project_ids) for the target's scheme.
+
+    The association endpoint only reports the projects you *ask* about, so querying
+    with the target alone would always look target-only. We pass the whole project
+    list (like 설정 공유 진단 does) so the shared set is real."""
+    all_ids: list[str] = [target_id]
+    async for p in client.paginate_offset("/project/search", items_key="values", page_size=50):
+        pid = _sid(p.get("id"))
+        if pid and pid not in all_ids:
+            all_ids.append(pid)
+
+    scheme_projects: dict[str, set[str]] = {}
+    names: dict[str, str] = {}
+    target_scheme: str | None = None
+    for chunk in chunked(all_ids, 50):
+        assoc = await client.get_json(strat.assoc_path, params={"projectId": chunk})
+        for row in (assoc.get("values") or []):
+            if strat.scheme_field:
+                obj = row.get(strat.scheme_field) or {}
+                sid = _sid(obj.get(strat.id_field))
+                nm = _sid(obj.get(strat.name_field)) if strat.name_field else ""
+            else:
+                sid = _sid(row.get(strat.id_field))
+                nm = ""
+            if not sid:
+                continue
+            names.setdefault(sid, nm)
+            pids = scheme_projects.setdefault(sid, set())
+            for p in (row.get("projectIds") or []):
+                pids.add(_sid(p))
+            if target_id in {_sid(x) for x in (row.get("projectIds") or [])}:
+                target_scheme = sid
+    if target_scheme is None:
+        raise TaskInputError(f"이 프로젝트의 {strat.label}을 찾지 못했습니다.")
+    others = sorted(scheme_projects.get(target_scheme, set()) - {target_id})
+    return target_scheme, names.get(target_scheme, ""), others
 
 
 # --------------------------------------------------------------------------

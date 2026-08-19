@@ -255,6 +255,34 @@ async def _issue_type_names(client: WorkboxClient) -> dict[str, str]:
     return {_sid(t.get("id")): str(t.get("name") or t.get("id")) for t in rows}
 
 
+def _leaf(label: str, sub: str = "") -> dict[str, Any]:
+    return {"depth": 1, "kind": "leaf", "label": label, "sub": sub,
+            "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": ""}
+
+
+async def _workflow_children(
+    client: WorkboxClient, scheme_id: str, it_names: dict[str, str]
+) -> list[dict[str, Any]]:
+    """The workflows inside a workflow scheme, one row per distinct workflow with
+    the issue types it serves (default workflow covers all unmapped types)."""
+    try:
+        wf = await client.get_json(_P_WF_ONE.format(id=scheme_id))
+    except UpstreamError:
+        return []
+    default = str(wf.get("defaultWorkflow") or "").strip()
+    by_wf: dict[str, list[str]] = {}
+    for it_id, w in (wf.get("issueTypeMappings") or {}).items():
+        by_wf.setdefault(str(w), []).append(it_names.get(_sid(it_id), _sid(it_id)))
+    out: list[dict[str, Any]] = []
+    if default:
+        explicit = sorted(by_wf.pop(default, []))
+        sub = "모든 작업 유형(기본)" + (" · " + ", ".join(explicit) if explicit else "")
+        out.append(_leaf(default, sub))
+    for w, types in by_wf.items():
+        out.append(_leaf(w, ", ".join(sorted(types))))
+    return out
+
+
 def _screen_tree_children(
     r: "SchemeRow", report: dict[str, Any], projects: dict[str, str],
     it_names: dict[str, str], target_key: str, target_id: str,
@@ -435,15 +463,12 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         nodes = [scheme_node]
         if r.kind == "이슈 유형 화면 스킴" and r.scheme_id:
             nodes += _screen_tree_children(r, screen_report, projects, it_names, target_key, target_id)
-        elif r.kind in ("이슈 타입 스킴", "워크플로우 스킴") and r.scheme_id:
+        elif r.kind == "워크플로우 스킴" and r.scheme_id:
+            nodes += await _workflow_children(client, r.scheme_id, it_names)
+        elif r.kind == "이슈 타입 스킴" and r.scheme_id:
             contents = await _contents_table(client, r.kind, r.scheme_id)
             for row in contents.rows:
-                if r.kind == "이슈 타입 스킴":
-                    label, sub = row.get("name", ""), ""
-                else:
-                    label, sub = row.get("workflow", ""), row.get("issue_type", "")
-                nodes.append({"depth": 1, "kind": "leaf", "label": label, "sub": sub,
-                              "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": ""})
+                nodes.append(_leaf(row.get("name", ""), ""))
         sections.append({"category": r.kind, "nodes": nodes})
 
     shared = [r for r in rows if r.verdict == "공유됨"]
