@@ -866,7 +866,8 @@
                   <b :class="r.ok ? 'ok' : 'bad'" x-text="r.ok ? '✓' : '✕'"></b>
                   <span class="report-label" x-text="r.label"></span>
                   <span class="spacer"></span>
-                  <span class="sub bad" x-show="!r.ok" x-text="(r.status ? '(' + r.status + ') ' : '') + (r.error || '실패')"></span>
+                  <span class="sub" :class="r.ok ? '' : 'bad'" x-show="r.error || !r.ok"
+                        x-text="(r.ok ? '⚠ ' : (r.status ? '(' + r.status + ') ' : '')) + (r.error || '실패')"></span>
                 </div>
               </template>
             </div>

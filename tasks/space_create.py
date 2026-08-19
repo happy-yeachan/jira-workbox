@@ -232,12 +232,34 @@ async def _apply_one(client: WorkboxClient, change: Change) -> ItemResult:
         return ItemResult(target_id=change.target_id, ok=False,
                           error=f"{type(exc).__name__}: {exc}"[:200])
 
-    if resp.status_code < 400:
-        return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code)
-    if op == "delete" and resp.status_code == 404:  # already gone
-        return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code)
-    return ItemResult(target_id=change.target_id, ok=False,
-                      status_code=resp.status_code, error=WorkboxClient.short_error(resp))
+    if op == "delete":
+        ok = resp.status_code < 400 or resp.status_code == 404  # already gone counts
+        return ItemResult(target_id=change.target_id, ok=ok, status_code=resp.status_code,
+                          error=None if ok else WorkboxClient.short_error(resp))
+
+    if resp.status_code >= 400:
+        return ItemResult(target_id=change.target_id, ok=False,
+                          status_code=resp.status_code, error=WorkboxClient.short_error(resp))
+
+    # The project exists now. Some templates (notably custom "custom:<uuid>" ones)
+    # ignore leadAccountId on create, so set the owner explicitly — idempotent for
+    # templates that already applied it. A failure here does NOT fail the run (the
+    # project is created and rollback-able); it is reported as a caveat.
+    lead = (change.after.get("create_body") or {}).get("leadAccountId")
+    if lead:
+        try:
+            put = await client.request("PUT", _P_PROJECT_ONE.format(key=key),
+                                       json={"leadAccountId": lead})
+            if put.status_code >= 400:
+                return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code,
+                                  error=f"생성됨 · 소유자 지정 실패({put.status_code}): "
+                                        f"{WorkboxClient.short_error(put)}"[:200])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — project exists; note the caveat
+            return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code,
+                              error=f"생성됨 · 소유자 지정 오류: {type(exc).__name__}"[:200])
+    return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code)
 
 
 def _invert(succeeded: list[Change]) -> list[Change]:
