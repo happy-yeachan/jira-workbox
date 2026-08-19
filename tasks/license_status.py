@@ -41,18 +41,17 @@ _P_LICENSE = "/instance/license"
 _P_GROUP_MEMBER = "/group/member"
 _P_GROUPS_PICKER = "/groups/picker"
 
-#: synthetic application key for the Confluence card (not a Jira application role)
-_CONFLUENCE_KEY = "confluence"
 #: what one seat is called, per application (JSM bills agents, not users)
 _SEAT_NOUN = {"jira-servicedesk": "에이전트"}
-#: group-name prefixes that grant Confluence product access (best-effort — the
-#: site token has no Confluence seat API, so we count the access group instead)
-_CONFLUENCE_GROUP_PREFIX = "confluence-users"
+#: card display order (Confluence is intentionally not implemented — no reliable
+#: seat source — but kept in the order so it slots correctly if added later)
+_PRODUCT_ORDER = ["jira-software", "confluence", "jira-servicedesk",
+                  "jira-product-discovery", "jira-core"]
 
 #: how close to full before we call it out
 _LOW_REMAINING = 5
 _HIGH_USAGE = 0.9
-#: hard cap so a pathological group can't return an unbounded list to the browser
+#: hard cap so a pathological scan can't return an unbounded list to the browser
 _USER_CAP = 50000
 
 _PLAN_LABEL = {
@@ -122,132 +121,16 @@ async def fetch_applications(client: WorkboxClient) -> list[dict[str, Any]]:
             "unlimited": unlimited, "pct": pct,
             "seat_noun": _SEAT_NOUN.get(key, "시트"),
         })
-    # NOTE: the Confluence card is fetched separately (confluence_card) so its
-    # best-effort group scan can never slow down or hang the core Jira summary.
+    order = {k: i for i, k in enumerate(_PRODUCT_ORDER)}
+    out.sort(key=lambda a: (order.get(a["key"], len(order)), a["name"]))
     return out
-
-
-async def _confluence_groups(client: WorkboxClient) -> list[dict[str, str]]:
-    """Best-effort Confluence access groups: those named ``confluence-users*``
-    (``confluence-users`` on older sites, ``confluence-users-<site>`` on newer).
-    Returns ``[{id, name}]`` — empty if none are visible to the site token."""
-    try:
-        picked = await client.get_json(_P_GROUPS_PICKER,
-                                       params={"query": _CONFLUENCE_GROUP_PREFIX, "maxResults": 50})
-    except UpstreamError:
-        return []
-    out: list[dict[str, str]] = []
-    for g in (picked.get("groups") or []):
-        name = _sid(g.get("name"))
-        if g.get("groupId") and name.startswith(_CONFLUENCE_GROUP_PREFIX):
-            out.append({"id": _sid(g["groupId"]), "name": name})
-    return out
-
-
-async def stream_confluence(
-    site_client: WorkboxClient, org_client: Any | None, limit: int = _USER_CAP
-) -> AsyncIterator[dict[str, Any]]:
-    """Confluence seat users, streamed. Two sources:
-
-    * ``mode="org"`` — the organisation admin API (accurate: real Confluence
-      product-access users). Used when an org admin key is configured.
-    * ``mode="group"`` — the ``confluence-users`` access group via the site token
-      (approximate: group membership, not billed seats). The fallback.
-
-    Events mirror ``stream_application_users`` plus a ``mode`` on ``meta``. No
-    ``meta`` is emitted when neither source is available, so the UI shows no card."""
-    if org_client is not None:
-        from core.org_client import confluence_user, is_confluence_user
-        try:
-            org_id = await org_client.org_id()
-        except UpstreamError:
-            org_id = ""
-        if org_id:
-            yield {"type": "meta", "name": "Confluence", "mode": "org", "total": None}
-            buf: list[dict[str, Any]] = []
-            used = 0
-            capped = False
-            async for u in org_client.iter_users(org_id):
-                if not is_confluence_user(u):
-                    continue
-                used += 1
-                if used > limit:
-                    capped = True
-                    break
-                buf.append(confluence_user(u))
-                if len(buf) >= 200:
-                    yield {"type": "batch", "users": buf}
-                    buf = []
-            if buf:
-                yield {"type": "batch", "users": buf}
-            yield {"type": "done", "used": used - (1 if capped else 0), "capped": capped}
-            return
-
-    # site-token fallback: the confluence-users group's members
-    if not await _confluence_groups(site_client):
-        return  # no source → no card
-    async for ev in stream_application_users(site_client, _CONFLUENCE_KEY, limit=limit):
-        if ev.get("type") == "meta":
-            ev = {**ev, "mode": "group", "total": None}
-        yield ev
-
-
-def _product_bucket(pa_key: Any) -> str:
-    """A product_access key like ``jira-software.ondemand`` -> the card key
-    ``jira-software`` (matches applicationrole keys; Confluence stays confluence)."""
-    return _sid(pa_key).split(".")[0].lower()
-
-
-async def stream_org_seats(
-    org_client: Any, batch_size: int = 400, limit: int = _USER_CAP
-) -> AsyncIterator[dict[str, Any]]:
-    """One organisation-wide user scan that classifies EVERY active account by
-    product access, so all products (Jira Software/JSM/JWM/JPD/Confluence) get an
-    accurate user count + list from a single pass. Streams so the dashboard fills
-    live. Events: ``{type:'meta'}``, ``{type:'batch', buckets:{cardKey:[users]}}``
-    (new users this batch, per product), ``{type:'done', capped}``, ``error``.
-
-    Totals/seat-% still come from applicationrole — this only supplies the
-    accurate *used* count and the user list per product."""
-    org_id = await org_client.org_id()
-    from core.org_client import confluence_user
-    yield {"type": "meta"}
-    buf: dict[str, list[dict[str, Any]]] = {}
-    pending = 0
-    scanned = 0
-    capped = False
-    async for u in org_client.iter_users(org_id):
-        if str(u.get("account_status") or "active").lower() != "active":
-            continue
-        scanned += 1
-        if scanned > limit:
-            capped = True
-            break
-        rec = confluence_user(u)  # {account_id, name, email, active}
-        for pa in (u.get("product_access") or []):
-            key = _product_bucket(pa.get("key"))
-            if not key:
-                continue
-            buf.setdefault(key, []).append(rec)
-            pending += 1
-        if pending >= batch_size:
-            yield {"type": "batch", "buckets": buf}
-            buf = {}
-            pending = 0
-    if buf:
-        yield {"type": "batch", "buckets": buf}
-    yield {"type": "done", "capped": capped}
 
 
 async def _resolve_groups(
     client: WorkboxClient, app_key: str
 ) -> tuple[str | None, list[str]]:
-    """(display name, access-group ids) for an application, or ``(None, [])`` if
-    the key is unknown. Handles the synthetic Confluence card and Jira roles."""
-    if app_key == _CONFLUENCE_KEY:
-        groups = await _confluence_groups(client)
-        return ("Confluence" if groups else None), [g["id"] for g in groups]
-
+    """(display name, access-group ids) for a Jira application, or ``(None, [])``
+    if the key is unknown."""
     try:
         roles = await client.get_json(_P_ROLES)
     except UpstreamError as exc:

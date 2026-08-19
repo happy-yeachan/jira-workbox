@@ -528,74 +528,19 @@ def _license_stream_site():
     return handler
 
 
-def _org_client():
-    """A real OrgClient over a MockTransport for the admin API: two Confluence
-    users, one Jira-only user, one deactivated Confluence user (must be excluded)."""
-    from core.auth import OrgCredentials
-    from core.org_client import OrgClient
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        p = request.url.path
-        if p == "/admin/v1/orgs":
-            return httpx.Response(200, json={"data": [{"id": "org-1"}]})
-        if p == "/admin/v1/orgs/org-1/users":
-            return httpx.Response(200, json={"data": [
-                {"account_id": "c1", "name": "Conf One", "email": "c1@x", "account_status": "active",
-                 "product_access": [{"key": "confluence.ondemand"}, {"key": "jira-software.ondemand"}]},
-                {"account_id": "c2", "name": "Conf Two", "email": "c2@x", "account_status": "active",
-                 "product_access": [{"key": "confluence.ondemand"}]},
-                {"account_id": "j1", "name": "Jira Only", "account_status": "active",
-                 "product_access": [{"key": "jira-software.ondemand"}]},
-                {"account_id": "c3", "name": "Deactivated", "account_status": "inactive",
-                 "product_access": [{"key": "confluence.ondemand"}]},
-            ], "links": {}})
-        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
-
-    creds = OrgCredentials(api_key=SecretStr("org-key"))
-    return OrgClient(creds, load_settings(), transport=httpx.MockTransport(handler))
-
-
 async def suite_license_stream() -> None:
-    print("license_status: streaming users, JSM agent seats, Confluence (group + org)")
+    print("license_status: streaming users, JSM agent seats, product order")
     import tasks.license_status as lic
     client = _client_for(_license_stream_site())
     set_client(client)
 
-    apps = {a["key"]: a for a in await lic.fetch_applications(client)}
-    check("JSM seat noun is 에이전트", apps["jira-servicedesk"]["seat_noun"] == "에이전트")
-    check("other apps keep 시트", apps["jira-software"]["seat_noun"] == "시트")
-    check("summary is Jira-only (Confluence loaded separately)", "confluence" not in apps)
-
-    # Confluence fallback: no org client → confluence-users group (mode "group")
-    cev = [e async for e in lic.stream_confluence(client, None)]
-    meta = next((e for e in cev if e["type"] == "meta"), None)
-    conf_users = sum(len(e["users"]) for e in cev if e["type"] == "batch")
-    check("Confluence group fallback: mode=group, 80 members",
-          meta and meta["mode"] == "group" and conf_users == 80, (meta, conf_users))
-
-    # Confluence via org admin API (accurate): only product-access users count
-    org = _org_client()
-    oev = [e async for e in lic.stream_confluence(client, org)]
-    ometa = next((e for e in oev if e["type"] == "meta"), None)
-    onames = [u["name"] for e in oev if e["type"] == "batch" for u in e["users"]]
-    check("Confluence org mode: mode=org", ometa and ometa["mode"] == "org", ometa)
-    check("org mode counts only Confluence product-access, active users",
-          sorted(onames) == ["Conf One", "Conf Two"], onames)
-    await org.aclose()
-
-    # org-wide scan → per-product buckets for ALL products in one pass
-    org2 = _org_client()
-    sev = [e async for e in lic.stream_org_seats(org2)]
-    buckets: dict[str, list] = {}
-    for e in sev:
-        if e["type"] == "batch":
-            for k, us in (e["buckets"] or {}).items():
-                buckets.setdefault(k, []).extend(u["name"] for u in us)
-    check("org scan buckets Confluence users", sorted(buckets.get("confluence", [])) == ["Conf One", "Conf Two"], buckets)
-    check("org scan buckets Jira Software users (Conf One + Jira Only, deactivated excluded)",
-          sorted(buckets.get("jira-software", [])) == ["Conf One", "Jira Only"], buckets)
-    check("org scan ends with done", sev[-1]["type"] == "done")
-    await org2.aclose()
+    apps = await lic.fetch_applications(client)
+    by = {a["key"]: a for a in apps}
+    check("JSM seat noun is 에이전트", by["jira-servicedesk"]["seat_noun"] == "에이전트")
+    check("other apps keep 시트", by["jira-software"]["seat_noun"] == "시트")
+    check("summary is Jira-only (no Confluence)", "confluence" not in by)
+    check("cards ordered: Jira Software before JSM",
+          [a["key"] for a in apps] == ["jira-software", "jira-servicedesk"], [a["key"] for a in apps])
 
     events = [e async for e in lic.stream_application_users(client, "jira-software")]
     check("stream starts meta, ends done", events[0]["type"] == "meta" and events[-1]["type"] == "done")

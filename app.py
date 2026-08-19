@@ -35,17 +35,12 @@ import tasks
 from core.auth import (
     SETUP_HINT,
     Credentials,
-    OrgCredentials,
-    delete_org_credentials,
     load_credentials,
-    load_org_credentials,
     mask_email,
     normalize_site_url,
     store_credentials,
-    store_org_credentials,
 )
 from core.client import UpstreamError, WorkboxClient, get_client, set_client
-from core.org_client import OrgClient
 from core import planstore, rollback
 from core.config import BASE_DIR, load_settings
 from core.models import ExecOptions, PlanResult, ProgressEvent
@@ -124,14 +119,6 @@ class SetupRequest(BaseModel):
     site_url: str = Field(min_length=1, max_length=200)
     email: str = Field(min_length=3, max_length=200)
     api_token: SecretStr = Field(min_length=1)
-
-
-class OrgSetupRequest(BaseModel):
-    """Write-only. The org admin API key (a different secret from the site token)
-    and an optional org id (auto-discovered when omitted)."""
-
-    api_key: SecretStr = Field(min_length=1)
-    org_id: str = Field(default="", max_length=100)
 
 
 def _require_client() -> WorkboxClient:
@@ -223,9 +210,6 @@ async def health() -> dict[str, object]:
         "plan_ttl_seconds": settings.plan_ttl_seconds,
         "readonly_plan_ttl_seconds": settings.readonly_plan_ttl_seconds,
         "pending_plans": pending_count(),
-        # whether an org admin API key is stored (enables accurate Confluence
-        # seats). Never returns the key itself.
-        "org_configured": load_org_credentials() is not None,
     }
 
     try:
@@ -307,39 +291,6 @@ async def setup_credentials(body: SetupRequest, request: Request) -> dict[str, o
     log.info("credentials stored via web setup: site=%s account=%s",
              site_url, mask_email(email))
     return {"ok": True, "site_url": site_url, "account_email": mask_email(email)}
-
-
-@app.post("/api/setup/org")
-async def setup_org(body: OrgSetupRequest, request: Request) -> dict[str, object]:
-    """Store the organisation admin API key (write-only). Verifies it against
-    GET /orgs before saving, so a bad key is rejected up front. The key is never
-    read back or returned."""
-    _guard_setup_request(request)
-    key = body.api_key.get_secret_value().strip()
-    if not key:
-        raise HTTPException(status_code=422, detail="조직 API 키가 비어 있습니다.")
-    creds = OrgCredentials(api_key=SecretStr(key), org_id=body.org_id.strip())
-    del key
-    client = OrgClient(creds, load_settings())
-    try:
-        org_id = await client.org_id()
-    except UpstreamError as exc:
-        code = 403 if exc.status_code in (401, 403) else 502
-        raise HTTPException(status_code=code,
-                            detail=f"조직 API 키를 확인하지 못했습니다: {exc}"[:200]) from None
-    finally:
-        await client.aclose()
-    store_org_credentials(creds.api_key.get_secret_value(), org_id)
-    log.info("org admin key stored via web setup: org_id=%s", org_id)
-    return {"ok": True, "org_id": org_id}
-
-
-@app.delete("/api/setup/org")
-async def delete_org(request: Request) -> dict[str, object]:
-    """Remove the stored org admin API key."""
-    _guard_setup_request(request)
-    delete_org_credentials()
-    return {"ok": True}
 
 
 @app.get("/api/groups")
@@ -438,43 +389,6 @@ async def license_summary() -> dict[str, object]:
     return {"applications": apps}
 
 
-def _org_client_or_none() -> OrgClient | None:
-    """Build an org-admin client from the stored org key, or None if not set up.
-    The caller must ``aclose()`` it."""
-    creds = load_org_credentials()
-    if creds is None:
-        return None
-    return OrgClient(creds, load_settings())
-
-
-@app.get("/api/license/confluence/stream")
-async def license_confluence_stream() -> StreamingResponse:
-    """Confluence seat users, streamed as NDJSON. Uses the org admin API when a
-    key is configured (accurate real product-access users), else the site-token
-    confluence-users group (approximate). Streams so a large org fills live."""
-    from tasks import license_status
-    site = _require_client()
-    org = _org_client_or_none()
-
-    async def lines() -> AsyncIterator[str]:
-        try:
-            async for ev in license_status.stream_confluence(site, org):
-                yield json.dumps(ev, ensure_ascii=False) + "\n"
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — surface in the stream
-            log.exception("confluence stream failed")
-            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}) + "\n"
-        finally:
-            if org is not None:
-                await org.aclose()
-
-    return StreamingResponse(
-        lines(), media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-    )
-
-
 @app.get("/api/license/users")
 async def license_users(
     app_key: str = Query(alias="app"), q: str = ""
@@ -515,34 +429,6 @@ async def license_users_stream(app_key: str = Query(alias="app")) -> StreamingRe
         except Exception as exc:  # noqa: BLE001 — surface it in the stream
             log.exception("license user stream failed: app=%s", app_key)
             yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}) + "\n"
-
-    return StreamingResponse(
-        lines(), media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-    )
-
-
-@app.get("/api/license/org-scan/stream")
-async def license_org_scan_stream() -> StreamingResponse:
-    """One org-wide scan classifying every account by product access, streamed as
-    NDJSON. Gives accurate used counts + user lists for ALL products. Requires an
-    org admin key (403 otherwise). Totals still come from applicationrole."""
-    from tasks import license_status
-    org = _org_client_or_none()
-    if org is None:
-        raise HTTPException(status_code=403, detail="조직 admin API 키가 설정되지 않았습니다.")
-
-    async def lines() -> AsyncIterator[str]:
-        try:
-            async for ev in license_status.stream_org_seats(org):
-                yield json.dumps(ev, ensure_ascii=False) + "\n"
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — surface in the stream
-            log.exception("org seat scan failed")
-            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}) + "\n"
-        finally:
-            await org.aclose()
 
     return StreamingResponse(
         lines(), media_type="application/x-ndjson",
