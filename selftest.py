@@ -780,17 +780,19 @@ async def suite_field_inventory() -> None:
     await c2.aclose()
 
     # context editor apply: rename + project add/remove (non-global)
-    ctx_calls = {"put": None, "add": None, "remove": None}
+    ctx_calls = {"put": None, "add": None, "remove": None,
+                 "it_add": None, "it_remove": None, "default": None}
 
     def ctx_handler(request: httpx.Request) -> httpx.Response:
         import json as _json
-        p, m, q = request.url.path, request.method, request.url.params
+        p, m = request.url.path, request.method
         base = "/rest/api/3/field/customfield_2/context/10002"
+        fbase = "/rest/api/3/field/customfield_2/context"
         body = _json.loads(request.content) if request.content else {}
         if m == "PUT" and p == base:
             ctx_calls["put"] = body
             return httpx.Response(204)
-        if p == "/rest/api/3/field/customfield_2/context/projectmapping":
+        if p == fbase + "/projectmapping":
             return httpx.Response(200, json={"values": [{"contextId": "10002", "projectId": "P1"}]})
         if m == "PUT" and p == base + "/project":
             ctx_calls["add"] = body
@@ -798,16 +800,63 @@ async def suite_field_inventory() -> None:
         if m == "POST" and p == base + "/project/remove":
             ctx_calls["remove"] = body
             return httpx.Response(204)
+        if p == fbase + "/issuetypemapping":
+            return httpx.Response(200, json={"values": [
+                {"contextId": "10002", "issueTypeId": "1"},
+                {"contextId": "10002", "issueTypeId": "2"}]})
+        if m == "PUT" and p == base + "/issuetype":
+            ctx_calls["it_add"] = body
+            return httpx.Response(204)
+        if m == "POST" and p == base + "/issuetype/remove":
+            ctx_calls["it_remove"] = body
+            return httpx.Response(204)
+        if m == "PUT" and p == fbase + "/defaultValue":
+            ctx_calls["default"] = body
+            return httpx.Response(204)
         return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
 
     c3 = _client_for(ctx_handler)
-    # rename, keep nothing of P1 (remove), add P2
+    # rename; drop P1, add P2; issue types keep "1", drop "2", add "3"; set a text default
     await fld.apply_context(c3, "customfield_2", "10002", name="새 이름",
-                            description="설명", project_ids=["P2"], is_global=False)
+                            description="설명", project_ids=["P2"], is_global=False,
+                            any_issue_type=False, issue_type_ids=["1", "3"],
+                            default_value="기본", default_type="textfield")
     check("context: renamed via PUT", ctx_calls["put"]["name"] == "새 이름", ctx_calls["put"])
     check("context: added the new project", ctx_calls["add"] == {"projectIds": ["P2"]}, ctx_calls["add"])
     check("context: removed the dropped project", ctx_calls["remove"] == {"projectIds": ["P1"]}, ctx_calls["remove"])
+    check("context: added the new issue type", ctx_calls["it_add"] == {"issueTypeIds": ["3"]}, ctx_calls["it_add"])
+    check("context: removed the dropped issue type", ctx_calls["it_remove"] == {"issueTypeIds": ["2"]}, ctx_calls["it_remove"])
+    check("context: set the text default",
+          ctx_calls["default"] == {"defaultValues": [{"contextId": "10002", "type": "textfield", "text": "기본"}]},
+          ctx_calls["default"])
     await c3.aclose()
+
+    # switching to "any issue type" removes all specific types and touches nothing else
+    ctx_calls2 = {"it_remove": None, "put": None, "default": None}
+
+    def ctx_any_handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        p, m = request.url.path, request.method
+        base = "/rest/api/3/field/customfield_2/context/10003"
+        fbase = "/rest/api/3/field/customfield_2/context"
+        body = _json.loads(request.content) if request.content else {}
+        if m == "PUT" and p == base:
+            ctx_calls2["put"] = body
+            return httpx.Response(204)
+        if p == fbase + "/issuetypemapping":
+            return httpx.Response(200, json={"values": [{"contextId": "10003", "issueTypeId": "5"}]})
+        if m == "POST" and p == base + "/issuetype/remove":
+            ctx_calls2["it_remove"] = body
+            return httpx.Response(204)
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+
+    c4 = _client_for(ctx_any_handler)
+    await fld.apply_context(c4, "customfield_2", "10003", name="G", description="",
+                            project_ids=[], is_global=True, any_issue_type=True)
+    check("context(any): removed all specific issue types",
+          ctx_calls2["it_remove"] == {"issueTypeIds": ["5"]}, ctx_calls2["it_remove"])
+    check("context(any): no default PUT for non-text field", ctx_calls2["default"] is None, ctx_calls2["default"])
+    await c4.aclose()
 
 
 async def main() -> None:

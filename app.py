@@ -474,13 +474,18 @@ class ContextApply(BaseModel):
     description: str = Field(default="", max_length=1000)
     project_ids: list[str] = Field(default_factory=list)
     is_global: bool = False
+    any_issue_type: bool = True
+    issue_type_ids: list[str] = Field(default_factory=list)
+    default_value: str | None = None
+    default_type: str = ""
 
 
 @app.post("/api/fields/{field_id}/contexts/{ctx_id}/apply")
 async def apply_field_context(
     field_id: str, ctx_id: str, body: ContextApply, request: Request
 ) -> dict[str, object]:
-    """Edit one field context: name/description and (non-global) project scope.
+    """Edit one field context: name/description, (non-global) project scope,
+    issue-type scope, and — text-family fields — the per-context default value.
     Write — same-origin + X-Workbox-Setup guard."""
     _guard_setup_request(request)
     from tasks import field_inventory
@@ -488,7 +493,10 @@ async def apply_field_context(
     try:
         await field_inventory.apply_context(
             client, field_id, ctx_id, name=body.name.strip(), description=body.description.strip(),
-            project_ids=[p for p in body.project_ids if p], is_global=body.is_global)
+            project_ids=[p for p in body.project_ids if p], is_global=body.is_global,
+            any_issue_type=body.any_issue_type,
+            issue_type_ids=[i for i in body.issue_type_ids if i],
+            default_value=body.default_value, default_type=body.default_type)
         detail = await field_inventory.fetch_field_detail(client, field_id)
     except UpstreamError as exc:
         if exc.status_code in (401, 403):

@@ -23,6 +23,18 @@ _P_FIELD_SEARCH = "/field/search"
 #: field type suffixes that carry a selectable option list per context
 _OPTION_TYPES = {"select", "multiselect", "radiobuttons", "multicheckboxes", "cascadingselect"}
 
+#: text-family field type suffixes whose per-context default value is a single
+#: editable string. Maps suffix → (defaultValue "type", value key in the payload).
+_TEXT_DEFAULT = {
+    "textfield": ("textfield", "text"),
+    "textarea": ("textarea", "text"),
+    "url": ("url", "url"),
+}
+
+
+def _text_default_spec(type_key: str) -> tuple[str, str] | None:
+    return _TEXT_DEFAULT.get(type_key.split(":")[-1])
+
 #: custom field type key (schema.custom) suffix → friendly label
 _TYPE_LABEL = {
     "textfield": "단문 텍스트", "textarea": "장문 텍스트", "url": "URL",
@@ -148,6 +160,21 @@ async def fetch_field_detail(client: WorkboxClient, field_id: str) -> dict[str, 
             proj_names[_sid(p.get("id"))] = {"key": _sid(p.get("key")), "name": _sid(p.get("name"))}
     it_names = await _issue_type_names(client)
 
+    default_spec = _text_default_spec(type_key)
+    default_by_ctx: dict[str, str] = {}
+    if default_spec:
+        _, dkey = default_spec
+        for chunk in chunked(ctx_ids, 50):
+            try:
+                dv = await client.get_json(f"/field/{field_id}/context/defaultValue",
+                                           params={"contextId": chunk})
+            except UpstreamError:
+                continue
+            for row in (dv.get("values") or []):
+                val = row.get(dkey)
+                if val is not None:
+                    default_by_ctx[_sid(row.get("contextId"))] = _sid(val)
+
     opts_by_ctx: dict[str, list[dict[str, Any]]] = {}
     if has_options:
         for cid in ctx_ids:
@@ -173,10 +200,15 @@ async def fetch_field_detail(client: WorkboxClient, field_id: str) -> dict[str, 
             "global": bool(c.get("isGlobalContext")), "any_issue_type": any_it,
             "projects": projects, "issue_types": issue_types,
             "options": opts_by_ctx.get(cid, []),
+            "default": default_by_ctx.get(cid, ""),
         })
+    catalog = [{"id": i, "name": n} for i, n in sorted(it_names.items(), key=lambda kv: kv[1].lower())]
     return {
         "id": field_id, "name": _sid(meta.get("name")) or field_id,
         "type": type_label(type_key), "type_key": type_key, "has_options": has_options,
+        "has_default": default_spec is not None,
+        "default_type": default_spec[0] if default_spec else "",
+        "issue_type_catalog": catalog,
         "contexts": out_ctx,
     }
 
@@ -184,31 +216,68 @@ async def fetch_field_detail(client: WorkboxClient, field_id: str) -> dict[str, 
 async def apply_context(
     client: WorkboxClient, field_id: str, ctx_id: str, *, name: str,
     description: str, project_ids: list[str], is_global: bool,
+    issue_type_ids: list[str] | None = None, any_issue_type: bool | None = None,
+    default_value: str | None = None, default_type: str = "",
 ) -> None:
-    """Edit one context: rename/redescribe, and (non-global only) add/remove the
-    projects it is scoped to. ``project_ids`` is the desired project set; the diff
-    against the current mapping is computed here."""
+    """Edit one context. In order:
+
+    * rename / redescribe (``PUT`` the context);
+    * space scope — non-global only: add/remove the projects it is scoped to,
+      diffing ``project_ids`` (the desired set) against the current mapping;
+    * issue-type scope — when ``any_issue_type``/``issue_type_ids`` is given:
+      switch to "any", or diff the specific issue-type list;
+    * default value — text-family fields only (``default_type`` set): ``PUT`` the
+      per-context default string.
+    """
     base = f"/field/{field_id}/context/{ctx_id}"
     body: dict[str, Any] = {"name": name}
     if description is not None:
         body["description"] = description
     await client.json("PUT", base, json=body)
 
-    if is_global:
-        return
-    cur: set[str] = set()
-    pm = await client.get_json(f"/field/{field_id}/context/projectmapping",
-                               params={"contextId": [ctx_id]})
-    for row in (pm.get("values") or []):
-        if _sid(row.get("contextId")) == ctx_id and row.get("projectId"):
-            cur.add(_sid(row.get("projectId")))
-    desired = {_sid(p) for p in project_ids if _sid(p)}
-    to_add = sorted(desired - cur)
-    to_remove = sorted(cur - desired)
-    if to_add:
-        await client.json("PUT", base + "/project", json={"projectIds": to_add})
-    if to_remove:
-        await client.json("POST", base + "/project/remove", json={"projectIds": to_remove})
+    if not is_global:
+        cur: set[str] = set()
+        pm = await client.get_json(f"/field/{field_id}/context/projectmapping",
+                                   params={"contextId": [ctx_id]})
+        for row in (pm.get("values") or []):
+            if _sid(row.get("contextId")) == ctx_id and row.get("projectId"):
+                cur.add(_sid(row.get("projectId")))
+        desired = {_sid(p) for p in project_ids if _sid(p)}
+        to_add = sorted(desired - cur)
+        to_remove = sorted(cur - desired)
+        if to_add:
+            await client.json("PUT", base + "/project", json={"projectIds": to_add})
+        if to_remove:
+            await client.json("POST", base + "/project/remove", json={"projectIds": to_remove})
+
+    if any_issue_type is not None or issue_type_ids is not None:
+        cur_it: set[str] = set()
+        im = await client.get_json(f"/field/{field_id}/context/issuetypemapping",
+                                   params={"contextId": [ctx_id]})
+        for row in (im.get("values") or []):
+            if _sid(row.get("contextId")) != ctx_id:
+                continue
+            itid = _sid(row.get("issueTypeId"))
+            if itid:
+                cur_it.add(itid)
+        if any_issue_type:
+            if cur_it:  # any = no specific types
+                await client.json("POST", base + "/issuetype/remove",
+                                  json={"issueTypeIds": sorted(cur_it)})
+        else:
+            want = {_sid(i) for i in (issue_type_ids or []) if _sid(i)}
+            it_add = sorted(want - cur_it)
+            it_remove = sorted(cur_it - want)
+            if it_add:
+                await client.json("PUT", base + "/issuetype", json={"issueTypeIds": it_add})
+            if it_remove:
+                await client.json("POST", base + "/issuetype/remove", json={"issueTypeIds": it_remove})
+
+    if default_type and default_value is not None:
+        dkey = "url" if default_type == "url" else "text"
+        dv = {"contextId": ctx_id, "type": default_type, dkey: default_value}
+        await client.json("PUT", f"/field/{field_id}/context/defaultValue",
+                          json={"defaultValues": [dv]})
 
 
 async def context_options(client: WorkboxClient, field_id: str, ctx_id: str) -> list[dict[str, Any]]:
