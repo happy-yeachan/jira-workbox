@@ -556,18 +556,22 @@ def _org_client_or_none() -> OrgClient | None:
     return OrgClient(creds, load_settings())
 
 
-#: the org events API is heavily rate-limited, so keep the scan small: stop after
-#: this many events read (a handful of pages) or once `limit` license events found.
-_EVENT_SCAN_CAP = 1000
+#: backstop on events read across all actions — the server-side action+q filter
+#: makes each request dense, so this is generous; it only bounds a firehose org
+#: (where even one window has thousands of membership changes) against the org
+#: events API's aggressive throttling. A 429 mid-scan is surfaced, not swallowed.
+_EVENT_SCAN_CAP = 4000
 
 
 @app.get("/api/license/events")
-async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
+async def license_events(days: int = 30, limit: int = 1000) -> dict[str, object]:
     """License add/remove log from the org audit events (product-access grants
     and revokes). Needs the org admin key (403 otherwise). Newest first.
 
-    The org events API rate-limits aggressively, so this reads only a few pages
-    (``_EVENT_SCAN_CAP``) and surfaces a 429 as a clear "try again shortly"."""
+    Filters server-side by action + q="users", so it reads only membership-change
+    events, not the whole audit firehose. Still bounded (``_EVENT_SCAN_CAP``) and
+    surfaces a 429 as a clear "try again shortly", because a wide window in a
+    high-volume org is still thousands of events."""
     from core import org_client
     org = _org_client_or_none()
     if org is None:
@@ -592,17 +596,16 @@ async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
         org_id = await org.org_id()
         for action, q in queries:
             got_rows = 0
-            seen = 0
             async for ev in org.iter_events(org_id, from_ms=from_ms, action=action,
                                             q=q, page_size=100):
                 scanned += 1
-                seen += 1
                 row = org_client.classify_license_event(ev)
                 if row is not None:
                     out.append(row)
                     got_rows += 1
-                # per-action bounds keep the (rate-limited) scan short
-                if got_rows >= limit or seen >= 400 or scanned >= _EVENT_SCAN_CAP:
+                # fill up to `limit` rows per action; the global cap is the only
+                # rate-limit backstop (the filter keeps each request dense)
+                if got_rows >= limit or scanned >= _EVENT_SCAN_CAP:
                     break
         out.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
         out = out[:1000]
