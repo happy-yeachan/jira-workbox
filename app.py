@@ -472,13 +472,20 @@ async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
     out: list[dict[str, object]] = []
     try:
         org_id = await org.org_id()
-        async for ev in org.iter_events(org_id, from_ms=from_ms, page_size=100):
-            scanned += 1
-            row = org_client.classify_license_event(ev)
-            if row is not None:
-                out.append(row)
-            if len(out) >= limit or scanned >= _EVENT_SCAN_CAP:
-                break
+        # Filter server-side to the two product-access actions. A scan without
+        # this would never reach these rare events in a high-volume org.
+        for action in org_client.LICENSE_ACTIONS:
+            got = 0
+            async for ev in org.iter_events(org_id, from_ms=from_ms, action=action, page_size=100):
+                scanned += 1
+                got += 1
+                row = org_client.classify_license_event(ev)
+                if row is not None:
+                    out.append(row)
+                if got >= limit or scanned >= _EVENT_SCAN_CAP:
+                    break
+        out.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
+        out = out[:limit]
     except UpstreamError as exc:
         if exc.status_code == 429:
             raise HTTPException(
@@ -492,10 +499,11 @@ async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
 
 
 @app.get("/api/debug/org-events")
-async def debug_org_events(days: int = 30, samples: int = 8) -> dict[str, object]:
+async def debug_org_events(days: int = 30, samples: int = 8, action: str = "") -> dict[str, object]:
     """Diagnostic: what the org events API actually returns, so classification can
     be matched to the real shape. Returns the distinct `action` values seen (with
-    counts) plus a few raw events. Read-only; bounded scan to spare the rate limit."""
+    counts) plus a few raw events. Pass `action=` to filter server-side (e.g.
+    product_access_granted). Read-only; bounded scan to spare the rate limit."""
     org = _org_client_or_none()
     if org is None:
         raise HTTPException(status_code=403, detail="조직 admin API 키가 설정되지 않았습니다.")
@@ -507,10 +515,10 @@ async def debug_org_events(days: int = 30, samples: int = 8) -> dict[str, object
     scanned = 0
     try:
         org_id = await org.org_id()
-        async for ev in org.iter_events(org_id, from_ms=from_ms, page_size=100):
+        async for ev in org.iter_events(org_id, from_ms=from_ms, action=(action or None), page_size=100):
             scanned += 1
-            action = str(((ev.get("attributes") or {}).get("action")) or "")
-            actions[action] = actions.get(action, 0) + 1
+            act = str(((ev.get("attributes") or {}).get("action")) or "")
+            actions[act] = actions.get(act, 0) + 1
             if len(raw) < samples:
                 raw.append(ev)
             if scanned >= _EVENT_SCAN_CAP:

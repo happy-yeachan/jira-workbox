@@ -28,6 +28,9 @@ ORG_API_BASE = "https://api.atlassian.com/admin/v1"
 #: ignored so we re-discover instead of hitting /events with a bogus id.
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
+#: the org audit actions that mean "license added" / "license removed"
+LICENSE_ACTIONS = ("product_access_granted", "product_access_revoked")
+
 #: action-string keywords that mark a product-access grant vs revoke. Matched
 #: case-insensitively against the event's ``action`` (exact strings vary by
 #: tenant/version, so we key off intent words rather than a fixed list).
@@ -86,15 +89,19 @@ class OrgClient(BaseApiClient):
 
     async def iter_events(
         self, org_id: str, *, from_ms: int | None = None, to_ms: int | None = None,
-        limit: int | None = None, page_size: int | None = None,
+        action: str | None = None, limit: int | None = None, page_size: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Organisation audit events, newest-first, cursor-paginated. ``from_ms``/
-        ``to_ms`` are epoch milliseconds."""
+        ``to_ms`` are epoch milliseconds. ``action`` filters server-side to one
+        action string — essential in a high-volume org where a rare event would
+        never surface in a client-side scan."""
         params: dict[str, Any] = {}
         if from_ms is not None:
             params["from"] = from_ms
         if to_ms is not None:
             params["to"] = to_ms
+        if action:
+            params["action"] = action
         async for ev in self.paginate_token(
             f"/orgs/{org_id}/events", items_key="data", links_key="links",
             token_param="cursor", size_param="limit", params=params,
