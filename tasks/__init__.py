@@ -181,3 +181,4 @@ from tasks import group_membership_bulk  # noqa: E402,F401
 from tasks import space_create  # noqa: E402,F401
 from tasks import project_config_audit  # noqa: E402,F401  (imports screen_share_analysis for reuse)
 from tasks import config_isolate  # noqa: E402,F401
+from tasks import license_status  # noqa: E402,F401

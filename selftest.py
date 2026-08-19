@@ -388,10 +388,66 @@ async def suite_analysis() -> None:
     set_client(None)
 
 
+def _license_site(roles_status: int = 200):
+    """MockTransport handler for the license reads: an unlimited app, a
+    near-full app, and one absent from instance/license."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/rest/api/3/applicationrole":
+            if roles_status != 200:
+                return httpx.Response(roles_status, json={"errorMessages": ["no"]})
+            return httpx.Response(200, json=[
+                {"key": "jira-software", "name": "Jira Software", "numberOfSeats": 100,
+                 "userCount": 98, "remainingSeats": 2, "hasUnlimitedSeats": False},
+                {"key": "jira-core", "name": "Jira Work Management",
+                 "userCount": 7, "hasUnlimitedSeats": True},
+            ])
+        if p == "/rest/api/3/instance/license":
+            return httpx.Response(200, json={"applications": [
+                {"id": "jira-software", "plan": "PAID"}]})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+    return handler
+
+
+async def suite_license() -> None:
+    print("license_status: seats, plans, unlimited, near-capacity, refusal")
+    import tasks.license_status as lic
+    from tasks import TaskInputError
+
+    client = _client_for(_license_site())
+    set_client(client)
+    plan = await lic.plan(lic.Params())
+    check("license plan is readonly", plan.readonly and not plan.changes)
+    rows = {r["app"]: r for r in plan.tables[0].rows}
+    check("paid app seats joined with plan",
+          rows["Jira Software"]["plan"] == "유료" and rows["Jira Software"]["rate"] == "98%",
+          rows["Jira Software"])
+    check("unlimited app shows 무제한",
+          rows["Jira Work Management"]["total"] == "무제한"
+          and rows["Jira Work Management"]["plan"] == "—", rows["Jira Work Management"])
+    check("near-capacity raises a warning",
+          any("거의 찼습니다" in w for w in plan.warnings), plan.warnings)
+    check("machine-readable report present",
+          plan.data["license_status"]["applications"][0]["seats_remaining"] == 2)
+    await client.aclose()
+
+    client = _client_for(_license_site(roles_status=403))
+    set_client(client)
+    try:
+        await lic.plan(lic.Params())
+        check("403 refuses with a clear message", False)
+    except TaskInputError as exc:
+        check("403 refuses with a clear message", "권한" in str(exc))
+    await client.aclose()
+    set_client(None)
+
+
 async def main() -> None:
     await suite_write_task()
     print()
     await suite_analysis()
+    print()
+    await suite_license()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")
