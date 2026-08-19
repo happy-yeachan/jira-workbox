@@ -719,9 +719,12 @@
                           </td>
                           <td>
                             <span x-text="e.user_name || '—'"></span>
-                            <span class="sub" x-show="e.user_email" x-text="' · ' + e.user_email"></span>
+                            <span class="sub" x-show="e.user_email && e.user_email !== e.user_name" x-text="' · ' + e.user_email"></span>
                           </td>
-                          <td x-text="e.product || '—'"></td>
+                          <td>
+                            <span x-text="e.product || '—'"></span>
+                            <span class="sub" x-show="e.group" x-text="' · ' + e.group" style="display:block"></span>
+                          </td>
                           <td class="u-off" x-text="e.actor_name || e.actor_email || '—'"></td>
                         </tr>
                       </template>

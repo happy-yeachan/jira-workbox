@@ -28,16 +28,13 @@ ORG_API_BASE = "https://api.atlassian.com/admin/v1"
 #: ignored so we re-discover instead of hitting /events with a bogus id.
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
-#: the org audit actions that mean "license added" / "license removed"
-LICENSE_ACTIONS = ("product_access_granted", "product_access_revoked")
-
-#: action-string keywords that mark a product-access grant vs revoke. Matched
-#: case-insensitively against the event's ``action`` (exact strings vary by
-#: tenant/version, so we key off intent words rather than a fixed list).
-_GRANT_WORDS = ("grant", "add", "enable", "assign", "create")
-_REVOKE_WORDS = ("revoke", "remove", "disable", "unassign", "delete")
-_ACCESS_WORDS = ("product", "access", "license", "application")
-
+#: org audit actions that carry a license change. This tenant grants product
+#: access via group membership, so the group actions are the real signal; the
+#: product_access_* actions are kept for tenants that emit them directly.
+LICENSE_ACTIONS = (
+    "user_added_to_group", "user_removed_from_group",
+    "product_access_granted", "product_access_revoked",
+)
 
 class _BearerAuth(httpx.Auth):
     """Adds ``Authorization: Bearer <key>``. The only place the key is unwrapped."""
@@ -114,49 +111,88 @@ def _s(v: Any) -> str:
 
 
 def _first_by_type(items: Any, *type_words: str) -> dict[str, Any]:
-    """First list item whose ``type`` contains one of ``type_words``."""
+    """First list item whose ``type`` is one of ``type_words`` (singular or the
+    plural ``+s``). Exact match, so "users" is found but "userbase" is not."""
     if not isinstance(items, list):
         return {}
+    wanted = {w for word in type_words for w in (word, word + "s")}
     for it in items:
-        t = _s((it or {}).get("type")).lower()
-        if any(w in t for w in type_words):
+        if _s((it or {}).get("type")).lower() in wanted:
             return it
     return {}
 
 
+#: product-access group name prefixes → product label. Atlassian's default
+#: access groups are "<product>-users[-<site>]"; matched longest-first so
+#: jira-software-users isn't caught by jira-users. A group that matches none is
+#: not a license group (its add/remove is ordinary membership, not a license).
+_GROUP_PRODUCT = (
+    ("confluence-users", "Confluence"),
+    ("jira-servicedesk-users", "Jira Service Management"),
+    ("jira-service-management-users", "Jira Service Management"),
+    ("jira-software-users", "Jira Software"),
+    ("jira-product-discovery-users", "Jira Product Discovery"),
+    ("jira-core-users", "Jira Work Management"),
+    ("jira-users", "Jira"),
+)
+
+
+def _product_for_group(name: str) -> str:
+    n = (name or "").lower()
+    for prefix, product in _GROUP_PRODUCT:
+        if n.startswith(prefix):
+            return product
+    return ""
+
+
 def classify_license_event(ev: dict[str, Any]) -> dict[str, Any] | None:
     """Turn one org audit event into a license-change row, or ``None`` if it is
-    not a product-access grant/revoke.
+    not a license change.
 
-    JSON:API-ish shape: ``{id, attributes:{time, action, actor, context,
-    container}}``. Exact ``action`` strings vary, so we classify by intent words
-    and pull the product/user from context/container defensively."""
+    Two mechanisms are covered:
+
+    * direct product-access events (``product_access_granted`` / ``_revoked``);
+    * group membership (``user_added_to_group`` / ``user_removed_from_group``) —
+      the common path, where product access is granted by adding the user to a
+      ``<product>-users`` group. Only product-access groups count; ordinary group
+      membership is skipped.
+
+    Shape: ``{attributes:{time, action, actor, context:[…], container:[…]}}``;
+    context carries a ``users`` item (the target) and a ``groups`` item."""
     attrs = ev.get("attributes") or {}
     action = _s(attrs.get("action")).lower()
-    if not action or not any(w in action for w in _ACCESS_WORDS):
-        return None
-    if any(w in action for w in _REVOKE_WORDS):
+    if "revok" in action or "remov" in action:
         kind = "revoke"
-    elif any(w in action for w in _GRANT_WORDS):
+    elif "grant" in action or "add" in action:
         kind = "grant"
     else:
         return None
 
-    actor = attrs.get("actor") or {}
     ctx = attrs.get("context") if isinstance(attrs.get("context"), list) else []
     cont = attrs.get("container") if isinstance(attrs.get("container"), list) else []
     pool = ctx + cont
-
-    prod = _first_by_type(pool, "product", "application", "license", "app")
     user = _first_by_type(pool, "user", "account")
-    pa = (prod.get("attributes") or {}) if isinstance(prod, dict) else {}
-    ua = (user.get("attributes") or {}) if isinstance(user, dict) else {}
+    group = _first_by_type(pool, "group")
+    ga = group.get("attributes") or {}
+    group_name = _s(ga.get("name") or ga.get("groupName"))
 
+    if "group" in action:
+        product = _product_for_group(group_name)
+        if not product:
+            return None  # membership in a non-product-access group is not a license
+    else:
+        prod = _first_by_type(pool, "product", "application", "license")
+        pa = prod.get("attributes") or {}
+        product = _s(pa.get("name") or prod.get("name") or prod.get("id"))
+
+    ua = user.get("attributes") or {}
+    actor = attrs.get("actor") or {}
     return {
         "time": _s(attrs.get("time")),
         "kind": kind,
         "action": _s(attrs.get("action")),
-        "product": _s(pa.get("name") or prod.get("name") or prod.get("id")),
+        "product": product,
+        "group": group_name,
         "user_name": _s(ua.get("name") or ua.get("displayName") or user.get("name")),
         "user_email": _s(ua.get("email") or ua.get("emailAddress")),
         "actor_name": _s(actor.get("name") or actor.get("displayName")),

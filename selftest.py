@@ -584,31 +584,42 @@ async def suite_license_stream() -> None:
     set_client(None)
 
 
+def _group_event(eid, action, time, user, group):
+    """A user_(added|removed)_to/from_group event in the real org-audit shape."""
+    return {"id": eid, "attributes": {
+        "time": time, "action": action,
+        "actor": {"name": "API Key", "email": "provisioning"},
+        "context": [
+            {"id": "u:" + user, "type": "users", "attributes": {"name": user, "email": user}},
+            {"id": "g:" + group, "type": "groups", "attributes": {"name": group, "groupName": group}},
+        ],
+        "container": [{"type": "userbase", "attributes": {}},
+                      {"type": "orgs", "attributes": {"name": "hmg"}}]}}
+
+
 def _org_events_client():
-    """OrgClient over a MockTransport for the admin events API: a product-access
-    grant, a revoke, and one unrelated event (must be skipped)."""
+    """OrgClient over a MockTransport: a Jira add, a Confluence remove (both
+    product-access groups → kept), and an add to a non-product group (skipped).
+    Server-side action filter is honoured so each action query is separate."""
     from core.auth import OrgCredentials
     from core.org_client import OrgClient
 
+    added = [
+        _group_event("e1", "user_added_to_group", "2026-08-01T10:00:00Z", "alice@x", "jira-users-hmg"),
+        _group_event("e3", "user_added_to_group", "2026-08-03T12:00:00Z", "carol@x", "project-alpha-devs"),
+    ]
+    removed = [
+        _group_event("e2", "user_removed_from_group", "2026-08-02T11:00:00Z", "bob@x", "confluence-users-hmg"),
+    ]
+
     def handler(request: httpx.Request) -> httpx.Response:
-        p = request.url.path
+        p, q = request.url.path, request.url.params
         if p == "/admin/v1/orgs":
             return httpx.Response(200, json={"data": [{"id": "org-1"}]})
         if p == "/admin/v1/orgs/org-1/events":
-            return httpx.Response(200, json={"data": [
-                {"id": "e1", "attributes": {
-                    "time": "2026-08-01T10:00:00Z", "action": "user_product_access_granted",
-                    "actor": {"name": "Admin A", "email": "admin@x"},
-                    "context": [{"type": "user", "attributes": {"name": "Alice", "email": "alice@x"}},
-                                {"type": "product", "attributes": {"name": "Jira Software"}}]}},
-                {"id": "e2", "attributes": {
-                    "time": "2026-08-02T11:00:00Z", "action": "user_product_access_revoked",
-                    "actor": {"name": "Admin A", "email": "admin@x"},
-                    "context": [{"type": "user", "attributes": {"name": "Bob", "email": "bob@x"}},
-                                {"type": "product", "attributes": {"name": "Confluence"}}]}},
-                {"id": "e3", "attributes": {"time": "2026-08-03T12:00:00Z", "action": "user_logged_in",
-                                            "actor": {"name": "Bob"}}},
-            ], "links": {}})
+            act = q.get("action")
+            data = {"user_added_to_group": added, "user_removed_from_group": removed}.get(act, [])
+            return httpx.Response(200, json={"data": data, "links": {}})
         return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
 
     creds = OrgCredentials(api_key=SecretStr("org-key"))
@@ -616,24 +627,25 @@ def _org_events_client():
 
 
 async def suite_license_events() -> None:
-    print("license log: org audit events classified into grant/revoke")
+    print("license log: group-membership events classified into grant/revoke")
     from core import org_client
     org = _org_events_client()
     org_id = await org.org_id()
     check("org id discovered from /orgs", org_id == "org-1", org_id)
     rows = []
-    async for ev in org.iter_events(org_id):
-        row = org_client.classify_license_event(ev)
-        if row is not None:
-            rows.append(row)
-    check("only product-access events kept (login skipped)", len(rows) == 2, [r["action"] for r in rows])
+    for action in org_client.LICENSE_ACTIONS:
+        async for ev in org.iter_events(org_id, action=action):
+            row = org_client.classify_license_event(ev)
+            if row is not None:
+                rows.append(row)
+    check("non-product-access group add is skipped", len(rows) == 2, [r["group"] for r in rows])
     grant = next((r for r in rows if r["kind"] == "grant"), None)
     revoke = next((r for r in rows if r["kind"] == "revoke"), None)
-    check("grant: user + product extracted",
-          grant and grant["user_name"] == "Alice" and grant["product"] == "Jira Software"
-          and grant["actor_name"] == "Admin A", grant)
-    check("revoke classified with its product",
-          revoke and revoke["user_name"] == "Bob" and revoke["product"] == "Confluence", revoke)
+    check("add to jira-users → grant, product Jira, user extracted",
+          grant and grant["user_name"] == "alice@x" and grant["product"] == "Jira"
+          and grant["actor_name"] == "API Key", grant)
+    check("remove from confluence-users → revoke, product Confluence",
+          revoke and revoke["user_name"] == "bob@x" and revoke["product"] == "Confluence", revoke)
     await org.aclose()
 
 
