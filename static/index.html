@@ -346,8 +346,6 @@
   .opt-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; max-height: 220px; overflow: auto; }
   .opt { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: #f6f7f9; }
   .opt.off { color: var(--muted); text-decoration: line-through; opacity: .7; }
-  .opt.sel { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }
-  .opt.pick { opacity: .6; }
   .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
   .chk input { width: auto; }
   .ctx-opts-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -910,16 +908,22 @@
                       <div style="margin-top:10px">
                         <div class="name" style="margin-bottom:4px">이슈유형</div>
                         <label class="chk"><input type="checkbox" x-model="ctxNew.anyIssueType"> 모든 이슈유형</label>
-                        <div class="opt-list" style="margin-top:6px" x-show="!ctxNew.anyIssueType">
-                          <template x-for="it in (fieldmgr.detail.issue_type_catalog || [])" :key="it.id">
-                            <span class="opt" :class="ctxNew.issueTypes.includes(it.id) ? 'sel' : 'pick'"
-                                  style="cursor:pointer" @click="ctxNewToggleIt(it.id)">
-                              <span x-text="it.name"></span>
-                            </span>
-                          </template>
-                          <span class="sub" x-show="!(fieldmgr.detail.issue_type_catalog || []).length">이슈유형 목록을 불러올 수 없습니다</span>
+                        <div x-show="!ctxNew.anyIssueType" style="margin-top:6px">
+                          <div class="opt-list" style="margin-bottom:6px">
+                            <template x-for="id in ctxNew.issueTypes" :key="id">
+                              <span class="opt"><span x-text="itName(id)"></span> <a class="opt-x" @click.prevent="itRemove(ctxNew, id)">×</a></span>
+                            </template>
+                            <span class="sub" x-show="!ctxNew.issueTypes.length">선택하지 않으면 모든 유형으로 설정됩니다.</span>
+                          </div>
+                          <div style="position:relative; max-width:380px">
+                            <input type="text" placeholder="이슈유형 검색" x-model="ctxNew.itsearch.q">
+                            <div class="picker" x-show="ctxNew.itsearch.q.trim() && itFiltered(ctxNew).length">
+                              <template x-for="it in itFiltered(ctxNew)" :key="it.id">
+                                <div class="pick-row" @click="itAdd(ctxNew, it.id)"><span x-text="it.name"></span></div>
+                              </template>
+                            </div>
+                          </div>
                         </div>
-                        <div class="sub" x-show="!ctxNew.anyIssueType && !ctxNew.issueTypes.length" style="margin-top:4px">선택하지 않으면 모든 유형으로 설정됩니다.</div>
                       </div>
                       <div class="notice err" x-show="ctxNew.err" x-text="ctxNew.err" style="margin-top:8px"></div>
                       <div class="row" style="margin-top:10px; gap:8px; align-items:center">
@@ -989,16 +993,22 @@
                         <div style="margin-top:10px">
                           <div class="name" style="margin-bottom:4px">이슈유형</div>
                           <label class="chk"><input type="checkbox" x-model="ctxEdit.anyIssueType"> 모든 이슈유형</label>
-                          <div class="opt-list" style="margin-top:6px" x-show="!ctxEdit.anyIssueType">
-                            <template x-for="it in (fieldmgr.detail.issue_type_catalog || [])" :key="it.id">
-                              <span class="opt" :class="ctxEdit.issueTypes.includes(it.id) ? 'sel' : 'pick'"
-                                    style="cursor:pointer" @click="ctxToggleIt(it.id)">
-                                <span x-text="it.name"></span>
-                              </span>
-                            </template>
-                            <span class="sub" x-show="!(fieldmgr.detail.issue_type_catalog || []).length">이슈유형 목록을 불러올 수 없습니다</span>
+                          <div x-show="!ctxEdit.anyIssueType" style="margin-top:6px">
+                            <div class="opt-list" style="margin-bottom:6px">
+                              <template x-for="id in ctxEdit.issueTypes" :key="id">
+                                <span class="opt"><span x-text="itName(id)"></span> <a class="opt-x" @click.prevent="itRemove(ctxEdit, id)">×</a></span>
+                              </template>
+                              <span class="sub" x-show="!ctxEdit.issueTypes.length">선택하지 않으면 모든 유형으로 설정됩니다.</span>
+                            </div>
+                            <div style="position:relative; max-width:380px">
+                              <input type="text" placeholder="이슈유형 검색" x-model="ctxEdit.itsearch.q">
+                              <div class="picker" x-show="ctxEdit.itsearch.q.trim() && itFiltered(ctxEdit).length">
+                                <template x-for="it in itFiltered(ctxEdit)" :key="it.id">
+                                  <div class="pick-row" @click="itAdd(ctxEdit, it.id)"><span x-text="it.name"></span></div>
+                                </template>
+                              </div>
+                            </div>
                           </div>
-                          <div class="sub" x-show="!ctxEdit.anyIssueType && !ctxEdit.issueTypes.length" style="margin-top:4px">선택하지 않으면 모든 유형으로 설정됩니다.</div>
                         </div>
                         <div class="notice err" x-show="ctxEdit.err" x-text="ctxEdit.err" style="margin-top:8px"></div>
                         <div class="row" style="margin-top:10px; gap:8px; align-items:center">
@@ -1942,13 +1952,8 @@ document.addEventListener('alpine:init', () => {
       this.ctxNew = {
         name: '', description: '', isGlobal: true, projects: [],
         anyIssueType: true, issueTypes: [],
-        psearch: { q: '', results: [] }, busy: false, err: '',
+        psearch: { q: '', results: [] }, itsearch: { q: '' }, busy: false, err: '',
       };
-    },
-    ctxNewToggleIt(id) {
-      const arr = this.ctxNew.issueTypes;
-      const i = arr.indexOf(id);
-      if (i >= 0) arr.splice(i, 1); else arr.push(id);
     },
     async ctxNewSearchProjects() {
       const q = (this.ctxNew.psearch.q || '').trim();
@@ -2004,14 +2009,23 @@ document.addEventListener('alpine:init', () => {
         projects: (c.projects || []).map(p => ({ id: p.id, key: p.key, name: p.name })),
         anyIssueType: !!c.any_issue_type,
         issueTypes: (c.issue_types || []).map(it => it.id),
-        psearch: { q: '', results: [] }, busy: false, err: '', confirm: false,
+        psearch: { q: '', results: [] }, itsearch: { q: '' }, busy: false, err: '', confirm: false,
       };
     },
-    ctxToggleIt(id) {
-      const arr = this.ctxEdit.issueTypes;
-      const i = arr.indexOf(id);
-      if (i >= 0) arr.splice(i, 1); else arr.push(id);
+    // issue-type picker helpers (shared by the create + edit panels)
+    itName(id) {
+      const c = (this.fieldmgr.detail.issue_type_catalog || []).find(x => x.id === id);
+      return c ? c.name : id;
     },
+    itFiltered(obj) {
+      const q = (obj.itsearch.q || '').trim().toLowerCase();
+      const sel = new Set(obj.issueTypes);
+      let list = (this.fieldmgr.detail.issue_type_catalog || []).filter(it => !sel.has(it.id));
+      if (q) list = list.filter(it => it.name.toLowerCase().includes(q));
+      return list.slice(0, 12);
+    },
+    itAdd(obj, id) { if (!obj.issueTypes.includes(id)) obj.issueTypes.push(id); obj.itsearch.q = ''; },
+    itRemove(obj, id) { const i = obj.issueTypes.indexOf(id); if (i >= 0) obj.issueTypes.splice(i, 1); },
     cancelCtx() { this.ctxEdit = null; },
     async ctxSearchProjects() {
       const q = (this.ctxEdit.psearch.q || '').trim();
