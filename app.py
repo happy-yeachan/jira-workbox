@@ -469,6 +469,41 @@ async def field_detail(field_id: str) -> dict[str, object]:
     return detail
 
 
+class OptionIn(BaseModel):
+    id: str | None = None
+    value: str = Field(max_length=255)
+    disabled: bool = False
+
+
+class OptionsApply(BaseModel):
+    options: list[OptionIn] = Field(default_factory=list)
+    deleted_ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/fields/{field_id}/contexts/{ctx_id}/options/apply")
+async def apply_field_options(
+    field_id: str, ctx_id: str, body: OptionsApply, request: Request
+) -> dict[str, object]:
+    """Apply an edited select-option set to one field context (create / update /
+    delete / reorder). Write — same-origin + X-Workbox-Setup guard as setup."""
+    _guard_setup_request(request)
+    from tasks import field_inventory
+    client = _require_client()
+    options = [{"id": o.id, "value": o.value.strip(), "disabled": o.disabled}
+               for o in body.options if o.value.strip()]
+    if not options and not body.deleted_ids:
+        raise HTTPException(status_code=422, detail="변경할 옵션이 없습니다.")
+    try:
+        result = await field_inventory.apply_options(
+            client, field_id, ctx_id, options, [d for d in body.deleted_ids if d])
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403,
+                                detail="옵션을 변경할 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return {"options": result}
+
+
 @app.get("/api/license/summary")
 async def license_summary() -> dict[str, object]:
     """Per-application seat + plan records for the home dashboard. Read-only,

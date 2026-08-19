@@ -739,6 +739,46 @@ async def suite_field_inventory() -> None:
     check("unknown field id → None", await fld.fetch_field_detail(client, "nope") is None)
     await client.aclose()
 
+    # option editor apply: create new, delete one, reorder
+    calls = {"create": None, "update": None, "delete": [], "move": None}
+
+    def apply_handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        p, m = request.url.path, request.method
+        base = "/rest/api/3/field/customfield_2/context/10001/option"
+        body = _json.loads(request.content) if request.content else {}
+        if m == "POST" and p == base:
+            calls["create"] = body
+            # echo created options with fresh ids
+            return httpx.Response(200, json={"options": [
+                {"id": "900" + str(i), "value": o["value"]} for i, o in enumerate(body.get("options", []))]})
+        if m == "PUT" and p == base:
+            calls["update"] = body
+            return httpx.Response(200, json={"options": body.get("options", [])})
+        if m == "DELETE" and p.startswith(base + "/"):
+            calls["delete"].append(p.rsplit("/", 1)[-1])
+            return httpx.Response(204)
+        if m == "PUT" and p == base + "/move":
+            calls["move"] = body
+            return httpx.Response(200, json={})
+        if m == "GET" and p == base:
+            return httpx.Response(200, json={"values": [
+                {"id": "1", "value": "높음"}, {"id": "9000", "value": "매우높음"}],
+                "isLast": True, "startAt": 0, "maxResults": 100, "total": 2})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+
+    c2 = _client_for(apply_handler)
+    # keep option "1" (reordered after a new one), add "매우높음", delete option "2"
+    result = await fld.apply_options(
+        c2, "customfield_2", "10001",
+        [{"value": "매우높음"}, {"id": "1", "value": "높음", "disabled": False}], ["2"])
+    check("apply: created the new option", calls["create"]["options"] == [{"value": "매우높음", "disabled": False}], calls["create"])
+    check("apply: deleted the removed option", calls["delete"] == ["2"], calls["delete"])
+    check("apply: reordered with new id first",
+          calls["move"]["customFieldOptionIds"] == ["9000", "1"] and calls["move"]["position"] == "First", calls["move"])
+    check("apply: returns refreshed options", [o["value"] for o in result] == ["높음", "매우높음"], result)
+    await c2.aclose()
+
 
 async def main() -> None:
     await suite_write_task()

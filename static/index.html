@@ -346,6 +346,15 @@
   .opt-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; max-height: 220px; overflow: auto; }
   .opt { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: #f6f7f9; }
   .opt.off { color: var(--muted); text-decoration: line-through; opacity: .7; }
+  .ctx-opts-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .opt-editor { margin-top: 4px; }
+  .opt-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; margin-bottom: 6px;
+             border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  .opt-row.off { opacity: .55; }
+  .opt-grip { cursor: grab; color: var(--muted); user-select: none; font-size: 12px; letter-spacing: -2px; }
+  .opt-input { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; }
+  .opt-bulk { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; }
+  .opt-bulk textarea { flex: 1; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 13px; resize: vertical; }
   /* indeterminate loading bar */
   .progbar { height: 3px; background: var(--accent-soft); overflow: hidden; position: relative; }
   .progbar::before {
@@ -870,12 +879,53 @@
                     </div>
                     <template x-if="fields.detail.has_options">
                       <div class="ctx-opts">
-                        <div class="sub">옵션 <b x-text="c.options.length"></b>개</div>
-                        <div class="opt-list">
-                          <template x-for="o in c.options" :key="o.id">
-                            <span class="opt" :class="{ off: o.disabled }" x-text="o.value"></span>
+                        <!-- read-only view -->
+                        <div x-show="!(fields.editing && fields.editing.ctxId === c.id)">
+                          <div class="ctx-opts-h">
+                            <span class="sub">옵션 <b x-text="c.options.length"></b>개</span>
+                            <button class="btn small ghost" @click="editOptions(c)">옵션 편집</button>
+                          </div>
+                          <div class="opt-list">
+                            <template x-for="o in c.options" :key="o.id">
+                              <span class="opt" :class="{ off: o.disabled }" x-text="o.value"></span>
+                            </template>
+                            <span class="sub" x-show="!c.options.length">옵션 없음</span>
+                          </div>
+                        </div>
+                        <!-- editor -->
+                        <div class="opt-editor" x-show="fields.editing && fields.editing.ctxId === c.id">
+                          <div class="sub" style="margin-bottom:6px">드래그(⋮⋮)로 순서 변경 · 값 편집 · 활성/비활성 · 삭제. 아래에서 여러 줄 대량 추가.</div>
+                          <template x-for="(o, i) in (fields.editing ? fields.editing.list : [])" :key="o._key">
+                            <div class="opt-row" :class="{ off: o.disabled }" draggable="true"
+                                 @dragstart="fields.editing.dragIndex = i" @dragover.prevent
+                                 @drop.prevent="optDrop(i)">
+                              <span class="opt-grip">⋮⋮</span>
+                              <input class="opt-input" x-model="o.value">
+                              <button class="btn small ghost" @click="o.disabled = !o.disabled" x-text="o.disabled ? '비활성' : '활성'"></button>
+                              <button class="btn small ghost" @click="optDelete(i)">삭제</button>
+                            </div>
                           </template>
-                          <span class="sub" x-show="!c.options.length">옵션 없음</span>
+                          <div class="opt-bulk">
+                            <textarea rows="3" placeholder="여러 줄 붙여넣기 — 한 줄에 옵션 하나씩" x-model="fields.editing.bulk"></textarea>
+                            <button class="btn small" @click="addBulk()">대량 추가</button>
+                          </div>
+                          <div class="notice err" x-show="fields.editing.err" x-text="fields.editing.err" style="margin-top:8px"></div>
+                          <div class="row" style="margin-top:10px; gap:8px; align-items:center">
+                            <template x-if="!fields.editing.confirm">
+                              <span style="display:flex; gap:8px">
+                                <button class="btn primary small" @click="fields.editing.confirm = true">적용</button>
+                                <button class="btn ghost small" @click="cancelEdit()">편집 닫기</button>
+                              </span>
+                            </template>
+                            <template x-if="fields.editing.confirm">
+                              <span style="display:flex; gap:8px; align-items:center">
+                                <span class="sub" x-text="editSummary()"></span>
+                                <button class="btn danger small" @click="applyOptions()" :disabled="fields.editing.busy"
+                                        x-text="fields.editing.busy ? '적용 중…' : '확정'"></button>
+                                <button class="btn ghost small" @click="fields.editing.confirm = false" :disabled="fields.editing.busy">취소</button>
+                              </span>
+                            </template>
+                          </div>
                         </div>
                       </div>
                     </template>
@@ -1526,7 +1576,7 @@ document.addEventListener('alpine:init', () => {
     KEEP_TOKEN: ' keep-token ', KEEP_ORG: ' keep-org ',
     landingView: 'dashboard',
     fields: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50,
-              detail: null, detailLoading: false, detailErr: '' },
+              detail: null, detailLoading: false, detailErr: '', editing: null },
     liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100 },
     logProducts: [
@@ -1691,7 +1741,59 @@ document.addEventListener('alpine:init', () => {
       } catch (e) { this.fields.detailErr = '필드 상세 조회 실패: ' + e; }
       finally { this.fields.detailLoading = false; }
     },
-    closeFieldDetail() { this.fields.detail = null; this.fields.detailErr = ''; },
+    closeFieldDetail() { this.fields.detail = null; this.fields.detailErr = ''; this.fields.editing = null; },
+    // ---- select option editor (drag reorder · bulk add · disable · delete) ----
+    editOptions(c) {
+      this.fields.editing = {
+        ctxId: c.id, ctxName: c.name || '기본 컨텍스트',
+        list: (c.options || []).map((o, i) => ({ id: o.id, value: o.value, disabled: o.disabled, _key: 'o' + i + '_' + o.id })),
+        deleted: [], bulk: '', busy: false, err: '', confirm: false, dragIndex: null,
+      };
+    },
+    cancelEdit() { this.fields.editing = null; },
+    optDrop(i) {
+      const e = this.fields.editing, from = e.dragIndex;
+      if (from == null || from === i) return;
+      const [m] = e.list.splice(from, 1); e.list.splice(i, 0, m); e.dragIndex = null;
+    },
+    optDelete(i) {
+      const e = this.fields.editing, o = e.list[i];
+      if (o.id) e.deleted.push(o.id);
+      e.list.splice(i, 1);
+    },
+    addBulk() {
+      const e = this.fields.editing;
+      const vals = (e.bulk || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      let k = Date.now();
+      for (const v of vals) e.list.push({ value: v, disabled: false, _key: 'n' + (k++) });
+      e.bulk = '';
+    },
+    editSummary() {
+      const e = this.fields.editing;
+      const added = e.list.filter(o => !o.id).length;
+      return `추가 ${added} · 삭제 ${e.deleted.length} · 총 ${e.list.length}개 · 순서 반영`;
+    },
+    async applyOptions() {
+      const e = this.fields.editing; e.busy = true; e.err = '';
+      try {
+        const url = '/api/fields/' + encodeURIComponent(this.fields.detail.id)
+                  + '/contexts/' + encodeURIComponent(e.ctxId) + '/options/apply';
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({
+            options: e.list.map(o => ({ id: o.id || null, value: o.value, disabled: !!o.disabled })),
+            deleted_ids: e.deleted,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { e.err = this.errText(data) || '적용 실패'; e.confirm = false; return; }
+        const ctx = this.fields.detail.contexts.find(c => c.id === e.ctxId);
+        if (ctx) ctx.options = data.options || [];
+        this.fields.editing = null;
+      } catch (err) { e.err = '적용 실패: ' + err; e.confirm = false; }
+      finally { e.busy = false; }
+    },
 
     // ---------- license change log (org audit events) ----------
     async loadEvents() {

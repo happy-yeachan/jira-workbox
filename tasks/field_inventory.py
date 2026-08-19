@@ -181,4 +181,63 @@ async def fetch_field_detail(client: WorkboxClient, field_id: str) -> dict[str, 
     }
 
 
-__all__ = ["fetch_fields", "fetch_field_detail", "type_label", "UpstreamError"]
+async def context_options(client: WorkboxClient, field_id: str, ctx_id: str) -> list[dict[str, Any]]:
+    base = f"/field/{field_id}/context/{ctx_id}/option"
+    out: list[dict[str, Any]] = []
+    async for o in client.paginate_offset(base, items_key="values", page_size=100):
+        out.append({"id": _sid(o.get("id")), "value": _sid(o.get("value")),
+                    "disabled": bool(o.get("disabled"))})
+    return out
+
+
+async def apply_options(
+    client: WorkboxClient, field_id: str, ctx_id: str,
+    options: list[dict[str, Any]], deleted_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Apply an edited option set to one context, in order:
+    create new (no id) → update all values/disabled → delete removed → reorder to
+    match ``options``. ``options`` is the desired final list in the desired order;
+    new items have no ``id``. Returns the refreshed options."""
+    base = f"/field/{field_id}/context/{ctx_id}/option"
+
+    # 1) create the new options (those without an id), preserving order
+    new = [{"value": o["value"], "disabled": bool(o.get("disabled"))}
+           for o in options if not o.get("id")]
+    created: list[dict[str, Any]] = []
+    if new:
+        resp = await client.json("POST", base, json={"options": new})
+        created = resp.get("options") or []
+
+    # weave created ids back into the desired order
+    ci = 0
+    ordered_ids: list[str] = []
+    update: list[dict[str, Any]] = []
+    for o in options:
+        oid = _sid(o.get("id"))
+        if not oid:
+            oid = _sid(created[ci].get("id")) if ci < len(created) else ""
+            ci += 1
+        if not oid:
+            continue
+        ordered_ids.append(oid)
+        update.append({"id": oid, "value": o["value"], "disabled": bool(o.get("disabled"))})
+
+    # 2) one PUT sets value + disabled for everyone (incl. the just-created)
+    if update:
+        await client.json("PUT", base, json={"options": update})
+
+    # 3) delete removed
+    for did in deleted_ids:
+        if did:
+            await client.request("DELETE", f"{base}/{_sid(did)}")
+
+    # 4) reorder to the desired sequence
+    if len(ordered_ids) > 1:
+        await client.json("PUT", base + "/move",
+                          json={"customFieldOptionIds": ordered_ids, "position": "First"})
+
+    return await context_options(client, field_id, ctx_id)
+
+
+__all__ = ["fetch_fields", "fetch_field_detail", "context_options", "apply_options",
+           "type_label", "UpstreamError"]
