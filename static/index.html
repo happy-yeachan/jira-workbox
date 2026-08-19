@@ -256,9 +256,8 @@
   .center-wrap .card { width: 480px; max-width: 100%; }
   .empty { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 13.5px; }
 
-  /* landing has no sidebar — center the card grid and give it room */
-  main.landing section.work { padding: 32px 24px 56px; align-items: center; }
-  .landing-wrap { width: 100%; max-width: 1040px; }
+  /* landing shares the sidebar layout; the dashboard fills the main column */
+  .landing-wrap { width: 100%; }
   .hero { padding: 8px 2px 20px; }
   .hero h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: -.02em; }
   .hero .sub { max-width: 620px; }
@@ -576,8 +575,14 @@
   </div>
 </template>
 
-<main x-show="health.configured !== false && !setupOpen" :class="{ 'landing': !selected }">
-  <nav x-show="selected">
+<main x-show="health.configured !== false && !setupOpen">
+  <nav>
+    <div style="margin-bottom:14px">
+      <button @click="selected = null" :aria-current="String(!selected)">
+        <span class="t">라이선스 현황</span>
+        <span class="d">시트 사용량·변경 로그 대시보드</span>
+      </button>
+    </div>
     <template x-for="group in groups" :key="group.name">
       <div style="margin-bottom:14px">
         <div class="nav-label" x-text="group.name"></div>
@@ -763,23 +768,6 @@
             </template>
           </div>
         </div>
-
-        <template x-for="group in groups" :key="group.name">
-          <div class="cat">
-            <div class="cat-label" x-text="group.name"></div>
-            <div class="cards">
-              <template x-for="t in group.tasks" :key="t.spec.name">
-                <button class="task-card" @click="select(t)">
-                  <div class="tc-title">
-                    <span x-text="t.spec.title"></span>
-                    <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
-                  </div>
-                  <div class="tc-desc" x-text="t.spec.description"></div>
-                </button>
-              </template>
-            </div>
-          </div>
-        </template>
       </div>
     </template>
 
