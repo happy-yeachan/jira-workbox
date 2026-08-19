@@ -144,34 +144,52 @@ async def _confluence_groups(client: WorkboxClient) -> list[dict[str, str]]:
     return out
 
 
-async def _group_total(client: WorkboxClient, gid: str) -> int | None:
-    """Active member count of a group in one cheap call (the page bean's total)."""
-    try:
-        page = await client.get_json(
-            _P_GROUP_MEMBER,
-            params={"groupId": gid, "includeInactiveUsers": "false", "maxResults": 1})
-    except UpstreamError:
-        return None
-    return _int(page.get("total"))
+async def stream_confluence(
+    site_client: WorkboxClient, org_client: Any | None, limit: int = _USER_CAP
+) -> AsyncIterator[dict[str, Any]]:
+    """Confluence seat users, streamed. Two sources:
 
+    * ``mode="org"`` — the organisation admin API (accurate: real Confluence
+      product-access users). Used when an org admin key is configured.
+    * ``mode="group"`` — the ``confluence-users`` access group via the site token
+      (approximate: group membership, not billed seats). The fallback.
 
-async def confluence_card(client: WorkboxClient) -> dict[str, Any] | None:
-    """A Confluence seat card built from access-group membership. Total seats are
-    not available via the site token, so ``total`` is None; ``used`` is the group
-    member count. ``None`` when no Confluence access group is found."""
-    groups = await _confluence_groups(client)
-    if not groups:
-        return None
-    totals = [t for t in [await _group_total(client, g["id"]) for g in groups] if t is not None]
-    # one group is the norm; more than one can double-count, so flag it
-    used = max(totals) if totals else None
-    return {
-        "key": _CONFLUENCE_KEY, "name": "Confluence", "plan": "", "plan_label": "",
-        "total": None, "used": used, "remaining": None,
-        "unlimited": False, "pct": None, "seat_noun": "시트",
-        "approx": len(groups) > 1,
-        "group_ids": [g["id"] for g in groups],
-    }
+    Events mirror ``stream_application_users`` plus a ``mode`` on ``meta``. No
+    ``meta`` is emitted when neither source is available, so the UI shows no card."""
+    if org_client is not None:
+        from core.org_client import confluence_user, is_confluence_user
+        try:
+            org_id = await org_client.org_id()
+        except UpstreamError:
+            org_id = ""
+        if org_id:
+            yield {"type": "meta", "name": "Confluence", "mode": "org", "total": None}
+            buf: list[dict[str, Any]] = []
+            used = 0
+            capped = False
+            async for u in org_client.iter_users(org_id):
+                if not is_confluence_user(u):
+                    continue
+                used += 1
+                if used > limit:
+                    capped = True
+                    break
+                buf.append(confluence_user(u))
+                if len(buf) >= 200:
+                    yield {"type": "batch", "users": buf}
+                    buf = []
+            if buf:
+                yield {"type": "batch", "users": buf}
+            yield {"type": "done", "used": used - (1 if capped else 0), "capped": capped}
+            return
+
+    # site-token fallback: the confluence-users group's members
+    if not await _confluence_groups(site_client):
+        return  # no source → no card
+    async for ev in stream_application_users(site_client, _CONFLUENCE_KEY, limit=limit):
+        if ev.get("type") == "meta":
+            ev = {**ev, "mode": "group", "total": None}
+        yield ev
 
 
 async def _resolve_groups(

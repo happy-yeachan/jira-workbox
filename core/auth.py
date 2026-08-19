@@ -42,6 +42,11 @@ SERVICE = "jira-workbox"
 _KEY_SITE_URL = "site_url"
 _KEY_EMAIL = "email"
 _KEY_API_TOKEN = "api_token"
+#: Organisation (admin.atlassian.net) API key — a DIFFERENT secret from the site
+#: API token. Needed for accurate per-product seat data (e.g. Confluence), which
+#: the site token cannot provide. Optional; the tool works without it.
+_KEY_ORG_API_KEY = "org_api_key"
+_KEY_ORG_ID = "org_id"
 
 SETUP_HINT = (
     "저장된 접속 정보가 없습니다. 웹 화면의 연결 폼을 채우거나 다음을 실행하세요:\n"
@@ -139,6 +144,49 @@ def store_credentials(site_url: str, email: str, api_token: str) -> None:
 
 def delete_credentials() -> None:
     for key in (_KEY_SITE_URL, _KEY_EMAIL, _KEY_API_TOKEN):
+        try:
+            keyring.delete_password(SERVICE, key)
+        except keyring.errors.PasswordDeleteError:
+            pass  # already absent
+
+
+# --------------------------------------------------------------------------
+# organisation (admin) API key — optional, separate secret
+# --------------------------------------------------------------------------
+
+
+class OrgCredentials(BaseModel):
+    """Atlassian organisation admin API key. Never serialize to a response."""
+
+    api_key: SecretStr
+    org_id: str = ""  # discovered from GET /orgs when empty
+
+    def bearer(self) -> str:
+        """The Authorization header value. The one place the key is unwrapped."""
+        return f"Bearer {self.api_key.get_secret_value()}"
+
+
+def load_org_credentials() -> OrgCredentials | None:
+    """Read the org admin API key from the OS store, or ``None`` if absent."""
+    key = keyring.get_password(SERVICE, _KEY_ORG_API_KEY)
+    if not key:
+        return None
+    org_id = keyring.get_password(SERVICE, _KEY_ORG_ID) or ""
+    return OrgCredentials(api_key=SecretStr(key), org_id=org_id)
+
+
+def store_org_credentials(api_key: str, org_id: str = "") -> None:
+    keyring.set_password(SERVICE, _KEY_ORG_API_KEY, api_key.strip())
+    keyring.set_password(SERVICE, _KEY_ORG_ID, (org_id or "").strip())
+
+
+def store_org_id(org_id: str) -> None:
+    """Persist the org id once discovered, so later runs skip the lookup."""
+    keyring.set_password(SERVICE, _KEY_ORG_ID, (org_id or "").strip())
+
+
+def delete_org_credentials() -> None:
+    for key in (_KEY_ORG_API_KEY, _KEY_ORG_ID):
         try:
             keyring.delete_password(SERVICE, key)
         except keyring.errors.PasswordDeleteError:

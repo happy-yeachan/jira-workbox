@@ -485,6 +485,33 @@
           </button>
           <button class="btn ghost" x-show="health.configured" @click="setupOpen = false">닫기</button>
         </div>
+
+        <!-- optional: organisation admin API key → accurate Confluence seats -->
+        <details class="advanced" style="margin-top:20px" x-show="health.configured">
+          <summary>
+            조직 API 키 (Confluence 정확 집계 · 선택)
+            <span class="pill" x-show="health.org_configured" style="margin-left:6px">연결됨</span>
+          </summary>
+          <p class="hint" style="margin:10px 0">
+            Confluence 시트는 사이트 토큰으로 정확히 구할 수 없습니다.
+            <a href="https://admin.atlassian.net" target="_blank" rel="noopener noreferrer">admin.atlassian.net</a>
+            → 설정 → API 키에서 만든 <b>조직 admin API 키</b>를 넣으면 제품 접근 기준으로 정확히 집계합니다.
+            키는 OS 키체인에 저장만 하고 이 화면으로 다시 내려오지 않습니다.
+          </p>
+          <label class="field">
+            <span class="name">조직 admin API 키</span>
+            <input type="password" x-model="orgSetup.api_key" autocomplete="new-password"
+                   spellcheck="false" data-1p-ignore data-lpignore="true"
+                   placeholder="붙여넣기" @keydown.enter="saveOrgKey()">
+          </label>
+          <div class="notice err" x-show="orgSetupError" x-text="orgSetupError" style="margin-top:10px"></div>
+          <div class="row" style="margin-top:12px">
+            <button class="btn" @click="saveOrgKey()" :disabled="orgSetupBusy">
+              <span x-text="orgSetupBusy ? '확인 중…' : (health.org_configured ? '키 교체' : '키 저장')"></span>
+            </button>
+            <button class="btn ghost" x-show="health.org_configured" @click="deleteOrgKey()" :disabled="orgSetupBusy">연결 해제</button>
+          </div>
+        </details>
       </div>
     </div>
   </div>
@@ -600,7 +627,8 @@
                     <div class="lic-seats"><b x-text="a.used ?? '—'"></b> 사용 · 무제한</div>
                   </template>
                   <div class="lic-remain" x-show="!a.unlimited && a.remaining !== null" x-text="'남음 ' + a.remaining + ' ' + a.seat_noun"></div>
-                  <div class="lic-remain" x-show="a.total === null && !a.unlimited">접근 그룹 구성원 기준 · 총 시트 미제공</div>
+                  <div class="lic-remain" x-show="a.total === null && !a.unlimited && a.mode === 'org'">조직 API · 제품 접근 사용자</div>
+                  <div class="lic-remain" x-show="a.total === null && !a.unlimited && a.mode !== 'org'">접근 그룹 구성원 기준 · 총 시트 미제공</div>
                 </div>
               </button>
             </template>
@@ -1292,9 +1320,11 @@ document.addEventListener('alpine:init', () => {
     tp: { all: [], loaded: false, manual: false },
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
+    orgSetup: { api_key: '' }, orgSetupBusy: false, orgSetupError: '',
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], usersLoading: false, usersErr: '', userQ: '', capped: false,
-            userPage: 1, userPageSize: 100, _ctrl: null, confLoading: false },
+            userPage: 1, userPageSize: 100, _ctrl: null, confLoading: false,
+            confUsers: [], _confCtrl: null },
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
@@ -1351,6 +1381,33 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
+    async saveOrgKey() {
+      this.orgSetupBusy = true; this.orgSetupError = '';
+      try {
+        const res = await fetch('/api/setup/org', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({ api_key: this.orgSetup.api_key, org_id: '' }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.orgSetupError = this.errText(data); return; }
+        this.orgSetup.api_key = '';
+        await this.refreshHealth();
+        this.loadConfluence();  // re-fetch Confluence accurately via the org API
+      } catch (e) { this.orgSetupError = '저장 실패: ' + e; }
+      finally { this.orgSetupBusy = false; }
+    },
+    async deleteOrgKey() {
+      this.orgSetupBusy = true; this.orgSetupError = '';
+      try {
+        const res = await fetch('/api/setup/org', { method: 'DELETE', headers: { 'X-Workbox-Setup': '1' } });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.orgSetupError = this.errText(d); return; }
+        await this.refreshHealth();
+        this.loadConfluence();  // fall back to the group approximation
+      } catch (e) { this.orgSetupError = '해제 실패: ' + e; }
+      finally { this.orgSetupBusy = false; }
+    },
+
     // ---------- license dashboard ----------
     async loadDashboard() {
       this.dash.loading = true; this.dash.err = '';
@@ -1365,18 +1422,52 @@ document.addEventListener('alpine:init', () => {
       // the Jira cards above, so load it after and append if/when it resolves.
       this.loadConfluence();
     },
+    // Minimal NDJSON reader shared by the user + Confluence streams.
+    async readNdjson(res, onEvent) {
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+          onEvent(ev);
+        }
+      }
+    },
     async loadConfluence() {
-      this.dash.confLoading = true;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 20000);  // don't hang forever
+      this.dash.confLoading = true; this.dash.confUsers = [];
+      if (this.dash._confCtrl) this.dash._confCtrl.abort();
+      const ctrl = new AbortController(); this.dash._confCtrl = ctrl;
+      const timer = setTimeout(() => ctrl.abort(), 180000);  // an org scan can be long
+      let card = this.dash.apps.find(a => a.key === 'confluence');
       try {
-        const res = await fetch('/api/license/confluence', { signal: ctrl.signal });
+        const res = await fetch('/api/license/confluence/stream', { signal: ctrl.signal });
         if (!res.ok) return;
-        const data = await res.json().catch(() => ({}));
-        const card = data.application;
-        if (card && !this.dash.apps.some(a => a.key === card.key)) this.dash.apps.push(card);
+        await this.readNdjson(res, (ev) => {
+          if (ev.type === 'meta') {
+            if (!card) {
+              card = { key: 'confluence', name: ev.name || 'Confluence', plan: '', plan_label: '',
+                       total: null, used: 0, remaining: null, unlimited: false, pct: null,
+                       seat_noun: '시트', mode: ev.mode };
+              this.dash.apps.push(card);
+            } else { card.mode = ev.mode; card.used = 0; }
+          } else if (ev.type === 'batch') {
+            this.dash.confUsers.push(...ev.users);
+            if (card) card.used = this.dash.confUsers.length;
+          } else if (ev.type === 'done') {
+            if (card) card.capped = !!ev.capped;
+          }
+        });
+        this.dash.confUsers.sort((x, y) =>
+          (x.name || '').toLowerCase().localeCompare((y.name || '').toLowerCase()));
+        if (card) card.used = this.dash.confUsers.length;
       } catch (_) { /* best-effort: silently skip Confluence (incl. timeout) */ }
-      finally { clearTimeout(timer); this.dash.confLoading = false; }
+      finally { clearTimeout(timer); this.dash.confLoading = false;
+                if (this.dash._confCtrl === ctrl) this.dash._confCtrl = null; }
     },
     closeUsers() {
       if (this.dash._ctrl) { this.dash._ctrl.abort(); this.dash._ctrl = null; }
@@ -1387,8 +1478,16 @@ document.addEventListener('alpine:init', () => {
       if (this.dash._ctrl) this.dash._ctrl.abort();  // drop a previous stream
       const a = this.dash.apps.find(x => x.key === key);
       this.dash.selApp = key; this.dash.selAppName = a ? a.name : key;
-      this.dash.users = []; this.dash.userQ = ''; this.dash.usersErr = '';
-      this.dash.capped = false; this.dash.usersLoading = true; this.dash.userPage = 1;
+      this.dash.userQ = ''; this.dash.usersErr = ''; this.dash.userPage = 1;
+      // Confluence was already streamed by loadConfluence — reuse it (the array
+      // grows live if the scan is still running, since it's the same reference).
+      if (key === 'confluence') {
+        this.dash.users = this.dash.confUsers;
+        this.dash.capped = (a && a.capped) || false;
+        this.dash.usersLoading = false;
+        return;
+      }
+      this.dash.users = []; this.dash.capped = false; this.dash.usersLoading = true;
       // Stream the (possibly huge) member union so rows appear as they arrive
       // and the count climbs live, instead of freezing until the whole set loads.
       const ctrl = new AbortController(); this.dash._ctrl = ctrl;
@@ -1400,21 +1499,11 @@ document.addEventListener('alpine:init', () => {
           this.dash.usersErr = this.errText(d) || '사용자 조회 실패';
           this.dash.usersLoading = false; return;
         }
-        const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          let nl;
-          while ((nl = buf.indexOf('\n')) >= 0) {
-            const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
-            if (!line) continue;
-            let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
-            if (ev.type === 'batch') this.dash.users.push(...ev.users);
-            else if (ev.type === 'done') this.dash.capped = !!ev.capped;
-            else if (ev.type === 'error') this.dash.usersErr = ev.message || '사용자 조회 실패';
-          }
-        }
+        await this.readNdjson(res, (ev) => {
+          if (ev.type === 'batch') this.dash.users.push(...ev.users);
+          else if (ev.type === 'done') this.dash.capped = !!ev.capped;
+          else if (ev.type === 'error') this.dash.usersErr = ev.message || '사용자 조회 실패';
+        });
         // one stable sort once loaded (streaming appends in arrival order)
         this.dash.users.sort((x, y) =>
           (x.name || '').toLowerCase().localeCompare((y.name || '').toLowerCase()));
@@ -1451,7 +1540,12 @@ document.addEventListener('alpine:init', () => {
     // users, cross-application seats) — say so instead of looking wrong
     seatNote() {
       const a = this.dash.apps.find(x => x.key === this.dash.selApp);
-      if (!a || a.unlimited || a.used == null) return '';
+      if (!a) return '';
+      if (a.key === 'confluence')
+        return a.mode === 'org'
+          ? '조직 admin API 기준 · Confluence 제품 접근 사용자'
+          : 'confluence-users 그룹 구성원 기준 · 실제 시트와 다를 수 있습니다';
+      if (a.unlimited || a.used == null) return '';
       const total = this.dash.users.length;
       if (total === a.used) return '';
       return '접근 그룹의 활성 사용자 기준 · 시트 사용 수(' + a.used + ')와 다를 수 있습니다';
