@@ -43,6 +43,9 @@ _P_GROUPS_PICKER = "/groups/picker"
 
 #: what one seat is called, per application (JSM bills agents, not users)
 _SEAT_NOUN = {"jira-servicedesk": "에이전트"}
+#: display-name overrides — some tenants still return the legacy "Jira Service
+#: Desk" from applicationrole; show the current product name instead
+_APP_NAME = {"jira-servicedesk": "Jira Service Management"}
 #: card display order (Confluence is intentionally not implemented — no reliable
 #: seat source — but kept in the order so it slots correctly if added later)
 _PRODUCT_ORDER = ["jira-software", "confluence", "jira-servicedesk",
@@ -115,7 +118,7 @@ async def fetch_applications(client: WorkboxClient) -> list[dict[str, Any]]:
             pct = round(used / total * 100)
         plan_raw = plans.get(key, "")
         out.append({
-            "key": key, "name": _sid(r.get("name")) or key or "(이름 없음)",
+            "key": key, "name": _APP_NAME.get(key) or _sid(r.get("name")) or key or "(이름 없음)",
             "plan": plan_raw, "plan_label": _PLAN_LABEL.get(plan_raw, plan_raw),
             "total": total, "used": used, "remaining": remaining,
             "unlimited": unlimited, "pct": pct,

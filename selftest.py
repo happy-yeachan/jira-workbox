@@ -507,7 +507,7 @@ def _license_stream_site():
                 {"key": "jira-software", "name": "Jira Software", "numberOfSeats": 15000,
                  "userCount": 250, "hasUnlimitedSeats": False,
                  "groupDetails": [{"name": "jira-software-users", "groupId": "g-sw"}]},
-                {"key": "jira-servicedesk", "name": "Jira Service Management", "numberOfSeats": 200,
+                {"key": "jira-servicedesk", "name": "Jira Service Desk", "numberOfSeats": 200,
                  "userCount": 139, "hasUnlimitedSeats": False,
                  "groupDetails": [{"name": "jsm-agents", "groupId": "g-jsm"}]}])
         if p == "/rest/api/3/instance/license":
@@ -537,6 +537,8 @@ async def suite_license_stream() -> None:
     apps = await lic.fetch_applications(client)
     by = {a["key"]: a for a in apps}
     check("JSM seat noun is 에이전트", by["jira-servicedesk"]["seat_noun"] == "에이전트")
+    check("legacy 'Jira Service Desk' shown as 'Jira Service Management'",
+          by["jira-servicedesk"]["name"] == "Jira Service Management", by["jira-servicedesk"]["name"])
     check("other apps keep 시트", by["jira-software"]["seat_noun"] == "시트")
     check("summary is Jira-only (no Confluence)", "confluence" not in by)
     check("cards ordered: Jira Software before JSM",
