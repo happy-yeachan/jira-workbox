@@ -898,9 +898,10 @@
                             <input type="text" placeholder="프로젝트 추가 검색 (키·이름)" x-model="ctxNew.psearch.q" @input.debounce.250ms="ctxNewSearchProjects()">
                             <div class="picker" x-show="ctxNew.psearch.results.length">
                               <template x-for="p in ctxNew.psearch.results" :key="p.id">
-                                <button class="pick-row" type="button" @click="ctxNewAddProject(p)">
-                                  <span x-text="p.key"></span> <span class="sub" x-text="p.name"></span>
-                                </button>
+                                <div class="pick-row" @click="ctxNewAddProject(p)">
+                                  <span class="mono" x-text="p.key"></span>
+                                  <span x-text="p.name"></span>
+                                </div>
                               </template>
                             </div>
                           </div>
@@ -973,9 +974,10 @@
                               <input type="text" placeholder="프로젝트 추가 검색 (키·이름)" x-model="ctxEdit.psearch.q" @input.debounce.250ms="ctxSearchProjects()">
                               <div class="picker" x-show="ctxEdit.psearch.results.length">
                                 <template x-for="p in ctxEdit.psearch.results" :key="p.id">
-                                  <button class="pick-row" type="button" @click="ctxAddProject(p)">
-                                    <span x-text="p.key"></span> <span class="sub" x-text="p.name"></span>
-                                  </button>
+                                  <div class="pick-row" @click="ctxAddProject(p)">
+                                    <span class="mono" x-text="p.key"></span>
+                                    <span x-text="p.name"></span>
+                                  </div>
                                 </template>
                               </div>
                             </div>
