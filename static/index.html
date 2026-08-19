@@ -582,7 +582,8 @@
 <main x-show="health.configured !== false && !setupOpen">
   <nav>
     <div style="margin-bottom:14px">
-      <button @click="selected = null" :aria-current="String(!selected)">
+      <button @click="selected = null; landingView = 'dashboard'"
+              :aria-current="String(!selected && landingView === 'dashboard')">
         <span class="t">라이선스 현황</span>
         <span class="d">시트 사용량 · 변경 로그</span>
       </button>
@@ -602,18 +603,26 @@
         </template>
       </div>
     </template>
+    <!-- field management pinned to the bottom of the nav -->
+    <div style="margin-bottom:14px">
+      <button @click="openFields()"
+              :aria-current="String(!selected && landingView === 'fields')">
+        <span class="t">필드 관리 <span class="pill">조회</span></span>
+        <span class="d">커스텀 필드 목록·유형·컨텍스트</span>
+      </button>
+    </div>
   </nav>
 
   <section class="work">
     <template x-if="!selected">
       <div class="landing-wrap">
-        <div class="hero">
+        <div class="hero" x-show="landingView === 'dashboard'">
           <h1>워크박스</h1>
           <p class="sub">왼쪽에서 작업을 고르거나, 아래 라이선스 현황·변경 로그를 확인하세요. 변경 작업은 실행 전에 항상 미리보기로 대상을 확인하고, 실행한 뒤에는 <b>작업 기록</b>에서 되돌릴 수 있습니다.</p>
         </div>
 
         <!-- license dashboard — auto-loaded, the landing headline -->
-        <div class="dash" x-show="health.configured">
+        <div class="dash" x-show="health.configured && landingView === 'dashboard'">
           <div class="dash-h">
             <h2>라이선스 현황</h2>
             <span class="sub" x-show="dash.loading">불러오는 중…</span>
@@ -696,7 +705,7 @@
         </div>
 
         <!-- license change log — stacked below the dashboard on the same view -->
-        <div class="dash" x-show="health.configured">
+        <div class="dash" x-show="health.configured && landingView === 'dashboard'">
           <div class="lic-users">
             <div class="lic-users-h">
               <h3>라이선스 변경 로그</h3>
@@ -769,6 +778,53 @@
                 </div>
               </div>
             </template>
+          </div>
+        </div>
+
+        <!-- 필드 관리 — custom field list (search + pagination) -->
+        <div class="dash" x-show="landingView === 'fields'">
+          <div class="dash-h">
+            <h2>필드 관리</h2>
+            <span class="sub" x-show="!fields.loading && !fields.err" x-text="fieldsCountLabel()"></span>
+            <span style="flex:1"></span>
+            <input type="text" class="lic-log-search" placeholder="이름·유형·검색기 검색" x-model="fields.q" @input="fields.page = 1">
+            <button class="btn small ghost" @click="loadFields()" :disabled="fields.loading">새로고침</button>
+          </div>
+          <div class="progbar" x-show="fields.loading" style="margin-bottom:10px; border-radius:2px"></div>
+          <div class="notice err" x-show="fields.err" x-text="fields.err" style="margin-bottom:10px"></div>
+          <div class="lic-users" x-show="!fields.err">
+            <div class="lic-users-body">
+              <table>
+                <thead><tr>
+                  <th style="width:26%">이름</th><th>유형</th><th>값 타입</th><th>검색기</th>
+                  <th style="width:80px">컨텍스트</th><th style="width:120px">스페이스 스코프</th>
+                  <th style="width:64px">화면</th><th style="width:110px">마지막 사용</th>
+                </tr></thead>
+                <tbody>
+                  <template x-for="f in pagedFields()" :key="f.id">
+                    <tr>
+                      <td>
+                        <span x-text="f.name"></span>
+                        <span class="u-tag" x-show="f.locked" style="margin-left:6px">잠김</span>
+                      </td>
+                      <td x-text="f.type"></td>
+                      <td class="u-off" x-text="f.value_type || '—'"></td>
+                      <td class="u-off" x-text="f.searcher"></td>
+                      <td x-text="f.contexts"></td>
+                      <td x-text="f.space_scoped ? (f.projects + '개 스페이스') : (f.contexts ? '전역' : '—')"></td>
+                      <td x-text="f.screens"></td>
+                      <td class="u-off" x-text="f.last_used || '—'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+              <div class="sub" x-show="!fields.loading && !filteredFields().length" style="padding:12px 14px">필드가 없습니다.</div>
+            </div>
+            <div class="lic-users-foot" x-show="fieldsPages() > 1">
+              <button class="btn small ghost" @click="setFieldsPage(fields.page - 1)" :disabled="fields.page <= 1">이전</button>
+              <span class="sub"><b x-text="fields.page"></b> / <span x-text="fieldsPages()"></span> 페이지</span>
+              <button class="btn small ghost" @click="setFieldsPage(fields.page + 1)" :disabled="fields.page >= fieldsPages()">다음</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1409,6 +1465,8 @@ document.addEventListener('alpine:init', () => {
     orgSetup: { api_key: '' }, orgSetupBusy: false, orgSetupError: '',
     // sentinels shown as masked dots meaning "keep the stored secret unchanged"
     KEEP_TOKEN: ' keep-token ', KEEP_ORG: ' keep-org ',
+    landingView: 'dashboard',
+    fields: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50 },
     liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100 },
     logProducts: [
@@ -1522,6 +1580,43 @@ document.addEventListener('alpine:init', () => {
         this.liclog.events = [];
       } catch (e) { this.orgSetupError = '해제 실패: ' + e; }
       finally { this.orgSetupBusy = false; }
+    },
+
+    // ---------- 필드 관리 ----------
+    openFields() {
+      this.selected = null; this.landingView = 'fields';
+      if (!this.fields.list.length && !this.fields.loading) this.loadFields();
+    },
+    async loadFields() {
+      this.fields.loading = true; this.fields.err = ''; this.fields.page = 1;
+      try {
+        const res = await fetch('/api/fields');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.fields.err = this.errText(data) || '필드 조회 실패'; this.fields.list = []; return; }
+        this.fields.list = data.fields || [];
+      } catch (e) { this.fields.err = '필드 조회 실패: ' + e; }
+      finally { this.fields.loading = false; }
+    },
+    filteredFields() {
+      const q = (this.fields.q || '').trim().toLowerCase();
+      if (!q) return this.fields.list;
+      return this.fields.list.filter(f =>
+        (f.name || '').toLowerCase().includes(q) || (f.type || '').toLowerCase().includes(q)
+        || (f.searcher || '').toLowerCase().includes(q) || (f.value_type || '').toLowerCase().includes(q)
+        || (f.key || '').toLowerCase().includes(q));
+    },
+    pagedFields() {
+      const list = this.filteredFields(), size = this.fields.pageSize;
+      let page = this.fields.page;
+      const pages = Math.max(1, Math.ceil(list.length / size));
+      if (page > pages) { page = pages; this.fields.page = pages; }
+      return list.slice((page - 1) * size, page * size);
+    },
+    fieldsPages() { return Math.max(1, Math.ceil(this.filteredFields().length / this.fields.pageSize)); },
+    setFieldsPage(p) { this.fields.page = Math.max(1, Math.min(p, this.fieldsPages())); },
+    fieldsCountLabel() {
+      const n = this.filteredFields().length, total = this.fields.list.length;
+      return (n === total ? ('총 ' + total + '개') : (n + ' / ' + total + '개'));
     },
 
     // ---------- license change log (org audit events) ----------

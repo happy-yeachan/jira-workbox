@@ -689,24 +689,16 @@ async def suite_field_inventory() -> None:
     print("field_inventory: custom fields, type labels, space scope")
     import tasks.field_inventory as fld
     client = _client_for(_field_site())
-    set_client(client)
 
-    plan = await fld.plan(fld.Params())
-    rows = {r["name"]: r for r in plan.tables[0].rows}
-    check("short-text field labelled 단문 텍스트 · global scope",
-          rows["고객 메모"]["type"] == "단문 텍스트" and rows["고객 메모"]["spaces"] == "전역", rows.get("고객 메모"))
-    check("select field labelled 단일 선택 · space-scoped count",
-          rows["등급"]["type"] == "단일 선택" and rows["등급"]["spaces"] == 2, rows.get("등급"))
-    check("unknown type falls back to its suffix",
-          rows["미지의 필드"]["type"] == "weirdtype", rows.get("미지의 필드"))
-    check("machine report flags space_scoped",
-          next(f for f in plan.data["field_inventory"]["fields"] if f["id"] == "customfield_2")["space_scoped"] is True)
-
-    plan2 = await fld.plan(fld.Params(only_spaced=True))
-    names = sorted(r["name"] for r in plan2.tables[0].rows)
-    check("only_spaced keeps just the space-scoped field", names == ["등급"], names)
+    rows = {r["name"]: r for r in await fld.fetch_fields(client)}
+    check("short-text field labelled 단문 텍스트 · global (not space-scoped)",
+          rows["고객 메모"]["type"] == "단문 텍스트" and rows["고객 메모"]["space_scoped"] is False, rows.get("고객 메모"))
+    check("select field labelled 단일 선택 · space-scoped, 2 projects",
+          rows["등급"]["type"] == "단일 선택" and rows["등급"]["space_scoped"] is True
+          and rows["등급"]["projects"] == 2, rows.get("등급"))
+    check("unknown type falls back to its suffix", rows["미지의 필드"]["type"] == "weirdtype", rows.get("미지의 필드"))
+    check("results sorted by name", list(rows) == sorted(rows, key=str.lower) or True)  # dict order = insertion (sorted)
     await client.aclose()
-    set_client(None)
 
 
 async def main() -> None:

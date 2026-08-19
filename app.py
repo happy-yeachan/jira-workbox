@@ -436,6 +436,21 @@ async def list_permission_schemes(q: str = "", limit: int = 100) -> list[dict[st
     return out[: max(1, min(limit, 200))]
 
 
+@app.get("/api/fields")
+async def list_fields(q: str = "") -> dict[str, object]:
+    """Custom field inventory for the 필드 관리 view. Read-only, Jira admin."""
+    from tasks import field_inventory
+    client = _require_client()
+    try:
+        fields = await field_inventory.fetch_fields(client, query=q)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403,
+                                detail="필드 목록을 읽을 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"fields": fields}
+
+
 @app.get("/api/license/summary")
 async def license_summary() -> dict[str, object]:
     """Per-application seat + plan records for the home dashboard. Read-only,
