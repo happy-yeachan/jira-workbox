@@ -428,7 +428,7 @@ async def suite_license() -> None:
     check("near-capacity raises a warning",
           any("거의 찼습니다" in w for w in plan.warnings), plan.warnings)
     check("machine-readable report present",
-          plan.data["license_status"]["applications"][0]["seats_remaining"] == 2)
+          plan.data["license_status"]["applications"][0]["remaining"] == 2)
     await client.aclose()
 
     client = _client_for(_license_site(roles_status=403))
@@ -442,12 +442,67 @@ async def suite_license() -> None:
     set_client(None)
 
 
+def _license_users_site():
+    """applicationrole with two access groups; members overlap, one app account,
+    one inactive user — the union should dedupe and drop the app account."""
+    groups = {
+        "g1": [{"accountId": "a", "displayName": "Alice", "emailAddress": "alice@x",
+                "active": True, "accountType": "atlassian"},
+               {"accountId": "b", "displayName": "Bob", "emailAddress": "bob@x",
+                "active": True, "accountType": "atlassian"},
+               {"accountId": "bot", "displayName": "Automation", "accountType": "app"}],
+        "g2": [{"accountId": "b", "displayName": "Bob", "emailAddress": "bob@x",
+                "active": True, "accountType": "atlassian"},
+               {"accountId": "c", "displayName": "Carol", "emailAddress": "carol@x",
+                "active": False, "accountType": "atlassian"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/rest/api/3/applicationrole":
+            return httpx.Response(200, json=[{
+                "key": "jira-software", "name": "Jira Software", "numberOfSeats": 100,
+                "userCount": 92, "remainingSeats": 8, "hasUnlimitedSeats": False,
+                "groupDetails": [{"name": "g1n", "groupId": "g1"}, {"name": "g2n", "groupId": "g2"}]}])
+        if p == "/rest/api/3/instance/license":
+            return httpx.Response(200, json={"applications": []})
+        if p == "/rest/api/3/group/member":
+            gid = request.url.params.get("groupId")
+            rows = groups.get(gid, [])
+            return httpx.Response(200, json={"values": rows, "isLast": True,
+                                             "startAt": 0, "maxResults": 50, "total": len(rows)})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+    return handler
+
+
+async def suite_license_users() -> None:
+    print("license_status: per-application user union")
+    import tasks.license_status as lic
+    client = _client_for(_license_users_site())
+    set_client(client)
+
+    res = await lic.application_users(client, "jira-software")
+    names = [u["name"] for u in res["users"]]
+    check("union deduped + sorted, app account dropped", names == ["Alice", "Bob", "Carol"], names)
+    check("count + not capped", res["count"] == 3 and not res["capped"])
+    check("inactive user flagged",
+          next(u for u in res["users"] if u["name"] == "Carol")["active"] is False)
+
+    res_q = await lic.application_users(client, "jira-software", q="carol")
+    check("server-side q filter", [u["name"] for u in res_q["users"]] == ["Carol"])
+    check("unknown app -> None (404 upstream)", await lic.application_users(client, "nope") is None)
+    await client.aclose()
+    set_client(None)
+
+
 async def main() -> None:
     await suite_write_task()
     print()
     await suite_analysis()
     print()
     await suite_license()
+    print()
+    await suite_license_users()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")

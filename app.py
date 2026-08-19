@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr, ValidationError
@@ -356,6 +356,43 @@ async def list_permission_schemes(q: str = "", limit: int = 100) -> list[dict[st
     if ql:
         out = [s for s in out if ql in s["name"].lower()]
     return out[: max(1, min(limit, 200))]
+
+
+@app.get("/api/license/summary")
+async def license_summary() -> dict[str, object]:
+    """Per-application seat + plan records for the home dashboard. Read-only,
+    Jira admin. Reuses the license task's fetch so the table and the dashboard
+    can never disagree."""
+    from tasks import license_status
+    client = _require_client()
+    try:
+        apps = await license_status.fetch_applications(client)
+    except tasks.TaskInputError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"applications": apps}
+
+
+@app.get("/api/license/users")
+async def license_users(
+    app_key: str = Query(alias="app"), q: str = ""
+) -> dict[str, object]:
+    """Licensed users of one application (members of its access groups), for the
+    dashboard's per-license filter. ``app`` is the application role key."""
+    from tasks import license_status
+    client = _require_client()
+    if not app_key.strip():
+        raise HTTPException(status_code=422, detail="애플리케이션 키가 필요합니다.")
+    try:
+        result = await license_status.application_users(client, app_key.strip(), q=q)
+    except tasks.TaskInputError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"없는 애플리케이션입니다: {app_key}")
+    return result
 
 
 def _tpl_label(node: dict[str, object]) -> str:

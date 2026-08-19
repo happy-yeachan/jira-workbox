@@ -278,6 +278,53 @@
   .tc-title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; }
   .tc-desc { color: var(--muted); font-size: 12.5px; margin-top: 5px; line-height: 1.5; }
 
+  /* ---------- license dashboard ---------- */
+  .dash { margin: 0 0 30px; }
+  .dash-h { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 12px; }
+  .dash-h h2 { margin: 0; font-size: 16px; letter-spacing: -.01em; }
+  .dash-h .sub { font-size: 12.5px; }
+  .dash-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .lic-card {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+    padding: 16px; display: flex; gap: 14px; align-items: center; text-align: left;
+    cursor: pointer; transition: border-color .12s, box-shadow .12s;
+  }
+  .lic-card:hover { border-color: var(--accent); box-shadow: 0 4px 12px rgba(16,24,40,.08); }
+  .lic-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .donut { flex: none; position: relative; width: 72px; height: 72px; }
+  .donut svg { transform: rotate(-90deg); display: block; }
+  .donut .donut-track { stroke: var(--line); }
+  .donut .donut-val { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .5s; }
+  .donut.v-ok .donut-val { stroke: var(--ok); }
+  .donut.v-warn .donut-val { stroke: var(--warn); }
+  .donut.v-bad .donut-val { stroke: var(--bad); }
+  .donut-center {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; font-size: 15px; font-weight: 700;
+    letter-spacing: -.02em;
+  }
+  .donut-center small { font-size: 9.5px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+  .lic-meta { min-width: 0; }
+  .lic-name { font-weight: 650; font-size: 13.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .lic-seats { color: var(--ink-2); font-size: 12.5px; margin-top: 3px; }
+  .lic-seats b { font-weight: 700; }
+  .lic-remain { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .plan-pill {
+    font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line);
+  }
+  /* per-license user list */
+  .lic-users { margin-top: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  .lic-users-h { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
+  .lic-users-h h3 { margin: 0; font-size: 14px; }
+  .lic-users-h input { flex: 1; min-width: 180px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 13px; }
+  .lic-users-body { max-height: 460px; overflow: auto; }
+  .lic-users table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .lic-users th, .lic-users td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--line-soft); }
+  .lic-users th { position: sticky; top: 0; background: var(--surface); color: var(--muted); font-weight: 600; font-size: 11.5px; }
+  .lic-users .u-off { color: var(--muted); }
+  .lic-users .u-tag { font-size: 10.5px; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 0 6px; border-radius: 999px; }
+
   details.advanced { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
   details.advanced > summary {
     cursor: pointer; font-size: 13px; font-weight: 550; color: var(--ink-2);
@@ -508,6 +555,77 @@
           <h1>워크박스</h1>
           <p class="sub">작업을 골라 시작하세요. 변경 작업은 실행 전에 항상 미리보기로 대상을 확인하고, 실행한 뒤에는 <b>작업 기록</b>에서 되돌릴 수 있습니다.</p>
         </div>
+
+        <!-- license dashboard — auto-loaded, the landing headline -->
+        <div class="dash" x-show="health.configured">
+          <div class="dash-h">
+            <h2>라이선스 현황</h2>
+            <span class="sub" x-show="dash.loading">불러오는 중…</span>
+            <span style="flex:1"></span>
+            <button class="btn small ghost" @click="loadDashboard()" :disabled="dash.loading">새로고침</button>
+          </div>
+          <div class="notice err" x-show="dash.err" x-text="dash.err" style="margin-bottom:10px"></div>
+          <div class="dash-cards">
+            <template x-for="a in dash.apps" :key="a.key">
+              <button class="lic-card" :class="{ active: dash.selApp === a.key }" @click="selectDashApp(a.key)"
+                      title="클릭하면 이 라이선스의 사용자 목록을 봅니다">
+                <div class="donut" :class="donutClass(a)">
+                  <svg width="72" height="72" viewBox="0 0 72 72">
+                    <circle class="donut-track" cx="36" cy="36" r="30" fill="none" stroke-width="9"></circle>
+                    <circle class="donut-val" cx="36" cy="36" r="30" fill="none" stroke-width="9"
+                            :stroke-dasharray="donutDash(a)"
+                            x-show="!a.unlimited && a.pct !== null"></circle>
+                  </svg>
+                  <div class="donut-center">
+                    <template x-if="a.unlimited"><span>∞</span></template>
+                    <template x-if="!a.unlimited && a.pct !== null"><span x-text="a.pct + '%'"></span></template>
+                    <template x-if="!a.unlimited && a.pct === null"><span>—</span></template>
+                  </div>
+                </div>
+                <div class="lic-meta">
+                  <div class="lic-name">
+                    <span x-text="a.name"></span>
+                    <span class="plan-pill" x-show="a.plan_label" x-text="a.plan_label"></span>
+                  </div>
+                  <div class="lic-seats" x-show="!a.unlimited">
+                    <b x-text="a.used ?? '—'"></b> / <span x-text="a.total ?? '—'"></span> 시트
+                  </div>
+                  <div class="lic-seats" x-show="a.unlimited"><b x-text="a.used ?? '—'"></b> 사용 · 무제한</div>
+                  <div class="lic-remain" x-show="!a.unlimited && a.remaining !== null" x-text="'남음 ' + a.remaining + ' 시트'"></div>
+                </div>
+              </button>
+            </template>
+          </div>
+          <div class="sub" x-show="!dash.loading && !dash.apps.length && !dash.err" style="margin-top:8px">표시할 애플리케이션이 없습니다.</div>
+
+          <!-- per-license user list (loaded on demand when a card is clicked) -->
+          <div class="lic-users" x-show="dash.selApp">
+            <div class="lic-users-h">
+              <h3><span x-text="dash.selAppName"></span> 사용자</h3>
+              <span class="sub" x-show="dash.usersLoading">불러오는 중…</span>
+              <span class="sub" x-show="!dash.usersLoading && !dash.usersErr" x-text="userCountLabel()"></span>
+              <input type="text" placeholder="이름·이메일 검색" x-model="dash.userQ">
+              <button class="btn small ghost" @click="dash.selApp=''">닫기</button>
+            </div>
+            <div class="notice err" x-show="dash.usersErr" x-text="dash.usersErr" style="margin:10px 14px"></div>
+            <div class="lic-users-body" x-show="!dash.usersErr">
+              <table>
+                <thead><tr><th style="width:34%">이름</th><th>이메일</th><th style="width:70px">상태</th></tr></thead>
+                <tbody>
+                  <template x-for="u in filteredUsers()" :key="u.account_id">
+                    <tr>
+                      <td x-text="u.name"></td>
+                      <td class="u-off" x-text="u.email || '—'"></td>
+                      <td><span x-show="u.active">활성</span><span class="u-tag" x-show="!u.active">비활성</span></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+              <div class="sub" x-show="!dash.usersLoading && !filteredUsers().length" style="padding:12px 14px">해당 사용자가 없습니다.</div>
+            </div>
+          </div>
+        </div>
+
         <template x-for="group in groups" :key="group.name">
           <div class="cat">
             <div class="cat-label" x-text="group.name"></div>
@@ -1159,14 +1277,19 @@ document.addEventListener('alpine:init', () => {
     tp: { all: [], loaded: false, manual: false },
     setupOpen: false, setupBusy: false, setupError: '',
     setup: { site_url: '', email: '', api_token: '' },
+    dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
+            users: [], usersLoading: false, usersErr: '', userQ: '', capped: false },
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
       // against a change set the operator did not just look at.
       this.$watch('form', () => { if (!this.running && !this.planning) this.plan = null; });
-      this.refreshHealth();
+      await this.refreshHealth();
       this.loadHistory();
       this.tasks = await (await fetch('/api/tasks')).json();
+      // the license dashboard is the landing headline — load it as soon as we
+      // have working credentials (and again after the operator connects)
+      if (this.health.configured) this.loadDashboard();
       // the server already orders by category, so grouping is a fold; tasks with
       // launcher:false (e.g. 설정 분리) stay in `tasks` for lookup but off the menu
       this.groups = this.tasks.filter(t => t.spec.launcher !== false).reduce((acc, t) => {
@@ -1204,11 +1327,61 @@ document.addEventListener('alpine:init', () => {
         this.setup = { site_url: '', email: '', api_token: '' };
         this.setupOpen = false;
         await this.refreshHealth();
+        if (this.health.configured) this.loadDashboard();
       } catch (e) {
         this.setupError = '접속 정보를 저장하지 못했습니다: ' + e;
       } finally {
         this.setupBusy = false;
       }
+    },
+
+    // ---------- license dashboard ----------
+    async loadDashboard() {
+      this.dash.loading = true; this.dash.err = '';
+      try {
+        const res = await fetch('/api/license/summary');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.dash.err = this.errText(data) || '라이선스 조회 실패'; this.dash.apps = []; return; }
+        this.dash.apps = data.applications || [];
+      } catch (e) { this.dash.err = '라이선스 조회 실패: ' + e; }
+      finally { this.dash.loading = false; }
+    },
+    async selectDashApp(key) {
+      if (this.dash.selApp === key) { this.dash.selApp = ''; return; }  // toggle off
+      const a = this.dash.apps.find(x => x.key === key);
+      this.dash.selApp = key; this.dash.selAppName = a ? a.name : key;
+      this.dash.users = []; this.dash.userQ = ''; this.dash.usersErr = '';
+      this.dash.capped = false; this.dash.usersLoading = true;
+      try {
+        const res = await fetch('/api/license/users?app=' + encodeURIComponent(key));
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.dash.usersErr = this.errText(data) || '사용자 조회 실패'; return; }
+        this.dash.users = data.users || []; this.dash.capped = !!data.capped;
+      } catch (e) { this.dash.usersErr = '사용자 조회 실패: ' + e; }
+      finally { this.dash.usersLoading = false; }
+    },
+    filteredUsers() {
+      const q = (this.dash.userQ || '').trim().toLowerCase();
+      if (!q) return this.dash.users;
+      return this.dash.users.filter(u =>
+        (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q));
+    },
+    userCountLabel() {
+      const n = this.filteredUsers().length, total = this.dash.users.length;
+      const base = (n === total) ? ('총 ' + total + '명') : (n + ' / ' + total + '명');
+      return base + (this.dash.capped ? ' (상한 도달)' : '');
+    },
+    donutDash(a) {
+      const C = 2 * Math.PI * 30;
+      const pct = (a.pct == null) ? 0 : Math.max(0, Math.min(100, a.pct));
+      const d = C * pct / 100;
+      return d + ' ' + (C - d);
+    },
+    donutClass(a) {
+      if (a.unlimited || a.pct == null) return '';
+      if (a.pct >= 90) return 'v-bad';
+      if (a.pct >= 70) return 'v-warn';
+      return 'v-ok';
     },
 
     // pydantic emits `str | None` and Literal-with-default in shapes the naive
