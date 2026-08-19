@@ -331,7 +331,7 @@ def _screen_tree_children(
             "shared_with": plabels(c.get("reachable_project_ids", [])) if v == "shared" else [],
             "isolate": ({"project": target_key, "scheme_type": "issuetypescreen",
                          "node_kind": "screen_scheme", "node_id": ss_id, "itss_id": itss_id,
-                         "itss_shared": r.verdict == "공유됨"}
+                         "itss_shared": r.verdict != "전용"}
                         if v in _ISOLATABLE else None),
             "note": "",
         })
@@ -359,7 +359,9 @@ def _screen_tree_children(
                 "isolate": ({"project": target_key, "scheme_type": "issuetypescreen",
                              "node_kind": "screen", "node_id": sid,
                              "itss_id": itss_id, "screen_scheme_id": ss_id,
-                             "itss_shared": r.verdict == "공유됨", "screen_scheme_shared": v == "공유됨"}
+                             # clone unless proven private ("전용"/"target_only");
+                             # never edit a shared/unknown ancestor in place
+                             "itss_shared": r.verdict != "전용", "screen_scheme_shared": v != "target_only"}
                             if v2 in _ISOLATABLE else None),
                 "note": "",
             })
