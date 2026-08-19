@@ -1550,8 +1550,11 @@ document.addEventListener('alpine:init', () => {
     // if an entry already exists (loading or done) it does nothing.
     ensureUsers(key, signal) {
       if (this.dash.userCache[key]) return;
-      const e = { users: [], loading: true, capped: false, err: '' };
-      this.dash.userCache[key] = e;
+      this.dash.userCache[key] = { users: [], loading: true, capped: false, err: '' };
+      // Read the entry BACK from the reactive store so mutations go through
+      // Alpine's proxy — pushing into the raw object wouldn't re-render, which is
+      // why the count only updated after clicking away and back.
+      const e = this.dash.userCache[key];
       (async () => {
         try {
           const res = await fetch('/api/license/users/stream?app=' + encodeURIComponent(key),
