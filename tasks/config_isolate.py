@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -461,23 +462,49 @@ def _wf_id(v: Any) -> str:
 
 def _wf_create_payload(read: dict[str, Any], orig_name: str, new_name: str) -> dict[str, Any]:
     """Map a v2 workflow READ (POST /workflows) into a CREATE request
-    (POST /workflows/create) for a renamed copy — passing statuses + transitions
-    (with their rules) straight through, which the two DTOs share."""
+    (POST /workflows/create) for a renamed copy.
+
+    The create API's ``statusReference`` values must be UUIDs that correlate the
+    request's ``statuses`` with the workflow's statuses/transitions — the read
+    uses the real (numeric) status ids there, so we mint a UUID per status and
+    rewrite every ``statusReference`` (top-level, workflow statuses, transition
+    from/to) to it. Existing statuses are referenced by their real ``id``."""
     statuses = read.get("statuses") or []
     wfs = read.get("workflows") or []
     w = next((x for x in wfs if _sid(x.get("name")) == orig_name), (wfs[0] if wfs else {}))
+
+    ref_map: dict[str, str] = {}
+    top: list[dict[str, Any]] = []
+    for s in statuses:
+        sid = _sid(s.get("id"))
+        sref = _sid(s.get("statusReference"))
+        new_ref = str(uuid.uuid4())
+        for k in (sid, sref):
+            if k:
+                ref_map[k] = new_ref
+        entry: dict[str, Any] = {"statusReference": new_ref}
+        if sid:
+            entry["id"] = sid
+        for k in ("name", "statusCategory"):
+            if s.get(k) is not None:
+                entry[k] = s[k]
+        top.append(entry)
+
+    def remap(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {k: (ref_map.get(_sid(v), v) if k == "statusReference" else remap(v))
+                    for k, v in node.items()}
+        if isinstance(node, list):
+            return [remap(x) for x in node]
+        return node
+
     wf: dict[str, Any] = {"name": new_name,
-                          "statuses": w.get("statuses") or [],
-                          "transitions": w.get("transitions") or []}
+                          "statuses": remap(w.get("statuses") or []),
+                          "transitions": remap(w.get("transitions") or [])}
     for k in ("description", "startPointLayout"):
         if w.get(k):
-            wf[k] = w[k]
-    return {
-        "scope": w.get("scope") or {"type": "GLOBAL"},
-        "statuses": [{k: s[k] for k in ("name", "statusCategory", "statusReference", "description")
-                      if s.get(k) is not None} for s in statuses],
-        "workflows": [wf],
-    }
+            wf[k] = remap(w[k])
+    return {"scope": w.get("scope") or {"type": "GLOBAL"}, "statuses": top, "workflows": [wf]}
 
 
 async def _plan_workflow_fork(
