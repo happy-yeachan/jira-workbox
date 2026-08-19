@@ -260,13 +260,34 @@ def _leaf(label: str, sub: str = "") -> dict[str, Any]:
             "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": ""}
 
 
+async def _workflow_refs(client: WorkboxClient) -> dict[str, set[str]]:
+    """workflow name -> set of workflow-scheme ids that reference it, scanned
+    site-wide. Used to tell whether a workflow is shared *beyond* its own scheme:
+    a workflow living in a dedicated scheme can still be shared with other
+    projects through their schemes."""
+    ref: dict[str, set[str]] = {}
+    try:
+        async for s in client.paginate_offset("/workflowscheme", items_key="values", page_size=50):
+            sid = _sid(s.get("id"))
+            names = {str(s["defaultWorkflow"])} if s.get("defaultWorkflow") else set()
+            names.update(str(w) for w in (s.get("issueTypeMappings") or {}).values())
+            for nm in names:
+                ref.setdefault(nm, set()).add(sid)
+    except UpstreamError:
+        return {}
+    return ref
+
+
 async def _workflow_children(
     client: WorkboxClient, scheme_id: str, it_names: dict[str, str],
     shared: bool, target_key: str,
 ) -> list[dict[str, Any]]:
     """The workflows inside a workflow scheme, one row per distinct workflow with
-    the issue types it serves (default workflow covers all unmapped types). When
-    the scheme is shared, each workflow gets its own [분리하기]."""
+    the issue types it serves (default workflow covers all unmapped types).
+
+    A workflow gets its own [분리하기] when it is shared — either because the
+    whole scheme is shared, or (even in a dedicated scheme) because the workflow
+    itself is referenced by another scheme, i.e. shared with another project."""
     try:
         wf = await client.get_json(_P_WF_ONE.format(id=scheme_id))
     except UpstreamError:
@@ -276,12 +297,18 @@ async def _workflow_children(
     for it_id, w in (wf.get("issueTypeMappings") or {}).items():
         by_wf.setdefault(str(w), []).append(it_names.get(_sid(it_id), _sid(it_id)))
 
+    # only need the site-wide reference scan to catch shared workflows that live
+    # in an otherwise-dedicated scheme; when the scheme is shared they all qualify
+    refs = {} if shared else await _workflow_refs(client)
+
     def node(wf_name: str, sub: str) -> dict[str, Any]:
         n = _leaf(wf_name, sub)
-        if shared:
+        shared_wf = shared or bool(refs.get(wf_name, set()) - {scheme_id})
+        if shared_wf:
+            n["badge"] = "shared"
             n["isolate"] = {"project": target_key, "scheme_type": "workflow",
                             "node_kind": "workflow", "node_id": wf_name,
-                            "workflow_scheme_id": scheme_id}
+                            "workflow_scheme_id": scheme_id, "ws_shared": shared}
         return n
 
     out: list[dict[str, Any]] = []

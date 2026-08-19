@@ -243,6 +243,7 @@ class Params(BaseModel):
     # dedicated ancestor is edited in place (no clone → no name collision).
     itss_shared: bool = Field(default=True, json_schema_extra={"hidden": True})
     screen_scheme_shared: bool = Field(default=True, json_schema_extra={"hidden": True})
+    ws_shared: bool = Field(default=True, json_schema_extra={"hidden": True})
     clone_name: str = Field(
         default="",
         title="새 스킴 이름",
@@ -338,6 +339,8 @@ _P_WFS_PROJECT = "/workflowscheme/project"
 _P_WF_READ = "/workflows"          # POST: bulk read by name/id
 _P_WF_CREATE = "/workflows/create" # POST: create
 _P_WF_DELETE = "/workflows/delete" # POST: delete by id
+_P_WFS_DRAFT = "/workflowscheme/{id}/draft"
+_P_WFS_PUBLISH = "/workflowscheme/{id}/draft/publish"
 
 
 def _subst(value: Any, ids: dict[str, str]) -> Any:
@@ -598,33 +601,58 @@ async def _plan_workflow_fork(
     read = await client.json("POST", _P_WF_READ, json={"workflowNames": [wf_name]})
     wf_payload = _wf_create_payload(read, wf_name, new_wf_name)
 
-    ws_body = {
-        "name": new_ws_name,
-        "defaultWorkflow": new_wf_name if default_wf == wf_name else default_wf,
-        "issueTypeMappings": {it: (new_wf_name if w == wf_name else w) for it, w in mappings.items()},
+    new_default = new_wf_name if default_wf == wf_name else default_wf
+    new_mappings = {it: (new_wf_name if w == wf_name else w) for it, w in mappings.items()}
+
+    after: dict[str, Any] = {
+        "op": "isolate_workflow", "scheme_type": "workflow", "label": "워크플로우",
+        "project_id": target_id, "project_key": target_key,
+        "wf_payload": wf_payload, "wf_new_name": new_wf_name,
     }
+    warnings = ["워크플로우 복제는 상태·전환·규칙(조건·검증·후처리)까지 재생성합니다. "
+                "실행 후 새 워크플로우가 원본과 같은지 확인하세요."]
+    if params.ws_shared:
+        # shared scheme: clone it (re-pointed to the new workflow by name) and
+        # move only this project onto the clone.
+        after["ws_mode"] = "clone"
+        after["ws_body"] = {"name": new_ws_name, "defaultWorkflow": new_default,
+                            "issueTypeMappings": new_mappings}
+        after["restore_ws_id"] = ws_id
+        ws_row = {"kind": "워크플로우 스킴", "from": ws_name, "to": new_ws_name}
+        note = f"워크플로우 '{wf_name}' 복제 → 워크플로우 스킴 복제 후 이 프로젝트만 재지정"
+        tnote = "선택한 워크플로우와 그 워크플로우 스킴만 복제해 이 프로젝트만 옮깁니다. 다른 프로젝트는 그대로입니다."
+    else:
+        # dedicated scheme: don't clone it (that would collide on the name and
+        # orphan the old one). Clone only the workflow and repoint the scheme's
+        # mapping to it in place. Editing an active scheme goes through a Jira
+        # draft that we then publish (identical statuses → no issue migration).
+        after["ws_mode"] = "inplace"
+        after["ws_id"] = ws_id
+        after["ws_update_body"] = {"id": ws_id, "name": ws_name, "defaultWorkflow": new_default,
+                                   "issueTypeMappings": new_mappings, "updateDraftIfNeeded": True}
+        after["ws_restore_body"] = {"id": ws_id, "name": ws_name, "defaultWorkflow": default_wf,
+                                    "issueTypeMappings": mappings, "updateDraftIfNeeded": True}
+        ws_row = {"kind": "워크플로우 스킴 (제자리 재지정)", "from": ws_name, "to": ws_name}
+        note = (f"워크플로우 '{wf_name}' 복제 → 이미 전용인 워크플로우 스킴을 제자리에서 새 워크플로우로 재지정 "
+                "(스킴 재생성·프로젝트 재지정 없음)")
+        tnote = ("이 프로젝트 전용 워크플로우 스킴은 새로 만들지 않고, 공유 중인 이 워크플로우만 복제해 "
+                 "스킴 매핑을 제자리에서 바꿉니다. 활성 스킴이면 Jira 드래프트를 만들어 게시합니다.")
+        warnings.append("전용 워크플로우 스킴을 제자리에서 수정합니다. 활성 스킴이면 드래프트가 게시되며, "
+                        "상태가 동일해 이슈 이동은 없어야 하지만 실행 후 프로젝트 상태를 확인하세요.")
 
     change = Change(
         target_id=f"workflowfork:{target_id}:{wf_name}",
         label=f"{target_key} 워크플로우 분리",
         before={"workflow": wf_name, "workflow_scheme": ws_name},
-        after={
-            "op": "isolate_workflow", "scheme_type": "workflow", "label": "워크플로우",
-            "project_id": target_id, "project_key": target_key,
-            "wf_payload": wf_payload, "wf_new_name": new_wf_name,
-            "ws_body": ws_body, "restore_ws_id": ws_id,
-        },
-        note=f"워크플로우 '{wf_name}' 복제 → 워크플로우 스킴 복제 후 이 프로젝트만 재지정",
+        after=after,
+        note=note,
     )
-    warnings = ["워크플로우 복제는 상태·전환·규칙(조건·검증·후처리)까지 재생성합니다. "
-                "실행 후 새 워크플로우가 원본과 같은지 확인하세요."]
     table = ResultTable(
         key="isolate", title="분리 계획 (워크플로우)",
-        columns=[Column(key="kind", title="복제 대상"), Column(key="from", title="원본(공유)"),
+        columns=[Column(key="kind", title="대상"), Column(key="from", title="원본(공유)"),
                  Column(key="to", title="새 전용")],
-        rows=[{"kind": "워크플로우", "from": wf_name, "to": new_wf_name},
-              {"kind": "워크플로우 스킴", "from": ws_name, "to": new_ws_name}],
-        note="선택한 워크플로우와 그 워크플로우 스킴만 복제해 이 프로젝트만 옮깁니다. 다른 프로젝트는 그대로입니다.",
+        rows=[{"kind": "워크플로우", "from": wf_name, "to": new_wf_name}, ws_row],
+        note=tnote,
     )
     result = planstore.register(
         task=TASK_NAME,
@@ -839,12 +867,28 @@ async def _apply_fork_restore(
                       error=None if gone else "일부 복원 실패"), undo
 
 
+async def _publish_draft_if_any(client: WorkboxClient, ws_id: str) -> tuple[bool, str]:
+    """Editing an ACTIVE workflow scheme lands in a draft; publish it so the
+    change takes effect. The swapped workflow is an identical clone (same status
+    ids), so no issue migration is needed → empty status mappings. An inactive
+    scheme has no draft (the PUT applied directly) → nothing to do."""
+    draft = await client.request("GET", _P_WFS_DRAFT.format(id=ws_id))
+    if draft.status_code == 404 or not (200 <= draft.status_code < 300):
+        return True, ""  # no draft to publish
+    resp = await client.request("POST", _P_WFS_PUBLISH.format(id=ws_id), json={"statusMappings": []})
+    if resp.status_code < 400 or resp.status_code == 303:  # 303 = accepted (async)
+        return True, ""
+    return False, WorkboxClient.short_error(resp)
+
+
 async def _apply_workflow_isolate(
     client: WorkboxClient, change: Change, a: dict[str, Any]
 ) -> tuple[ItemResult, dict[str, Any]]:
-    """Clone the workflow, then the workflow scheme (re-pointed to the clone by
-    name), then re-point the project. Clone the workflow FIRST so a failure there
-    changes nothing; on any later failure, delete what we created."""
+    """Clone the workflow FIRST (a failure there changes nothing), then either
+    clone the shared scheme + re-point the project, or — for a scheme already
+    private to this project — repoint its mapping to the clone IN PLACE (via a
+    Jira draft + publish). On any later failure, undo what we did."""
+    inplace = a.get("ws_mode") == "inplace"
     wf_id = ws_id = ""
     try:
         created = await client.json("POST", _P_WF_CREATE, json=a["wf_payload"])
@@ -853,6 +897,30 @@ async def _apply_workflow_isolate(
         if not wf_id:
             return ItemResult(target_id=change.target_id, ok=False,
                               error="워크플로우 복제 id를 응답에서 찾지 못했습니다."), {}
+
+        if inplace:
+            wsid = _sid(a["ws_id"])
+            resp = await client.request("PUT", _P_WFS_ONE + f"/{wsid}", json=a["ws_update_body"])
+            if not (200 <= resp.status_code < 300):
+                await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
+                return ItemResult(target_id=change.target_id, ok=False, status_code=resp.status_code,
+                                  error=f"워크플로우 스킴 제자리 수정 실패({resp.status_code}). "
+                                        f"{WorkboxClient.short_error(resp)}"[:200]), {}
+            ok, err = await _publish_draft_if_any(client, wsid)
+            if not ok:
+                # roll the scheme edit back and drop the clone
+                await client.request("PUT", _P_WFS_ONE + f"/{wsid}", json=a["ws_restore_body"])
+                await _publish_draft_if_any(client, wsid)
+                await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
+                return ItemResult(target_id=change.target_id, ok=False,
+                                  error=f"드래프트 게시 실패 — 스킴을 원복하고 복제본을 삭제했습니다. {err}"[:200]), {}
+            undo = {"op": "restore_workflow", "ws_mode": "inplace", "scheme_type": "workflow",
+                    "label": a["label"], "project_id": a["project_id"], "project_key": a["project_key"],
+                    "ws_id": wsid, "ws_update_body": a["ws_update_body"],
+                    "ws_restore_body": a["ws_restore_body"], "new_wf_id": wf_id,
+                    "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"]}
+            return ItemResult(target_id=change.target_id, ok=True, status_code=201), undo
+
         created_ws = await client.json("POST", _P_WFS_ONE, json=a["ws_body"])
         ws_id = _sid(created_ws.get("id"))
         ok, code, err = await _repoint(
@@ -863,14 +931,19 @@ async def _apply_workflow_isolate(
             await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
             return ItemResult(target_id=change.target_id, ok=False, status_code=code,
                               error=f"재지정 실패({code}) — 복제본을 삭제하고 복구했습니다. {err}"[:200]), {}
-        undo = {"op": "restore_workflow", "scheme_type": "workflow", "label": a["label"],
-                "project_id": a["project_id"], "project_key": a["project_key"],
+        undo = {"op": "restore_workflow", "ws_mode": "clone", "scheme_type": "workflow",
+                "label": a["label"], "project_id": a["project_id"], "project_key": a["project_key"],
                 "restore_ws_id": a["restore_ws_id"], "new_ws_id": ws_id, "new_wf_id": wf_id,
                 "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"], "ws_body": a["ws_body"]}
         return ItemResult(target_id=change.target_id, ok=True, status_code=code or 201), undo
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001 — clean up any partial clones
+    except Exception as exc:  # noqa: BLE001 — clean up any partial work
+        if inplace and wf_id:
+            try:
+                await client.request("PUT", _P_WFS_ONE + f"/{_sid(a['ws_id'])}", json=a["ws_restore_body"])
+                await _publish_draft_if_any(client, _sid(a["ws_id"]))
+            except Exception: pass  # noqa: BLE001
         if ws_id:
             try: await client.request("DELETE", _P_WFS_ONE + f"/{ws_id}")
             except Exception: pass  # noqa: BLE001
@@ -884,8 +957,29 @@ async def _apply_workflow_isolate(
 async def _apply_workflow_restore(
     client: WorkboxClient, change: Change, a: dict[str, Any]
 ) -> tuple[ItemResult, dict[str, Any]]:
-    """Undo a workflow fork: re-point to the original scheme, delete the cloned
-    scheme, then the cloned workflow."""
+    """Undo a workflow fork. Clone mode: re-point to the original scheme, delete
+    the cloned scheme, then the cloned workflow. In-place mode: repoint the
+    scheme mapping back (draft + publish), then delete the cloned workflow."""
+    if a.get("ws_mode") == "inplace":
+        wsid = _sid(a["ws_id"])
+        resp = await client.request("PUT", _P_WFS_ONE + f"/{wsid}", json=a["ws_restore_body"])
+        if not (200 <= resp.status_code < 300):
+            return ItemResult(target_id=change.target_id, ok=False, status_code=resp.status_code,
+                              error=f"원복 실패({resp.status_code}). {WorkboxClient.short_error(resp)}"[:200]), {}
+        ok, err = await _publish_draft_if_any(client, wsid)
+        gone = ok
+        try:
+            await client.json("POST", _P_WF_DELETE, json={"workflowIds": [a["new_wf_id"]]})
+        except UpstreamError:
+            gone = False
+        undo = {"op": "isolate_workflow", "ws_mode": "inplace", "scheme_type": "workflow",
+                "label": a["label"], "project_id": a["project_id"], "project_key": a["project_key"],
+                "ws_id": wsid, "ws_update_body": a["ws_update_body"],
+                "ws_restore_body": a["ws_restore_body"],
+                "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"]}
+        return ItemResult(target_id=change.target_id, ok=gone,
+                          error=None if gone else f"일부 원복 실패. {err}"[:200]), undo
+
     ok, code, err = await _repoint(
         client, _P_WFS_PROJECT, {"workflowSchemeId": a["restore_ws_id"], "projectId": a["project_id"]})
     if not ok:
@@ -899,7 +993,7 @@ async def _apply_workflow_restore(
         await client.json("POST", _P_WF_DELETE, json={"workflowIds": [a["new_wf_id"]]})
     except UpstreamError:
         gone = False
-    undo = {"op": "isolate_workflow", "scheme_type": "workflow", "label": a["label"],
+    undo = {"op": "isolate_workflow", "ws_mode": "clone", "scheme_type": "workflow", "label": a["label"],
             "project_id": a["project_id"], "project_key": a["project_key"],
             "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"],
             "ws_body": a["ws_body"], "restore_ws_id": a["restore_ws_id"]}
