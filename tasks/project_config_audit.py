@@ -261,10 +261,12 @@ def _leaf(label: str, sub: str = "") -> dict[str, Any]:
 
 
 async def _workflow_children(
-    client: WorkboxClient, scheme_id: str, it_names: dict[str, str]
+    client: WorkboxClient, scheme_id: str, it_names: dict[str, str],
+    shared: bool, target_key: str,
 ) -> list[dict[str, Any]]:
     """The workflows inside a workflow scheme, one row per distinct workflow with
-    the issue types it serves (default workflow covers all unmapped types)."""
+    the issue types it serves (default workflow covers all unmapped types). When
+    the scheme is shared, each workflow gets its own [분리하기]."""
     try:
         wf = await client.get_json(_P_WF_ONE.format(id=scheme_id))
     except UpstreamError:
@@ -273,13 +275,22 @@ async def _workflow_children(
     by_wf: dict[str, list[str]] = {}
     for it_id, w in (wf.get("issueTypeMappings") or {}).items():
         by_wf.setdefault(str(w), []).append(it_names.get(_sid(it_id), _sid(it_id)))
+
+    def node(wf_name: str, sub: str) -> dict[str, Any]:
+        n = _leaf(wf_name, sub)
+        if shared:
+            n["isolate"] = {"project": target_key, "scheme_type": "workflow",
+                            "node_kind": "workflow", "node_id": wf_name,
+                            "workflow_scheme_id": scheme_id}
+        return n
+
     out: list[dict[str, Any]] = []
     if default:
         explicit = sorted(by_wf.pop(default, []))
         sub = "모든 작업 유형(기본)" + (" · " + ", ".join(explicit) if explicit else "")
-        out.append(_leaf(default, sub))
+        out.append(node(default, sub))
     for w, types in by_wf.items():
-        out.append(_leaf(w, ", ".join(sorted(types))))
+        out.append(node(w, ", ".join(sorted(types))))
     return out
 
 
@@ -464,7 +475,8 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         if r.kind == "이슈 유형 화면 스킴" and r.scheme_id:
             nodes += _screen_tree_children(r, screen_report, projects, it_names, target_key, target_id)
         elif r.kind == "워크플로우 스킴" and r.scheme_id:
-            nodes += await _workflow_children(client, r.scheme_id, it_names)
+            nodes += await _workflow_children(client, r.scheme_id, it_names,
+                                              r.verdict == "공유됨", target_key)
         elif r.kind == "이슈 타입 스킴" and r.scheme_id:
             contents = await _contents_table(client, r.kind, r.scheme_id)
             for row in contents.rows:

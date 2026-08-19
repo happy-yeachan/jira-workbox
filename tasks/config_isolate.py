@@ -229,13 +229,15 @@ class Params(BaseModel):
         description="분리할 스킴 종류 (진단 화면의 [분리하기] 버튼이 자동으로 채웁니다)",
         json_schema_extra={"hidden": True},
     )
-    # granular (path-clone) isolation for the screens family — set by the tree's
-    # per-node [분리하기]. node_kind=scheme means whole-scheme (the default).
-    node_kind: Literal["scheme", "screen_scheme", "screen"] = Field(
+    # granular (path-clone) isolation — set by the tree's per-node [분리하기].
+    # node_kind=scheme means whole-scheme (the default). screens family:
+    # screen_scheme|screen; workflow family: workflow (a single workflow).
+    node_kind: Literal["scheme", "screen_scheme", "screen", "workflow"] = Field(
         default="scheme", json_schema_extra={"hidden": True})
     node_id: str = Field(default="", json_schema_extra={"hidden": True})
     itss_id: str = Field(default="", json_schema_extra={"hidden": True})
     screen_scheme_id: str = Field(default="", json_schema_extra={"hidden": True})
+    workflow_scheme_id: str = Field(default="", json_schema_extra={"hidden": True})
     clone_name: str = Field(
         default="",
         title="새 스킴 이름",
@@ -325,6 +327,12 @@ _P_ITSS_MAPPING = "/issuetypescreenscheme/mapping"
 _P_ITSS_PROJECT = "/issuetypescreenscheme/project"
 _P_SS_ONE = "/screenscheme"
 _P_SCREEN_ONE = "/screens"
+# workflow family (v2 workflows API + workflow scheme)
+_P_WFS_ONE = "/workflowscheme"
+_P_WFS_PROJECT = "/workflowscheme/project"
+_P_WF_READ = "/workflows"          # POST: bulk read by name/id
+_P_WF_CREATE = "/workflows/create" # POST: create
+_P_WF_DELETE = "/workflows/delete" # POST: delete by id
 
 
 def _subst(value: Any, ids: dict[str, str]) -> Any:
@@ -440,6 +448,102 @@ async def _plan_screen_fork(
 
 
 # --------------------------------------------------------------------------
+# workflow fork — clone ONE workflow + the (shared) workflow scheme, re-point
+# --------------------------------------------------------------------------
+
+
+def _wf_id(v: Any) -> str:
+    """A created workflow's id can be a string or {entityId|id}."""
+    if isinstance(v, dict):
+        return _sid(v.get("entityId") or v.get("id"))
+    return _sid(v)
+
+
+def _wf_create_payload(read: dict[str, Any], orig_name: str, new_name: str) -> dict[str, Any]:
+    """Map a v2 workflow READ (POST /workflows) into a CREATE request
+    (POST /workflows/create) for a renamed copy — passing statuses + transitions
+    (with their rules) straight through, which the two DTOs share."""
+    statuses = read.get("statuses") or []
+    wfs = read.get("workflows") or []
+    w = next((x for x in wfs if _sid(x.get("name")) == orig_name), (wfs[0] if wfs else {}))
+    wf: dict[str, Any] = {"name": new_name,
+                          "statuses": w.get("statuses") or [],
+                          "transitions": w.get("transitions") or []}
+    for k in ("description", "startPointLayout"):
+        if w.get(k):
+            wf[k] = w[k]
+    return {
+        "scope": w.get("scope") or {"type": "GLOBAL"},
+        "statuses": [{k: s[k] for k in ("name", "statusCategory", "statusReference", "description")
+                      if s.get(k) is not None} for s in statuses],
+        "workflows": [wf],
+    }
+
+
+async def _plan_workflow_fork(
+    client: WorkboxClient, params: Params, target_id: str, target_key: str
+) -> AsyncIterator[ProgressEvent]:
+    ws_id = _sid(params.workflow_scheme_id)
+    wf_name = params.node_id
+    if not ws_id or not wf_name:
+        raise TaskInputError("분리할 워크플로우 정보가 부족합니다. 진단을 다시 실행해 주세요.")
+
+    yield ProgressEvent(type="phase", phase="chain", message="워크플로우 스킴 확인")
+    ws = await client.get_json(_P_WFS_ONE + f"/{ws_id}")
+    ws_name = _sid(ws.get("name")) or f"#{ws_id}"
+    default_wf = _sid(ws.get("defaultWorkflow"))
+    mappings = {str(k): str(v) for k, v in (ws.get("issueTypeMappings") or {}).items()}
+
+    it_names = await _issue_type_names(client)
+    served = [it for it, w in mappings.items() if w == wf_name]
+    if default_wf == wf_name:
+        served.append("default")
+    it_lab = _it_label(served, it_names)
+    new_wf_name = f"{target_key}: {it_lab} 워크플로우"
+    new_ws_name = f"{target_key}: 전체 워크플로우 스킴"
+
+    yield ProgressEvent(type="phase", phase="workflow", message="워크플로우 정의 읽기")
+    read = await client.json("POST", _P_WF_READ, json={"workflowNames": [wf_name]})
+    wf_payload = _wf_create_payload(read, wf_name, new_wf_name)
+
+    ws_body = {
+        "name": new_ws_name,
+        "defaultWorkflow": new_wf_name if default_wf == wf_name else default_wf,
+        "issueTypeMappings": {it: (new_wf_name if w == wf_name else w) for it, w in mappings.items()},
+    }
+
+    change = Change(
+        target_id=f"workflowfork:{target_id}:{wf_name}",
+        label=f"{target_key} 워크플로우 분리",
+        before={"workflow": wf_name, "workflow_scheme": ws_name},
+        after={
+            "op": "isolate_workflow", "scheme_type": "workflow", "label": "워크플로우",
+            "project_id": target_id, "project_key": target_key,
+            "wf_payload": wf_payload, "wf_new_name": new_wf_name,
+            "ws_body": ws_body, "restore_ws_id": ws_id,
+        },
+        note=f"워크플로우 '{wf_name}' 복제 → 워크플로우 스킴 복제 후 이 프로젝트만 재지정",
+    )
+    warnings = ["워크플로우 복제는 상태·전환·규칙(조건·검증·후처리)까지 재생성합니다. "
+                "실행 후 새 워크플로우가 원본과 같은지 확인하세요."]
+    table = ResultTable(
+        key="isolate", title="분리 계획 (워크플로우)",
+        columns=[Column(key="kind", title="복제 대상"), Column(key="from", title="원본(공유)"),
+                 Column(key="to", title="새 전용")],
+        rows=[{"kind": "워크플로우", "from": wf_name, "to": new_wf_name},
+              {"kind": "워크플로우 스킴", "from": ws_name, "to": new_ws_name}],
+        note="선택한 워크플로우와 그 워크플로우 스킴만 복제해 이 프로젝트만 옮깁니다. 다른 프로젝트는 그대로입니다.",
+    )
+    result = planstore.register(
+        task=TASK_NAME,
+        params_echo={"project": target_key, "scheme_type": "workflow", "node_kind": "workflow"},
+        changes=[change], warnings=warnings, tables=[table],
+    )
+    audit.record_plan(result)
+    yield ProgressEvent(type="plan", total=1, plan=result)
+
+
+# --------------------------------------------------------------------------
 # plan
 # --------------------------------------------------------------------------
 
@@ -453,6 +557,10 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
 
     if params.scheme_type == "issuetypescreen" and params.node_kind in ("screen_scheme", "screen"):
         async for ev in _plan_screen_fork(client, params, target_id, target_key):
+            yield ev
+        return
+    if params.scheme_type == "workflow" and params.node_kind == "workflow":
+        async for ev in _plan_workflow_fork(client, params, target_id, target_key):
             yield ev
         return
 
@@ -612,6 +720,74 @@ async def _apply_fork_restore(
                       error=None if gone else "일부 복제본 삭제 실패"), undo
 
 
+async def _apply_workflow_isolate(
+    client: WorkboxClient, change: Change, a: dict[str, Any]
+) -> tuple[ItemResult, dict[str, Any]]:
+    """Clone the workflow, then the workflow scheme (re-pointed to the clone by
+    name), then re-point the project. Clone the workflow FIRST so a failure there
+    changes nothing; on any later failure, delete what we created."""
+    wf_id = ws_id = ""
+    try:
+        created = await client.json("POST", _P_WF_CREATE, json=a["wf_payload"])
+        wfs = created.get("workflows") or []
+        wf_id = _wf_id(wfs[0].get("id")) if wfs else ""
+        if not wf_id:
+            return ItemResult(target_id=change.target_id, ok=False,
+                              error="워크플로우 복제 id를 응답에서 찾지 못했습니다."), {}
+        created_ws = await client.json("POST", _P_WFS_ONE, json=a["ws_body"])
+        ws_id = _sid(created_ws.get("id"))
+        ok, code, err = await _repoint(
+            client, _P_WFS_PROJECT, {"workflowSchemeId": ws_id, "projectId": a["project_id"]})
+        if not ok:
+            if ws_id:
+                await client.request("DELETE", _P_WFS_ONE + f"/{ws_id}")
+            await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
+            return ItemResult(target_id=change.target_id, ok=False, status_code=code,
+                              error=f"재지정 실패({code}) — 복제본을 삭제하고 복구했습니다. {err}"[:200]), {}
+        undo = {"op": "restore_workflow", "scheme_type": "workflow", "label": a["label"],
+                "project_id": a["project_id"], "project_key": a["project_key"],
+                "restore_ws_id": a["restore_ws_id"], "new_ws_id": ws_id, "new_wf_id": wf_id,
+                "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"], "ws_body": a["ws_body"]}
+        return ItemResult(target_id=change.target_id, ok=True, status_code=code or 201), undo
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — clean up any partial clones
+        if ws_id:
+            try: await client.request("DELETE", _P_WFS_ONE + f"/{ws_id}")
+            except Exception: pass  # noqa: BLE001
+        if wf_id:
+            try: await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
+            except Exception: pass  # noqa: BLE001
+        return ItemResult(target_id=change.target_id, ok=False,
+                          error=f"{type(exc).__name__}: {exc}"[:200]), {}
+
+
+async def _apply_workflow_restore(
+    client: WorkboxClient, change: Change, a: dict[str, Any]
+) -> tuple[ItemResult, dict[str, Any]]:
+    """Undo a workflow fork: re-point to the original scheme, delete the cloned
+    scheme, then the cloned workflow."""
+    ok, code, err = await _repoint(
+        client, _P_WFS_PROJECT, {"workflowSchemeId": a["restore_ws_id"], "projectId": a["project_id"]})
+    if not ok:
+        return ItemResult(target_id=change.target_id, ok=False, status_code=code,
+                          error=f"원복 재지정 실패({code}). {err}"[:200]), {}
+    gone = True
+    r1 = await client.request("DELETE", _P_WFS_ONE + f"/{a['new_ws_id']}")
+    if not (r1.status_code < 400 or r1.status_code == 404):
+        gone = False
+    try:
+        await client.json("POST", _P_WF_DELETE, json={"workflowIds": [a["new_wf_id"]]})
+    except UpstreamError:
+        gone = False
+    undo = {"op": "isolate_workflow", "scheme_type": "workflow", "label": a["label"],
+            "project_id": a["project_id"], "project_key": a["project_key"],
+            "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"],
+            "ws_body": a["ws_body"], "restore_ws_id": a["restore_ws_id"]}
+    return ItemResult(target_id=change.target_id, ok=gone,
+                      error=None if gone else "일부 복제본 삭제 실패"), undo
+
+
 async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult, dict[str, Any]]:
     """Do the change. Returns (result, undo) where undo describes the inverse."""
     a = change.after
@@ -620,6 +796,10 @@ async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult,
         return await _apply_fork_isolate(client, change, a)
     if op == "restore_fork":
         return await _apply_fork_restore(client, change, a)
+    if op == "isolate_workflow":
+        return await _apply_workflow_isolate(client, change, a)
+    if op == "restore_workflow":
+        return await _apply_workflow_restore(client, change, a)
     try:
         if op == "isolate":
             created = await client.json("POST", a["create_path"], json=a["create_body"])
