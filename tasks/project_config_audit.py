@@ -330,7 +330,8 @@ def _screen_tree_children(
             "sub": "", "badge": v, "tag": "DEFAULT" if ss_id == default_ss else "",
             "shared_with": plabels(c.get("reachable_project_ids", [])) if v == "shared" else [],
             "isolate": ({"project": target_key, "scheme_type": "issuetypescreen",
-                         "node_kind": "screen_scheme", "node_id": ss_id, "itss_id": itss_id}
+                         "node_kind": "screen_scheme", "node_id": ss_id, "itss_id": itss_id,
+                         "itss_shared": r.verdict == "공유됨"}
                         if v in _ISOLATABLE else None),
             "note": "",
         })
@@ -357,7 +358,8 @@ def _screen_tree_children(
                 "shared_with": plabels(sc.get("reachable_project_ids", [])) if v2 == "shared" else [],
                 "isolate": ({"project": target_key, "scheme_type": "issuetypescreen",
                              "node_kind": "screen", "node_id": sid,
-                             "itss_id": itss_id, "screen_scheme_id": ss_id}
+                             "itss_id": itss_id, "screen_scheme_id": ss_id,
+                             "itss_shared": r.verdict == "공유됨", "screen_scheme_shared": v == "공유됨"}
                             if v2 in _ISOLATABLE else None),
                 "note": "",
             })
