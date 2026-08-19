@@ -361,7 +361,9 @@
   .opt-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; margin-bottom: 6px;
              border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
   .opt-row.off { opacity: .55; }
+  .opt-row.dragging { opacity: .35; border-style: dashed; box-shadow: 0 4px 14px rgba(0,0,0,.10); }
   .opt-grip { cursor: grab; color: var(--muted); user-select: none; font-size: 12px; letter-spacing: -2px; }
+  .opt-grip:active { cursor: grabbing; }
   .opt-input { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; }
   .opt-bulk { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; }
   .opt-bulk textarea { flex: 1; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 13px; resize: vertical; }
@@ -1059,9 +1061,11 @@
                         <div class="opt-editor" x-show="fieldmgr.editing && fieldmgr.editing.ctxId === c.id">
                           <div class="sub" style="margin-bottom:6px">드래그(⋮⋮)로 순서 변경 · 값 편집 · 활성/비활성 · 삭제. 아래에서 여러 줄 대량 추가.</div>
                           <template x-for="(o, i) in (fieldmgr.editing ? fieldmgr.editing.list : [])" :key="o._key">
-                            <div class="opt-row" :class="{ off: o.disabled }" draggable="true"
-                                 @dragstart="fieldmgr.editing.dragIndex = i" @dragover.prevent
-                                 @drop.prevent="optDrop(i)">
+                            <div class="opt-row" :class="{ off: o.disabled, dragging: fieldmgr.editing.dragKey === o._key }"
+                                 draggable="true" :data-key="o._key"
+                                 @dragstart="optDragStart(i, $event)"
+                                 @dragover.prevent="optDragOver(i, $event)"
+                                 @drop.prevent @dragend="optDragEnd()">
                               <span class="opt-grip">⋮⋮</span>
                               <input class="opt-input" x-model="o.value">
                               <button class="btn small ghost" @click="o.disabled = !o.disabled" x-text="o.disabled ? '비활성' : '활성'"></button>
@@ -2072,14 +2076,42 @@ document.addEventListener('alpine:init', () => {
       this.fieldmgr.editing = {
         ctxId: c.id, ctxName: c.name || '기본 컨텍스트',
         list: (c.options || []).map((o, i) => ({ id: o.id, value: o.value, disabled: o.disabled, _key: 'o' + i + '_' + o.id })),
-        deleted: [], bulk: '', busy: false, err: '', confirm: false, dragIndex: null,
+        deleted: [], bulk: '', busy: false, err: '', confirm: false, dragIndex: null, dragKey: null,
       };
     },
     cancelEdit() { this.fieldmgr.editing = null; },
-    optDrop(i) {
+    optDragStart(i, ev) {
+      const e = this.fieldmgr.editing;
+      e.dragIndex = i; e.dragKey = e.list[i]._key;
+      if (ev && ev.dataTransfer) { ev.dataTransfer.effectAllowed = 'move'; }
+    },
+    optDragOver(i, ev) {
       const e = this.fieldmgr.editing, from = e.dragIndex;
       if (from == null || from === i) return;
-      const [m] = e.list.splice(from, 1); e.list.splice(i, 0, m); e.dragIndex = null;
+      // FLIP: record row positions, reorder, then slide each row from its old spot
+      const box = ev.currentTarget.closest('.opt-editor');
+      const rows = box ? Array.from(box.querySelectorAll('.opt-row')) : [];
+      const first = new Map();
+      rows.forEach(r => first.set(r.dataset.key, r.getBoundingClientRect().top));
+      const [m] = e.list.splice(from, 1); e.list.splice(i, 0, m); e.dragIndex = i;
+      this.$nextTick(() => {
+        (box ? Array.from(box.querySelectorAll('.opt-row')) : []).forEach(r => {
+          const oldTop = first.get(r.dataset.key);
+          if (oldTop == null) return;
+          const dy = oldTop - r.getBoundingClientRect().top;
+          if (!dy) return;
+          r.style.transition = 'none';
+          r.style.transform = 'translateY(' + dy + 'px)';
+          requestAnimationFrame(() => {
+            r.style.transition = 'transform .18s ease';
+            r.style.transform = '';
+          });
+        });
+      });
+    },
+    optDragEnd() {
+      const e = this.fieldmgr.editing;
+      if (e) { e.dragIndex = null; e.dragKey = null; }
     },
     optDelete(i) {
       const e = this.fieldmgr.editing, o = e.list[i];
