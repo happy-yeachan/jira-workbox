@@ -7,8 +7,9 @@ uv sync
 ./run.command          # macOS (Windows: run.bat)
 ```
 
-브라우저가 열리면 사이트 URL·이메일·API 토큰을 넣어 연결하고, 왼쪽에서 작업을 고릅니다.
-작업은 두 종류입니다.
+브라우저가 열리면 사이트 URL·이메일·API 토큰을 넣어 연결합니다. 홈은 **라이선스 현황**
+대시보드(애플리케이션별 시트 사용량 + 라이선스 변경 로그)이고, 왼쪽 사이드바에서 작업을
+고릅니다. 작업은 두 종류입니다.
 
 | 종류 | 흐름 | 예 |
 |---|---|---|
@@ -105,6 +106,7 @@ core/config.py                settings (config.toml / WORKBOX_* env vars)
 core/auth.py                  keyring-backed credentials + `python -m core.auth` CLI
 core/http.py                  BaseApiClient: retries, pagination, scan integrity
 core/client.py                WorkboxClient: site REST roots + Basic auth
+core/org_client.py            OrgClient: admin API (Bearer) — org events for the license log
 core/concurrency.py           map_bounded / chunked
 core/models.py                Change / PlanResult / ResultTable / ProgressEvent
 core/planstore.py             expiring plan tokens (single-use for writes)
@@ -112,6 +114,7 @@ core/audit.py                 JSONL execution log
 tasks/__init__.py             task registry + plan adapters
 tasks/issue_bulk_label.py     reference write task
 tasks/screen_share_analysis.py  reference read-only analysis
+tasks/license_status.py       license dashboard + change-log helpers (launcher=false)
 static/index.html             whole UI
 selftest.py                   offline checks (no network, no credentials)
 run.command / run.bat         launchers (macOS / Windows)
@@ -162,8 +165,13 @@ matters in your environment, use the CLI path instead.
   one call site (`core/client.py`, building `httpx.BasicAuth`) — grep for
   `get_secret_value` to audit it.
 - No API response and no log line contains the token. `/api/health` returns the
-  site URL and a masked email only.
+  site URL, a masked email, and the operator's own login email (for prefilling
+  the connect form) — never a token.
 - Only you enter or change the token, in the connect form or via the CLI.
+- The optional **organisation admin API key** (for the license change log) is a
+  second, separate secret in the same keyring service. Same rules: entered only
+  by you (접속 정보 → 조직 API 키), unwrapped at one call site
+  (`core/org_client._BearerAuth`), never returned. The tool works without it.
 
 ## Run
 
@@ -210,8 +218,12 @@ Guardrails, on purpose:
 
 | Method | Path | Notes |
 |---|---|---|
-| GET  | `/api/health` | `configured`, site URL, masked email, TLS/concurrency settings. No secrets, no setup code. |
-| POST | `/api/setup/credentials` | write-only; needs `X-Workbox-Setup: 1` and a same-origin request. Rebuilds the client in place, so rotating a token needs no restart. |
+| GET  | `/api/health` | `configured`, `org_configured`, site URL, masked email + `login_email` (for prefill), TLS/concurrency settings. No secrets, no setup code. |
+| POST | `/api/setup/credentials` | write-only; needs `X-Workbox-Setup: 1` and a same-origin request. `keep_token: true` re-saves site/email but leaves the stored token. Rebuilds the client in place, so rotating a token needs no restart. |
+| POST · DELETE | `/api/setup/org` | store / remove the org admin API key (write-only, verified against `GET /orgs`). |
+| GET  | `/api/license/summary` | per-application seat + plan cards |
+| GET  | `/api/license/users/stream?app=` | one application's licensed users, NDJSON stream |
+| GET  | `/api/license/events?days=` | license change log from org audit events (needs the org key; 403 otherwise) |
 | GET  | `/api/tasks` | specs + JSON schema for the form + `streams_plan` |
 | POST | `/api/tasks/{name}/plan` | read-only, returns `PlanResult` |
 | POST | `/api/tasks/{name}/plan/stream` | read-only, SSE, terminal `plan` event |
@@ -314,6 +326,51 @@ row counts, success/failure counts, target identifiers, status codes and a
 trimmed error hint. No request or response bodies, no credentials. It does
 record your task parameters (e.g. the JQL), so treat the file with the same care
 as the data it selects.
+
+## Home: license dashboard + change log — 라이선스 현황·변경 로그
+
+The landing page (left sidebar **라이선스 현황**). It auto-loads on connect — no
+"run" click. Two parts, different data sources; `tasks/license_status.py` is
+`launcher=false` (the old menu card was dropped once this became home).
+
+**Seat usage.** One donut per Jira application from `GET /applicationrole` (total
+/ used / remaining seats, unlimited) joined with `GET /instance/license` (plan).
+Site token. JSM seats are labelled 에이전트, not 시트. Confluence is intentionally
+not shown — the site token has no reliable Confluence seat API.
+
+Clicking a card opens that application's **licensed users**: the union of its
+access-group members (`GET /group/member` over the role's `groupDetails`,
+active-only, deduped). Every product is streamed into a cache in the background
+at load, so opening a card is instant; the list is paginated (100/page) and
+searchable. The count reconciles to the app's `userCount`; when it can't (agents
+vs users, cross-app seats) the panel says so.
+
+**License change log — 라이선스 변경 로그.** Who was granted / revoked product
+access, when, by whom — stacked under the seat cards. This needs the
+**organisation admin API** (a second secret; the site token cannot see it):
+
+- Connect an org admin API key in **접속 정보 → 조직 API 키** (from
+  admin.atlassian.net → Settings → API keys). It is stored in the keyring like
+  the site token, verified against `GET /admin/v1/orgs` before saving, and never
+  returned. Without it the log shows a "connect" prompt.
+- This tenant grants product access by **group membership**, so the log reads
+  the org audit events `user_added_to_group` / `user_removed_from_group`,
+  filtered server-side by `q="users"` (all product groups are named
+  `<product>-users*`) — a blind scan would never reach these rare events in a
+  high-volume org. `product_access_granted`/`_revoked` are also queried, for
+  tenants that emit them directly. `core/org_client.classify_license_event` maps
+  the group to a product (`confluence-users*`→Confluence,
+  `jira-servicemanagement-users*`→JSM (agent), `jira-users*` / `jira-software-*`
+  / `jira-product-discovery-*`→Jira) and drops non-product-access groups.
+- Events carry only the target's email; real display names are enriched by
+  accountId via `GET /user/bulk` (site token, best-effort). Rows show name +
+  email, an 추가/삭제 badge, the product, and the actor. Filter by product chips
+  (Jira / JSM (agent) / Confluence), 추가/삭제, and search; paginated.
+- The org events API rate-limits hard, so the scan is bounded to a few pages and
+  a 429 surfaces as "잠시 후 다시" rather than a raw error.
+  `GET /api/debug/org-events` dumps distinct actions + raw samples for tuning.
+
+The org key is used **only** for this log; seat usage stays on the site token.
 
 ## Reference template: bulk label add/remove (`tasks/issue_bulk_label.py`)
 
@@ -469,6 +526,6 @@ Three rules a task must not break:
 ## Not included
 
 Auth in front of the web UI (it binds to localhost for a single operator),
-persistence across restarts, scheduling, the organisation admin API client
-(`core/orgs.py`, arriving with the user-lookup task), and any Confluence task
-module.
+persistence across restarts, scheduling, and any Confluence task module. The
+organisation admin API (`core/org_client.py`) is wired up but scoped to the
+license change log only — not a general org-management client.
