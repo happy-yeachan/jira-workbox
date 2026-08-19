@@ -279,9 +279,10 @@
 
   /* ---------- license dashboard ---------- */
   .dash { margin: 0 0 30px; }
-  .dash-h { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 12px; }
-  .dash-h h2 { margin: 0; font-size: 16px; letter-spacing: -.01em; }
-  .dash-h .sub { font-size: 12.5px; }
+  .dash-h { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 12px; flex-wrap: nowrap; }
+  .dash-h h2 { margin: 0; font-size: 16px; letter-spacing: -.01em; white-space: nowrap; flex: none; }
+  .dash-h .sub { font-size: 12.5px; white-space: nowrap; flex: none; }
+  .dash-h .lic-log-search { flex: 1 1 auto; min-width: 120px; }
   .dash-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   .lic-card {
     border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
@@ -797,19 +798,21 @@
             <div class="dash-h">
               <h2>필드 관리</h2>
               <span class="sub" x-show="!fields.loading && !fields.err" x-text="fieldsCountLabel()"></span>
+              <span class="sub" x-show="fields.loading">· 불러오는 중…</span>
               <span style="flex:1"></span>
-              <input type="text" class="lic-log-search" placeholder="이름·유형·검색기 검색" x-model="fields.q" @input="fields.page = 1">
+              <input type="text" class="lic-log-search" placeholder="이름·유형 검색" x-model="fields.q" @input="fields.page = 1">
               <button class="btn small ghost" @click="loadFields()" :disabled="fields.loading">새로고침</button>
             </div>
+            <div class="sub" style="margin:0 2px 8px">스페이스 스코프 = 컨텍스트가 걸린 프로젝트 범위(전역=모두 공통) · 화면 = 필드가 올라간 화면 수</div>
             <div class="progbar" x-show="fields.loading" style="margin-bottom:10px; border-radius:2px"></div>
             <div class="notice err" x-show="fields.err" x-text="fields.err" style="margin-bottom:10px"></div>
             <div class="lic-users" x-show="!fields.err">
               <div class="lic-users-body">
                 <table>
                   <thead><tr>
-                    <th style="width:26%">이름</th><th>유형</th><th>값 타입</th><th>검색기</th>
-                    <th style="width:80px">컨텍스트</th><th style="width:120px">스페이스 스코프</th>
-                    <th style="width:64px">화면</th><th style="width:110px">마지막 사용</th>
+                    <th style="width:34%">이름</th><th>유형</th>
+                    <th style="width:90px">컨텍스트</th><th style="width:140px">스페이스 스코프</th>
+                    <th style="width:80px">화면</th><th style="width:120px">마지막 사용</th>
                   </tr></thead>
                   <tbody>
                     <template x-for="f in pagedFields()" :key="f.id">
@@ -819,8 +822,6 @@
                           <span class="u-tag" x-show="f.locked" style="margin-left:6px">잠김</span>
                         </td>
                         <td x-text="f.type"></td>
-                        <td class="u-off" x-text="f.value_type || '—'"></td>
-                        <td class="u-off" x-text="f.searcher"></td>
                         <td x-text="f.contexts"></td>
                         <td x-text="f.space_scoped ? (f.projects + '개 스페이스') : (f.contexts ? '전역' : '—')"></td>
                         <td x-text="f.screens"></td>
@@ -829,6 +830,7 @@
                     </template>
                   </tbody>
                 </table>
+                <div class="sub" x-show="fields.loading && !fields.list.length" style="padding:14px">필드를 불러오는 중…</div>
                 <div class="sub" x-show="!fields.loading && !filteredFields().length" style="padding:12px 14px">필드가 없습니다.</div>
               </div>
               <div class="lic-users-foot" x-show="fieldsPages() > 1">
@@ -1642,7 +1644,8 @@ document.addEventListener('alpine:init', () => {
 
     // ---------- 필드 관리 ----------
     openFields() {
-      this.selected = null; this.landingView = 'fields';
+      this.selected = null; this.landingView = 'fields'; this.fields.detail = null;
+      // cached: only fetch the first time (or after 새로고침), not on every visit
       if (!this.fields.list.length && !this.fields.loading) this.loadFields();
     },
     async loadFields() {
