@@ -492,8 +492,15 @@ def _wf_create_payload(read: dict[str, Any], orig_name: str, new_name: str) -> d
 
     def remap(node: Any) -> Any:
         if isinstance(node, dict):
-            return {k: (ref_map.get(_sid(v), v) if k == "statusReference" else remap(v))
-                    for k, v in node.items()}
+            out: dict[str, Any] = {}
+            for k, v in node.items():
+                # transitions reference statuses via statusReference AND
+                # to/fromStatusReference (+ inside links) — remap them all
+                if isinstance(k, str) and k.lower().endswith("statusreference") and isinstance(v, (str, int)):
+                    out[k] = ref_map.get(_sid(v), v)
+                else:
+                    out[k] = remap(v)
+            return out
         if isinstance(node, list):
             return [remap(x) for x in node]
         return node
