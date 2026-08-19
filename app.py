@@ -468,24 +468,36 @@ async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
     days = max(1, min(days, 365))
     limit = max(1, min(limit, 1000))
     from_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    # (action, q): product access is granted via "<product>-users" group
+    # membership here, so filter those actions server-side by q="users" — the
+    # events are dense, unlike an unfiltered scan of a high-volume org. The
+    # product_access_* actions (other tenants) need no group query.
+    queries = [
+        ("user_added_to_group", "users"),
+        ("user_removed_from_group", "users"),
+        ("product_access_granted", None),
+        ("product_access_revoked", None),
+    ]
     scanned = 0
     out: list[dict[str, object]] = []
     try:
         org_id = await org.org_id()
-        # Filter server-side to the two product-access actions. A scan without
-        # this would never reach these rare events in a high-volume org.
-        for action in org_client.LICENSE_ACTIONS:
-            got = 0
-            async for ev in org.iter_events(org_id, from_ms=from_ms, action=action, page_size=100):
+        for action, q in queries:
+            got_rows = 0
+            seen = 0
+            async for ev in org.iter_events(org_id, from_ms=from_ms, action=action,
+                                            q=q, page_size=100):
                 scanned += 1
-                got += 1
+                seen += 1
                 row = org_client.classify_license_event(ev)
                 if row is not None:
                     out.append(row)
-                if got >= limit or scanned >= _EVENT_SCAN_CAP:
+                    got_rows += 1
+                # per-action bounds keep the (rate-limited) scan short
+                if got_rows >= limit or seen >= 400 or scanned >= _EVENT_SCAN_CAP:
                     break
         out.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
-        out = out[:limit]
+        out = out[:1000]
     except UpstreamError as exc:
         if exc.status_code == 429:
             raise HTTPException(
