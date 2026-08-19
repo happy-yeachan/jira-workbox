@@ -499,7 +499,7 @@ async def license_events(days: int = 30, limit: int = 200) -> dict[str, object]:
 
 
 @app.get("/api/debug/org-events")
-async def debug_org_events(days: int = 30, samples: int = 8, action: str = "") -> dict[str, object]:
+async def debug_org_events(days: int = 30, samples: int = 8, action: str = "", q: str = "") -> dict[str, object]:
     """Diagnostic: what the org events API actually returns, so classification can
     be matched to the real shape. Returns the distinct `action` values seen (with
     counts) plus a few raw events. Pass `action=` to filter server-side (e.g.
@@ -515,7 +515,8 @@ async def debug_org_events(days: int = 30, samples: int = 8, action: str = "") -
     scanned = 0
     try:
         org_id = await org.org_id()
-        async for ev in org.iter_events(org_id, from_ms=from_ms, action=(action or None), page_size=100):
+        async for ev in org.iter_events(org_id, from_ms=from_ms, action=(action or None),
+                                        q=(q or None), page_size=100):
             scanned += 1
             act = str(((ev.get("attributes") or {}).get("action")) or "")
             actions[act] = actions.get(act, 0) + 1

@@ -86,12 +86,14 @@ class OrgClient(BaseApiClient):
 
     async def iter_events(
         self, org_id: str, *, from_ms: int | None = None, to_ms: int | None = None,
-        action: str | None = None, limit: int | None = None, page_size: int | None = None,
+        action: str | None = None, q: str | None = None,
+        limit: int | None = None, page_size: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Organisation audit events, newest-first, cursor-paginated. ``from_ms``/
         ``to_ms`` are epoch milliseconds. ``action`` filters server-side to one
-        action string — essential in a high-volume org where a rare event would
-        never surface in a client-side scan."""
+        action string; ``q`` is the free-text filter (e.g. a group name) — both
+        essential in a high-volume org where a rare event would never surface in
+        a client-side scan."""
         params: dict[str, Any] = {}
         if from_ms is not None:
             params["from"] = from_ms
@@ -99,6 +101,8 @@ class OrgClient(BaseApiClient):
             params["to"] = to_ms
         if action:
             params["action"] = action
+        if q:
+            params["q"] = q
         async for ev in self.paginate_token(
             f"/orgs/{org_id}/events", items_key="data", links_key="links",
             token_param="cursor", size_param="limit", params=params,
