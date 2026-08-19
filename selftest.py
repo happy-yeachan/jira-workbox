@@ -655,6 +655,60 @@ async def suite_license_events() -> None:
     await org.aclose()
 
 
+def _field_site():
+    """MockTransport for /field/search: a short-text global field, a select field
+    with a space-scoped context, and an unknown-type field."""
+    fields = [
+        {"id": "customfield_1", "name": "고객 메모", "key": "customfield_1",
+         "schema": {"type": "string", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:textfield"},
+         "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher",
+         "contextsCount": 1, "projectsCount": 0, "screensCount": 3, "isLocked": False,
+         "lastUsed": {"type": "TRACKED", "value": "2026-08-01T00:00:00.000+0000"}},
+        {"id": "customfield_2", "name": "등급", "key": "customfield_2",
+         "schema": {"type": "option", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:select"},
+         "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:multiselectsearcher",
+         "contextsCount": 3, "projectsCount": 2, "screensCount": 5, "isLocked": False},
+        {"id": "customfield_3", "name": "미지의 필드", "key": "customfield_3",
+         "schema": {"type": "any", "custom": "com.acme:weirdtype"},
+         "contextsCount": 1, "projectsCount": 0, "screensCount": 0},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/rest/api/3/field/search":
+            start = int(request.url.params.get("startAt", 0))
+            mx = int(request.url.params.get("maxResults", 50))
+            page = fields[start:start + mx]
+            return httpx.Response(200, json={"values": page, "startAt": start, "maxResults": mx,
+                                             "total": len(fields), "isLast": start + mx >= len(fields)})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+    return handler
+
+
+async def suite_field_inventory() -> None:
+    print("field_inventory: custom fields, type labels, space scope")
+    import tasks.field_inventory as fld
+    client = _client_for(_field_site())
+    set_client(client)
+
+    plan = await fld.plan(fld.Params())
+    rows = {r["name"]: r for r in plan.tables[0].rows}
+    check("short-text field labelled 단문 텍스트 · global scope",
+          rows["고객 메모"]["type"] == "단문 텍스트" and rows["고객 메모"]["spaces"] == "전역", rows.get("고객 메모"))
+    check("select field labelled 단일 선택 · space-scoped count",
+          rows["등급"]["type"] == "단일 선택" and rows["등급"]["spaces"] == 2, rows.get("등급"))
+    check("unknown type falls back to its suffix",
+          rows["미지의 필드"]["type"] == "weirdtype", rows.get("미지의 필드"))
+    check("machine report flags space_scoped",
+          next(f for f in plan.data["field_inventory"]["fields"] if f["id"] == "customfield_2")["space_scoped"] is True)
+
+    plan2 = await fld.plan(fld.Params(only_spaced=True))
+    names = sorted(r["name"] for r in plan2.tables[0].rows)
+    check("only_spaced keeps just the space-scoped field", names == ["등급"], names)
+    await client.aclose()
+    set_client(None)
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -667,6 +721,8 @@ async def main() -> None:
     await suite_license_stream()
     print()
     await suite_license_events()
+    print()
+    await suite_field_inventory()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")
