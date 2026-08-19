@@ -868,25 +868,91 @@
               <h2 x-text="fieldmgr.detail && fieldmgr.detail.name"></h2>
               <span class="pill" x-text="fieldmgr.detail && fieldmgr.detail.type"></span>
               <span class="sub" x-show="fieldmgr.detail" x-text="'컨텍스트 ' + (fieldmgr.detail ? fieldmgr.detail.contexts.length : 0) + '개'"></span>
+              <span style="flex:1"></span>
+              <button class="btn small" x-show="fieldmgr.detail && !ctxNew" @click="newContext()">＋ 컨텍스트 추가</button>
             </div>
             <div class="progbar" x-show="fieldmgr.detailLoading" style="margin-bottom:10px; border-radius:2px"></div>
             <div class="notice err" x-show="fieldmgr.detailErr" x-text="fieldmgr.detailErr" style="margin-bottom:10px"></div>
             <template x-if="fieldmgr.detail">
               <div>
+                <!-- create a new context -->
+                <template x-if="ctxNew">
+                  <div class="ctx-card" style="border-color: var(--accent, #2563eb)">
+                    <div class="ctx-head"><b>새 컨텍스트</b></div>
+                    <div class="ctx-editor">
+                      <label class="field"><span class="name">컨텍스트 이름</span>
+                        <input type="text" x-model="ctxNew.name" placeholder="예: 특정 프로젝트용"></label>
+                      <label class="field"><span class="name">설명</span>
+                        <input type="text" x-model="ctxNew.description"></label>
+                      <div style="margin-top:6px">
+                        <div class="name" style="margin-bottom:4px">스페이스(프로젝트)</div>
+                        <label class="chk"><input type="checkbox" x-model="ctxNew.isGlobal"> 모든 프로젝트(전역)</label>
+                        <div x-show="!ctxNew.isGlobal" style="margin-top:6px">
+                          <div class="opt-list" style="margin-bottom:6px">
+                            <template x-for="(p, i) in ctxNew.projects" :key="p.id">
+                              <span class="opt"><span x-text="p.key || p.name"></span> <a class="opt-x" @click.prevent="ctxNew.projects.splice(i, 1)">×</a></span>
+                            </template>
+                            <span class="sub" x-show="!ctxNew.projects.length">지정된 프로젝트 없음</span>
+                          </div>
+                          <div style="position:relative; max-width:380px">
+                            <input type="text" placeholder="프로젝트 추가 검색 (키·이름)" x-model="ctxNew.psearch.q" @input.debounce.250ms="ctxNewSearchProjects()">
+                            <div class="picker" x-show="ctxNew.psearch.results.length">
+                              <template x-for="p in ctxNew.psearch.results" :key="p.id">
+                                <button class="pick-row" type="button" @click="ctxNewAddProject(p)">
+                                  <span x-text="p.key"></span> <span class="sub" x-text="p.name"></span>
+                                </button>
+                              </template>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div style="margin-top:10px">
+                        <div class="name" style="margin-bottom:4px">이슈유형</div>
+                        <label class="chk"><input type="checkbox" x-model="ctxNew.anyIssueType"> 모든 이슈유형</label>
+                        <div class="opt-list" style="margin-top:6px" x-show="!ctxNew.anyIssueType">
+                          <template x-for="it in (fieldmgr.detail.issue_type_catalog || [])" :key="it.id">
+                            <span class="opt" :class="ctxNew.issueTypes.includes(it.id) ? 'sel' : 'pick'"
+                                  style="cursor:pointer" @click="ctxNewToggleIt(it.id)">
+                              <span x-text="it.name"></span>
+                            </span>
+                          </template>
+                          <span class="sub" x-show="!(fieldmgr.detail.issue_type_catalog || []).length">이슈유형 목록을 불러올 수 없습니다</span>
+                        </div>
+                        <div class="sub" x-show="!ctxNew.anyIssueType && !ctxNew.issueTypes.length" style="margin-top:4px">선택하지 않으면 모든 유형으로 설정됩니다.</div>
+                      </div>
+                      <div class="notice err" x-show="ctxNew.err" x-text="ctxNew.err" style="margin-top:8px"></div>
+                      <div class="row" style="margin-top:10px; gap:8px; align-items:center">
+                        <button class="btn primary small" @click="createContext()" :disabled="ctxNew.busy || !ctxNew.name.trim()"
+                                x-text="ctxNew.busy ? '생성 중…' : '컨텍스트 생성'"></button>
+                        <button class="btn ghost small" @click="ctxNew = null" :disabled="ctxNew.busy">취소</button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
                 <template x-for="c in fieldmgr.detail.contexts" :key="c.id">
                   <div class="ctx-card">
                     <div class="ctx-head">
                       <b x-text="c.name || '기본 컨텍스트'"></b>
                       <span class="pill" x-show="c.global">전역</span>
                       <span style="flex:1"></span>
-                      <template x-if="!(ctxEdit && ctxEdit.ctxId === c.id)">
+                      <template x-if="!(ctxEdit && ctxEdit.ctxId === c.id) && ctxDelId !== c.id">
                         <span style="display:flex; gap:6px; flex:none">
                           <button class="btn small ghost" @click="editContext(c)">컨텍스트 편집</button>
                           <button class="btn small ghost" x-show="fieldmgr.detail.has_options" @click="editOptions(c)">옵션 편집</button>
                           <button class="btn small ghost" x-show="fieldmgr.detail.has_default" @click="editDefault(c)">기본값 편집</button>
+                          <button class="btn small ghost" @click="ctxDelId = c.id; ctxDelErr = ''" title="컨텍스트 삭제">삭제</button>
+                        </span>
+                      </template>
+                      <template x-if="ctxDelId === c.id">
+                        <span style="display:flex; gap:6px; flex:none; align-items:center">
+                          <span class="sub">이 컨텍스트를 삭제할까요?</span>
+                          <button class="btn danger small" @click="deleteContext(c)" :disabled="ctxDelBusy"
+                                  x-text="ctxDelBusy ? '삭제 중…' : '삭제 확정'"></button>
+                          <button class="btn ghost small" @click="ctxDelId = null" :disabled="ctxDelBusy">취소</button>
                         </span>
                       </template>
                     </div>
+                    <div class="notice err" x-show="ctxDelId === c.id && ctxDelErr" x-text="ctxDelErr" style="margin-top:6px"></div>
                     <!-- context editor (name / description / space scope) -->
                     <template x-if="ctxEdit && ctxEdit.ctxId === c.id">
                       <div class="ctx-editor">
@@ -1693,6 +1759,10 @@ document.addEventListener('alpine:init', () => {
     fieldmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50,
                 detail: null, detailLoading: false, detailErr: '', editing: null },
     ctxEdit: null,
+    ctxNew: null,
+    ctxDelId: null,
+    ctxDelBusy: false,
+    ctxDelErr: '',
     liclog: { loading: false, err: '', events: [], days: 7, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100, capped: false },
     logProducts: [
@@ -1860,7 +1930,70 @@ document.addEventListener('alpine:init', () => {
       } catch (e) { this.fieldmgr.detailErr = '필드 상세 조회 실패: ' + e; }
       finally { this.fieldmgr.detailLoading = false; }
     },
-    closeFieldDetail() { this.fieldmgr.detail = null; this.fieldmgr.detailErr = ''; this.fieldmgr.editing = null; this.ctxEdit = null; },
+    closeFieldDetail() {
+      this.fieldmgr.detail = null; this.fieldmgr.detailErr = ''; this.fieldmgr.editing = null;
+      this.ctxEdit = null; this.ctxNew = null; this.ctxDelId = null; this.ctxDelErr = '';
+    },
+    // ---- add / delete context ----
+    newContext() {
+      this.ctxEdit = null; this.fieldmgr.editing = null;
+      this.ctxNew = {
+        name: '', description: '', isGlobal: true, projects: [],
+        anyIssueType: true, issueTypes: [],
+        psearch: { q: '', results: [] }, busy: false, err: '',
+      };
+    },
+    ctxNewToggleIt(id) {
+      const arr = this.ctxNew.issueTypes;
+      const i = arr.indexOf(id);
+      if (i >= 0) arr.splice(i, 1); else arr.push(id);
+    },
+    async ctxNewSearchProjects() {
+      const q = (this.ctxNew.psearch.q || '').trim();
+      if (!q) { this.ctxNew.psearch.results = []; return; }
+      try {
+        const res = await fetch('/api/projects?q=' + encodeURIComponent(q) + '&limit=8');
+        const data = await res.json().catch(() => []);
+        const have = new Set(this.ctxNew.projects.map(p => p.id));
+        this.ctxNew.psearch.results = (Array.isArray(data) ? data : []).filter(p => !have.has(p.id));
+      } catch (_) { this.ctxNew.psearch.results = []; }
+    },
+    ctxNewAddProject(p) {
+      if (!this.ctxNew.projects.some(x => x.id === p.id)) this.ctxNew.projects.push({ id: p.id, key: p.key, name: p.name });
+      this.ctxNew.psearch.q = ''; this.ctxNew.psearch.results = [];
+    },
+    async createContext() {
+      const e = this.ctxNew; if (!e.name.trim()) return;
+      e.busy = true; e.err = '';
+      try {
+        const url = '/api/fields/' + encodeURIComponent(this.fieldmgr.detail.id) + '/contexts';
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({ name: e.name.trim(), description: e.description,
+                                 project_ids: e.isGlobal ? [] : e.projects.map(p => p.id),
+                                 issue_type_ids: e.anyIssueType ? [] : e.issueTypes }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { e.err = this.errText(data) || '생성 실패'; return; }
+        if (data && data.contexts) this.fieldmgr.detail = data;  // refreshed detail
+        this.ctxNew = null;
+      } catch (err) { e.err = '생성 실패: ' + err; }
+      finally { e.busy = false; }
+    },
+    async deleteContext(c) {
+      this.ctxDelBusy = true; this.ctxDelErr = '';
+      try {
+        const url = '/api/fields/' + encodeURIComponent(this.fieldmgr.detail.id)
+                  + '/contexts/' + encodeURIComponent(c.id);
+        const res = await fetch(url, { method: 'DELETE', headers: { 'X-Workbox-Setup': '1' } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.ctxDelErr = this.errText(data) || '삭제 실패'; return; }
+        if (data && data.contexts) this.fieldmgr.detail = data;  // refreshed detail
+        this.ctxDelId = null;
+      } catch (err) { this.ctxDelErr = '삭제 실패: ' + err; }
+      finally { this.ctxDelBusy = false; }
+    },
     // ---- context editor (name · description · space & issue-type scope) ----
     editContext(c) {
       this.fieldmgr.editing = null;  // don't run both editors at once

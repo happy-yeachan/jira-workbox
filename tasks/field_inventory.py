@@ -280,6 +280,29 @@ async def apply_context(
                           json={"defaultValues": [dv]})
 
 
+async def create_context(
+    client: WorkboxClient, field_id: str, *, name: str, description: str = "",
+    project_ids: list[str] | None = None, issue_type_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create a new context on a field. Empty ``project_ids`` → applies to all
+    projects (global); empty ``issue_type_ids`` → applies to all issue types."""
+    body: dict[str, Any] = {"name": name}
+    if description:
+        body["description"] = description
+    pids = [_sid(p) for p in (project_ids or []) if _sid(p)]
+    if pids:
+        body["projectIds"] = pids
+    itids = [_sid(i) for i in (issue_type_ids or []) if _sid(i)]
+    if itids:
+        body["issueTypeIds"] = itids
+    return await client.json("POST", f"/field/{field_id}/context", json=body)
+
+
+async def delete_context(client: WorkboxClient, field_id: str, ctx_id: str) -> None:
+    """Delete a context. Jira refuses to remove the only remaining context."""
+    await client.request("DELETE", f"/field/{field_id}/context/{_sid(ctx_id)}")
+
+
 async def context_options(client: WorkboxClient, field_id: str, ctx_id: str) -> list[dict[str, Any]]:
     base = f"/field/{field_id}/context/{ctx_id}/option"
     out: list[dict[str, Any]] = []
@@ -339,4 +362,4 @@ async def apply_options(
 
 
 __all__ = ["fetch_fields", "fetch_field_detail", "context_options", "apply_options",
-           "apply_context", "type_label", "UpstreamError"]
+           "apply_context", "create_context", "delete_context", "type_label", "UpstreamError"]

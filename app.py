@@ -506,6 +506,54 @@ async def apply_field_context(
     return detail or {}
 
 
+class ContextCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=1000)
+    project_ids: list[str] = Field(default_factory=list)
+    issue_type_ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/fields/{field_id}/contexts")
+async def create_field_context(
+    field_id: str, body: ContextCreate, request: Request
+) -> dict[str, object]:
+    """Create a context on a field. Write — same-origin + X-Workbox-Setup guard."""
+    _guard_setup_request(request)
+    from tasks import field_inventory
+    client = _require_client()
+    try:
+        await field_inventory.create_context(
+            client, field_id, name=body.name.strip(), description=body.description.strip(),
+            project_ids=[p for p in body.project_ids if p],
+            issue_type_ids=[i for i in body.issue_type_ids if i])
+        detail = await field_inventory.fetch_field_detail(client, field_id)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403,
+                                detail="컨텍스트를 만들 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return detail or {}
+
+
+@app.delete("/api/fields/{field_id}/contexts/{ctx_id}")
+async def delete_field_context(
+    field_id: str, ctx_id: str, request: Request
+) -> dict[str, object]:
+    """Delete a context. Write — same-origin + X-Workbox-Setup guard."""
+    _guard_setup_request(request)
+    from tasks import field_inventory
+    client = _require_client()
+    try:
+        await field_inventory.delete_context(client, field_id, ctx_id)
+        detail = await field_inventory.fetch_field_detail(client, field_id)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403,
+                                detail="컨텍스트를 삭제할 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return detail or {}
+
+
 class OptionIn(BaseModel):
     id: str | None = None
     value: str = Field(max_length=255)

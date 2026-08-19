@@ -858,6 +858,38 @@ async def suite_field_inventory() -> None:
     check("context(any): no default PUT for non-text field", ctx_calls2["default"] is None, ctx_calls2["default"])
     await c4.aclose()
 
+    # create / delete context
+    cd_calls = {"create": None, "delete": None}
+
+    def cd_handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        p, m = request.url.path, request.method
+        fbase = "/rest/api/3/field/customfield_2/context"
+        body = _json.loads(request.content) if request.content else {}
+        if m == "POST" and p == fbase:
+            cd_calls["create"] = body
+            return httpx.Response(200, json={"id": "10099", "name": body.get("name")})
+        if m == "DELETE" and p == fbase + "/10099":
+            cd_calls["delete"] = "10099"
+            return httpx.Response(204)
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+
+    c5 = _client_for(cd_handler)
+    created = await fld.create_context(c5, "customfield_2", name="새 컨텍스트",
+                                       project_ids=["P9"], issue_type_ids=["7"])
+    check("create: posted name + scope",
+          cd_calls["create"] == {"name": "새 컨텍스트", "projectIds": ["P9"], "issueTypeIds": ["7"]},
+          cd_calls["create"])
+    check("create: returns the created context", created.get("id") == "10099", created)
+    # global + any-issue-type context omits both scope keys
+    cd_calls["create"] = None
+    await fld.create_context(c5, "customfield_2", name="전역")
+    check("create(global/any): omits projectIds & issueTypeIds",
+          cd_calls["create"] == {"name": "전역"}, cd_calls["create"])
+    await fld.delete_context(c5, "customfield_2", "10099")
+    check("delete: hit the context id", cd_calls["delete"] == "10099", cd_calls["delete"])
+    await c5.aclose()
+
 
 async def main() -> None:
     await suite_write_task()
