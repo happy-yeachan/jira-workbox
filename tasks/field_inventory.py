@@ -17,8 +17,11 @@ from __future__ import annotations
 from typing import Any
 
 from core.client import UpstreamError, WorkboxClient
+from core.concurrency import chunked
 
 _P_FIELD_SEARCH = "/field/search"
+#: field type suffixes that carry a selectable option list per context
+_OPTION_TYPES = {"select", "multiselect", "radiobuttons", "multicheckboxes", "cascadingselect"}
 
 #: custom field type key (schema.custom) suffix → friendly label
 _TYPE_LABEL = {
@@ -88,4 +91,94 @@ async def fetch_fields(client: WorkboxClient, query: str = "") -> list[dict[str,
     return out
 
 
-__all__ = ["fetch_fields", "type_label", "UpstreamError"]
+async def _issue_type_names(client: WorkboxClient) -> dict[str, str]:
+    try:
+        data = await client.get_json("/issuetype")
+    except UpstreamError:
+        return {}
+    rows = data.get("value", []) if isinstance(data, dict) else (data or [])
+    return {_sid(t.get("id")): _sid(t.get("name")) for t in rows}
+
+
+async def fetch_field_detail(client: WorkboxClient, field_id: str) -> dict[str, Any] | None:
+    """One field's contexts — each with its space (project) + issue-type scope and,
+    for option fields, its options. ``None`` if the field id is unknown. Several
+    calls, but only on demand when the operator opens a field."""
+    meta: dict[str, Any] | None = None
+    async for f in client.paginate_offset(_P_FIELD_SEARCH, items_key="values",
+                                           params={"id": [field_id], "expand": "key"}, page_size=50):
+        if _sid(f.get("id")) == field_id:
+            meta = f
+            break
+    if meta is None:
+        return None
+    schema = meta.get("schema") or {}
+    type_key = _sid(schema.get("custom"))
+    has_options = type_key.split(":")[-1] in _OPTION_TYPES
+
+    contexts: list[dict[str, Any]] = []
+    async for c in client.paginate_offset(f"/field/{field_id}/context", items_key="values", page_size=50):
+        contexts.append(c)
+    ctx_ids = [_sid(c.get("id")) for c in contexts]
+
+    proj_by_ctx: dict[str, list[str]] = {}
+    proj_ids: set[str] = set()
+    it_by_ctx: dict[str, list[str]] = {}
+    any_by_ctx: dict[str, bool] = {}
+    for chunk in chunked(ctx_ids, 50):
+        pm = await client.get_json(f"/field/{field_id}/context/projectmapping", params={"contextId": chunk})
+        for row in (pm.get("values") or []):
+            cid, pid = _sid(row.get("contextId")), _sid(row.get("projectId"))
+            if pid:
+                proj_by_ctx.setdefault(cid, []).append(pid)
+                proj_ids.add(pid)
+        im = await client.get_json(f"/field/{field_id}/context/issuetypemapping", params={"contextId": chunk})
+        for row in (im.get("values") or []):
+            cid = _sid(row.get("contextId"))
+            if row.get("isAnyIssueType"):
+                any_by_ctx[cid] = True
+            itid = _sid(row.get("issueTypeId"))
+            if itid:
+                it_by_ctx.setdefault(cid, []).append(itid)
+
+    proj_names: dict[str, dict[str, str]] = {}
+    for chunk in chunked(sorted(proj_ids), 50):
+        data = await client.get_json("/project/search", params={"id": chunk, "maxResults": 50})
+        for p in (data.get("values") or []):
+            proj_names[_sid(p.get("id"))] = {"key": _sid(p.get("key")), "name": _sid(p.get("name"))}
+    it_names = await _issue_type_names(client)
+
+    opts_by_ctx: dict[str, list[dict[str, Any]]] = {}
+    if has_options:
+        for cid in ctx_ids:
+            opts: list[dict[str, Any]] = []
+            try:
+                async for o in client.paginate_offset(
+                    f"/field/{field_id}/context/{cid}/option", items_key="values", page_size=100):
+                    opts.append({"id": _sid(o.get("id")), "value": _sid(o.get("value")),
+                                 "disabled": bool(o.get("disabled"))})
+            except UpstreamError:
+                pass
+            opts_by_ctx[cid] = opts
+
+    out_ctx: list[dict[str, Any]] = []
+    for c in contexts:
+        cid = _sid(c.get("id"))
+        projects = [{"id": pid, **proj_names.get(pid, {"key": "", "name": pid})}
+                    for pid in proj_by_ctx.get(cid, [])]
+        any_it = bool(c.get("isAnyIssueType")) or any_by_ctx.get(cid, False)
+        issue_types = [] if any_it else [{"id": i, "name": it_names.get(i, i)} for i in it_by_ctx.get(cid, [])]
+        out_ctx.append({
+            "id": cid, "name": _sid(c.get("name")), "description": _sid(c.get("description")),
+            "global": bool(c.get("isGlobalContext")), "any_issue_type": any_it,
+            "projects": projects, "issue_types": issue_types,
+            "options": opts_by_ctx.get(cid, []),
+        })
+    return {
+        "id": field_id, "name": _sid(meta.get("name")) or field_id,
+        "type": type_label(type_key), "type_key": type_key, "has_options": has_options,
+        "contexts": out_ctx,
+    }
+
+
+__all__ = ["fetch_fields", "fetch_field_detail", "type_label", "UpstreamError"]

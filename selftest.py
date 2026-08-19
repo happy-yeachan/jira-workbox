@@ -673,14 +673,39 @@ def _field_site():
          "contextsCount": 1, "projectsCount": 0, "screensCount": 0},
     ]
 
+    def _page(rows, params):
+        start = int(params.get("startAt", 0)); mx = int(params.get("maxResults", 50))
+        return {"values": rows[start:start + mx], "startAt": start, "maxResults": mx,
+                "total": len(rows), "isLast": start + mx >= len(rows)}
+
     def handler(request: httpx.Request) -> httpx.Response:
-        p = request.url.path
+        p, q = request.url.path, request.url.params
         if p == "/rest/api/3/field/search":
-            start = int(request.url.params.get("startAt", 0))
-            mx = int(request.url.params.get("maxResults", 50))
-            page = fields[start:start + mx]
-            return httpx.Response(200, json={"values": page, "startAt": start, "maxResults": mx,
-                                             "total": len(fields), "isLast": start + mx >= len(fields)})
+            ids = q.get_list("id")
+            rows = [f for f in fields if f["id"] in ids] if ids else fields
+            return httpx.Response(200, json=_page(rows, q))
+        # --- detail endpoints for the select field customfield_2 ---
+        base = "/rest/api/3/field/customfield_2/context"
+        if p == base:
+            return httpx.Response(200, json=_page([
+                {"id": "10001", "name": "글로벌", "isGlobalContext": True, "isAnyIssueType": True},
+                {"id": "10002", "name": "ABC 전용", "isGlobalContext": False, "isAnyIssueType": False},
+            ], q))
+        if p == base + "/projectmapping":
+            return httpx.Response(200, json={"values": [{"contextId": "10002", "projectId": "10000"}]})
+        if p == base + "/issuetypemapping":
+            return httpx.Response(200, json={"values": [
+                {"contextId": "10001", "isAnyIssueType": True},
+                {"contextId": "10002", "issueTypeId": "10001"}]})
+        if p == base + "/10001/option":
+            return httpx.Response(200, json=_page([
+                {"id": "1", "value": "높음"}, {"id": "2", "value": "낮음", "disabled": True}], q))
+        if p == base + "/10002/option":
+            return httpx.Response(200, json=_page([{"id": "3", "value": "긴급"}], q))
+        if p == "/rest/api/3/project/search":
+            return httpx.Response(200, json={"values": [{"id": "10000", "key": "ABC", "name": "Alpha"}]})
+        if p == "/rest/api/3/issuetype":
+            return httpx.Response(200, json=[{"id": "10001", "name": "Bug"}])
         return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
     return handler
 
@@ -697,7 +722,21 @@ async def suite_field_inventory() -> None:
           rows["등급"]["type"] == "단일 선택" and rows["등급"]["space_scoped"] is True
           and rows["등급"]["projects"] == 2, rows.get("등급"))
     check("unknown type falls back to its suffix", rows["미지의 필드"]["type"] == "weirdtype", rows.get("미지의 필드"))
-    check("results sorted by name", list(rows) == sorted(rows, key=str.lower) or True)  # dict order = insertion (sorted)
+
+    detail = await fld.fetch_field_detail(client, "customfield_2")
+    check("detail: option field detected", detail["has_options"] is True and detail["type"] == "단일 선택")
+    by_ctx = {c["name"]: c for c in detail["contexts"]}
+    check("global context: all projects, all issue types",
+          by_ctx["글로벌"]["global"] is True and by_ctx["글로벌"]["any_issue_type"] is True
+          and not by_ctx["글로벌"]["projects"], by_ctx.get("글로벌"))
+    check("scoped context: project name + issue type resolved",
+          by_ctx["ABC 전용"]["projects"][0]["key"] == "ABC"
+          and by_ctx["ABC 전용"]["issue_types"][0]["name"] == "Bug", by_ctx.get("ABC 전용"))
+    check("options per context (disabled flagged)",
+          len(by_ctx["글로벌"]["options"]) == 2
+          and any(o["disabled"] for o in by_ctx["글로벌"]["options"])
+          and len(by_ctx["ABC 전용"]["options"]) == 1, by_ctx["글로벌"]["options"])
+    check("unknown field id → None", await fld.fetch_field_detail(client, "nope") is None)
     await client.aclose()
 
 

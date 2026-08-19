@@ -336,6 +336,15 @@
   }
   .lic-chips .chip:hover { border-color: var(--accent); }
   .lic-chips .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* field detail: clickable rows + context/option cards */
+  tr.clickrow { cursor: pointer; }
+  tr.clickrow:hover td { background: #f6f7f9; }
+  .ctx-card { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 14px 16px; margin-bottom: 10px; }
+  .ctx-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .ctx-opts { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+  .opt-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; max-height: 220px; overflow: auto; }
+  .opt { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: #f6f7f9; }
+  .opt.off { color: var(--muted); text-decoration: line-through; opacity: .7; }
   /* indeterminate loading bar */
   .progbar { height: 3px; background: var(--accent-soft); overflow: hidden; position: relative; }
   .progbar::before {
@@ -781,50 +790,98 @@
           </div>
         </div>
 
-        <!-- 필드 관리 — custom field list (search + pagination) -->
+        <!-- 필드 관리 — list (search + pagination) / detail (contexts + options) -->
         <div class="dash" x-show="landingView === 'fields'">
-          <div class="dash-h">
-            <h2>필드 관리</h2>
-            <span class="sub" x-show="!fields.loading && !fields.err" x-text="fieldsCountLabel()"></span>
-            <span style="flex:1"></span>
-            <input type="text" class="lic-log-search" placeholder="이름·유형·검색기 검색" x-model="fields.q" @input="fields.page = 1">
-            <button class="btn small ghost" @click="loadFields()" :disabled="fields.loading">새로고침</button>
+          <!-- LIST -->
+          <div x-show="!fields.detail">
+            <div class="dash-h">
+              <h2>필드 관리</h2>
+              <span class="sub" x-show="!fields.loading && !fields.err" x-text="fieldsCountLabel()"></span>
+              <span style="flex:1"></span>
+              <input type="text" class="lic-log-search" placeholder="이름·유형·검색기 검색" x-model="fields.q" @input="fields.page = 1">
+              <button class="btn small ghost" @click="loadFields()" :disabled="fields.loading">새로고침</button>
+            </div>
+            <div class="progbar" x-show="fields.loading" style="margin-bottom:10px; border-radius:2px"></div>
+            <div class="notice err" x-show="fields.err" x-text="fields.err" style="margin-bottom:10px"></div>
+            <div class="lic-users" x-show="!fields.err">
+              <div class="lic-users-body">
+                <table>
+                  <thead><tr>
+                    <th style="width:26%">이름</th><th>유형</th><th>값 타입</th><th>검색기</th>
+                    <th style="width:80px">컨텍스트</th><th style="width:120px">스페이스 스코프</th>
+                    <th style="width:64px">화면</th><th style="width:110px">마지막 사용</th>
+                  </tr></thead>
+                  <tbody>
+                    <template x-for="f in pagedFields()" :key="f.id">
+                      <tr class="clickrow" @click="openFieldDetail(f)" title="클릭하면 컨텍스트·옵션을 봅니다">
+                        <td>
+                          <span x-text="f.name"></span>
+                          <span class="u-tag" x-show="f.locked" style="margin-left:6px">잠김</span>
+                        </td>
+                        <td x-text="f.type"></td>
+                        <td class="u-off" x-text="f.value_type || '—'"></td>
+                        <td class="u-off" x-text="f.searcher"></td>
+                        <td x-text="f.contexts"></td>
+                        <td x-text="f.space_scoped ? (f.projects + '개 스페이스') : (f.contexts ? '전역' : '—')"></td>
+                        <td x-text="f.screens"></td>
+                        <td class="u-off" x-text="f.last_used || '—'"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div class="sub" x-show="!fields.loading && !filteredFields().length" style="padding:12px 14px">필드가 없습니다.</div>
+              </div>
+              <div class="lic-users-foot" x-show="fieldsPages() > 1">
+                <button class="btn small ghost" @click="setFieldsPage(fields.page - 1)" :disabled="fields.page <= 1">이전</button>
+                <span class="sub"><b x-text="fields.page"></b> / <span x-text="fieldsPages()"></span> 페이지</span>
+                <button class="btn small ghost" @click="setFieldsPage(fields.page + 1)" :disabled="fields.page >= fieldsPages()">다음</button>
+              </div>
+            </div>
           </div>
-          <div class="progbar" x-show="fields.loading" style="margin-bottom:10px; border-radius:2px"></div>
-          <div class="notice err" x-show="fields.err" x-text="fields.err" style="margin-bottom:10px"></div>
-          <div class="lic-users" x-show="!fields.err">
-            <div class="lic-users-body">
-              <table>
-                <thead><tr>
-                  <th style="width:26%">이름</th><th>유형</th><th>값 타입</th><th>검색기</th>
-                  <th style="width:80px">컨텍스트</th><th style="width:120px">스페이스 스코프</th>
-                  <th style="width:64px">화면</th><th style="width:110px">마지막 사용</th>
-                </tr></thead>
-                <tbody>
-                  <template x-for="f in pagedFields()" :key="f.id">
-                    <tr>
-                      <td>
-                        <span x-text="f.name"></span>
-                        <span class="u-tag" x-show="f.locked" style="margin-left:6px">잠김</span>
-                      </td>
-                      <td x-text="f.type"></td>
-                      <td class="u-off" x-text="f.value_type || '—'"></td>
-                      <td class="u-off" x-text="f.searcher"></td>
-                      <td x-text="f.contexts"></td>
-                      <td x-text="f.space_scoped ? (f.projects + '개 스페이스') : (f.contexts ? '전역' : '—')"></td>
-                      <td x-text="f.screens"></td>
-                      <td class="u-off" x-text="f.last_used || '—'"></td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-              <div class="sub" x-show="!fields.loading && !filteredFields().length" style="padding:12px 14px">필드가 없습니다.</div>
+
+          <!-- DETAIL -->
+          <div x-show="fields.detail">
+            <div class="dash-h">
+              <button class="btn small ghost" @click="closeFieldDetail()">← 목록</button>
+              <h2 x-text="fields.detail && fields.detail.name"></h2>
+              <span class="pill" x-text="fields.detail && fields.detail.type"></span>
+              <span class="sub" x-show="fields.detail" x-text="'컨텍스트 ' + (fields.detail ? fields.detail.contexts.length : 0) + '개'"></span>
             </div>
-            <div class="lic-users-foot" x-show="fieldsPages() > 1">
-              <button class="btn small ghost" @click="setFieldsPage(fields.page - 1)" :disabled="fields.page <= 1">이전</button>
-              <span class="sub"><b x-text="fields.page"></b> / <span x-text="fieldsPages()"></span> 페이지</span>
-              <button class="btn small ghost" @click="setFieldsPage(fields.page + 1)" :disabled="fields.page >= fieldsPages()">다음</button>
-            </div>
+            <div class="progbar" x-show="fields.detailLoading" style="margin-bottom:10px; border-radius:2px"></div>
+            <div class="notice err" x-show="fields.detailErr" x-text="fields.detailErr" style="margin-bottom:10px"></div>
+            <template x-if="fields.detail">
+              <div>
+                <template x-for="c in fields.detail.contexts" :key="c.id">
+                  <div class="ctx-card">
+                    <div class="ctx-head">
+                      <b x-text="c.name || '기본 컨텍스트'"></b>
+                      <span class="pill" x-show="c.global">전역</span>
+                    </div>
+                    <div class="sub" style="margin-top:4px">
+                      스페이스:
+                      <span x-show="c.global">모든 프로젝트</span>
+                      <span x-show="!c.global && c.projects.length" x-text="c.projects.map(p => p.key || p.name).join(', ')"></span>
+                      <span x-show="!c.global && !c.projects.length">(지정된 프로젝트 없음)</span>
+                      · 이슈유형:
+                      <span x-show="c.any_issue_type">모든 유형</span>
+                      <span x-show="!c.any_issue_type" x-text="c.issue_types.map(t => t.name).join(', ') || '—'"></span>
+                    </div>
+                    <template x-if="fields.detail.has_options">
+                      <div class="ctx-opts">
+                        <div class="sub">옵션 <b x-text="c.options.length"></b>개</div>
+                        <div class="opt-list">
+                          <template x-for="o in c.options" :key="o.id">
+                            <span class="opt" :class="{ off: o.disabled }" x-text="o.value"></span>
+                          </template>
+                          <span class="sub" x-show="!c.options.length">옵션 없음</span>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <div class="sub" x-show="!fields.detailLoading && !fields.detail.contexts.length" style="padding:12px 2px">컨텍스트가 없습니다.</div>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -1466,7 +1523,8 @@ document.addEventListener('alpine:init', () => {
     // sentinels shown as masked dots meaning "keep the stored secret unchanged"
     KEEP_TOKEN: ' keep-token ', KEEP_ORG: ' keep-org ',
     landingView: 'dashboard',
-    fields: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50 },
+    fields: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50,
+              detail: null, detailLoading: false, detailErr: '' },
     liclog: { loading: false, err: '', events: [], days: 30, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100 },
     logProducts: [
@@ -1618,6 +1676,19 @@ document.addEventListener('alpine:init', () => {
       const n = this.filteredFields().length, total = this.fields.list.length;
       return (n === total ? ('총 ' + total + '개') : (n + ' / ' + total + '개'));
     },
+    async openFieldDetail(f) {
+      // show a header immediately from the row, then load contexts + options
+      this.fields.detail = { id: f.id, name: f.name, type: f.type, has_options: false, contexts: [] };
+      this.fields.detailErr = ''; this.fields.detailLoading = true;
+      try {
+        const res = await fetch('/api/fields/' + encodeURIComponent(f.id));
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.fields.detailErr = this.errText(data) || '필드 상세 조회 실패'; return; }
+        this.fields.detail = data;
+      } catch (e) { this.fields.detailErr = '필드 상세 조회 실패: ' + e; }
+      finally { this.fields.detailLoading = false; }
+    },
+    closeFieldDetail() { this.fields.detail = null; this.fields.detailErr = ''; },
 
     // ---------- license change log (org audit events) ----------
     async loadEvents() {
