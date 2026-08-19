@@ -608,11 +608,10 @@
           <div class="dash-h">
             <h2>라이선스 현황</h2>
             <span class="sub" x-show="dash.loading">불러오는 중…</span>
-            <span class="sub" x-show="!dash.loading && anyPreloading()">· 사용자 미리 불러오는 중…</span>
+            <span class="sub" x-show="!dash.loading && anyPreloading()" x-text="preloadingLabel()"></span>
             <span style="flex:1"></span>
             <button class="btn small ghost" @click="loadDashboard()" :disabled="dash.loading">새로고침</button>
           </div>
-          <div class="progbar" x-show="dash.loading || anyPreloading()" style="margin-bottom:10px; border-radius:2px"></div>
           <div class="notice err" x-show="dash.err" x-text="dash.err" style="margin-bottom:10px"></div>
           <div class="dash-cards">
             <template x-for="a in dash.apps" :key="a.key">
@@ -1642,6 +1641,13 @@ document.addEventListener('alpine:init', () => {
     usersBusy() { const e = this.curEntry(); return !!(e && e.loading); },
     usersErr() { const e = this.curEntry(); return e ? e.err : ''; },
     anyPreloading() { return Object.values(this.dash.userCache).some(e => e && e.loading); },
+    // name the products still loading (Jira is the slow one) instead of a bar
+    preloadingLabel() {
+      const names = this.dash.apps
+        .filter(a => this.dash.userCache[a.key] && this.dash.userCache[a.key].loading)
+        .map(a => a.name);
+      return names.length ? ('· ' + names.join(', ') + ' 사용자 불러오는 중…') : '';
+    },
     filteredUsers() {
       const q = (this.dash.userQ || '').trim().toLowerCase();
       if (!q) return this.dash.users;
