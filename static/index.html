@@ -363,6 +363,8 @@
   .opt-input { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; }
   .opt-bulk { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; }
   .opt-bulk textarea { flex: 1; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 13px; resize: vertical; }
+  .default-view { white-space: pre-wrap; word-break: break-word; padding: 8px 10px; background: #f6f7f9; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+  .default-input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 13px; resize: vertical; box-sizing: border-box; }
   /* indeterminate loading bar */
   .progbar { height: 3px; background: var(--accent-soft); overflow: hidden; position: relative; }
   .progbar::before {
@@ -881,6 +883,7 @@
                         <span style="display:flex; gap:6px; flex:none">
                           <button class="btn small ghost" @click="editContext(c)">컨텍스트 편집</button>
                           <button class="btn small ghost" x-show="fieldmgr.detail.has_options" @click="editOptions(c)">옵션 편집</button>
+                          <button class="btn small ghost" x-show="fieldmgr.detail.has_default" @click="editDefault(c)">기본값 편집</button>
                         </span>
                       </template>
                     </div>
@@ -929,10 +932,6 @@
                           </div>
                           <div class="sub" x-show="!ctxEdit.anyIssueType && !ctxEdit.issueTypes.length" style="margin-top:4px">선택하지 않으면 모든 유형으로 설정됩니다.</div>
                         </div>
-                        <template x-if="fieldmgr.detail.has_default">
-                          <label class="field" style="margin-top:10px"><span class="name">기본값</span>
-                            <input type="text" x-model="ctxEdit.defaultValue" placeholder="비우면 기본값 없음"></label>
-                        </template>
                         <div class="notice err" x-show="ctxEdit.err" x-text="ctxEdit.err" style="margin-top:8px"></div>
                         <div class="row" style="margin-top:10px; gap:8px; align-items:center">
                           <template x-if="!ctxEdit.confirm">
@@ -943,7 +942,7 @@
                           </template>
                           <template x-if="ctxEdit.confirm">
                             <span style="display:flex; gap:8px; align-items:center">
-                              <span class="sub">이름·스페이스·이슈유형·기본값 변경을 적용합니다</span>
+                              <span class="sub">이름·스페이스·이슈유형 변경을 적용합니다</span>
                               <button class="btn danger small" @click="applyContext()" :disabled="ctxEdit.busy" x-text="ctxEdit.busy ? '적용 중…' : '확정'"></button>
                               <button class="btn ghost small" @click="ctxEdit.confirm = false" :disabled="ctxEdit.busy">취소</button>
                             </span>
@@ -1003,6 +1002,41 @@
                               <span style="display:flex; gap:8px; align-items:center">
                                 <span class="sub" x-text="editSummary()"></span>
                                 <button class="btn danger small" @click="applyOptions()" :disabled="fieldmgr.editing.busy"
+                                        x-text="fieldmgr.editing.busy ? '적용 중…' : '확정'"></button>
+                                <button class="btn ghost small" @click="fieldmgr.editing.confirm = false" :disabled="fieldmgr.editing.busy">취소</button>
+                              </span>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+                    <!-- default value (text-family fields) -->
+                    <template x-if="fieldmgr.detail.has_default">
+                      <div class="ctx-opts">
+                        <!-- read-only view -->
+                        <div x-show="!(fieldmgr.editing && fieldmgr.editing.ctxId === c.id)">
+                          <div class="ctx-opts-h">
+                            <span class="sub">기본값</span>
+                          </div>
+                          <div class="default-view" x-show="c.default" x-text="c.default"></div>
+                          <span class="sub" x-show="!c.default">기본값 없음</span>
+                        </div>
+                        <!-- editor -->
+                        <div class="opt-editor" x-show="fieldmgr.editing && fieldmgr.editing.ctxId === c.id">
+                          <div class="sub" style="margin-bottom:6px">이 컨텍스트의 기본값입니다. 여러 줄 입력 가능하며, 비우면 기본값이 제거됩니다.</div>
+                          <textarea class="default-input" rows="5" x-model="fieldmgr.editing.text" placeholder="기본값 (비우면 없음)"></textarea>
+                          <div class="notice err" x-show="fieldmgr.editing.err" x-text="fieldmgr.editing.err" style="margin-top:8px"></div>
+                          <div class="row" style="margin-top:10px; gap:8px; align-items:center">
+                            <template x-if="!fieldmgr.editing.confirm">
+                              <span style="display:flex; gap:8px">
+                                <button class="btn primary small" @click="fieldmgr.editing.confirm = true">적용</button>
+                                <button class="btn ghost small" @click="cancelEdit()">편집 닫기</button>
+                              </span>
+                            </template>
+                            <template x-if="fieldmgr.editing.confirm">
+                              <span style="display:flex; gap:8px; align-items:center">
+                                <span class="sub">기본값 변경을 적용합니다</span>
+                                <button class="btn danger small" @click="applyDefault()" :disabled="fieldmgr.editing.busy"
                                         x-text="fieldmgr.editing.busy ? '적용 중…' : '확정'"></button>
                                 <button class="btn ghost small" @click="fieldmgr.editing.confirm = false" :disabled="fieldmgr.editing.busy">취소</button>
                               </span>
@@ -1827,7 +1861,7 @@ document.addEventListener('alpine:init', () => {
       finally { this.fieldmgr.detailLoading = false; }
     },
     closeFieldDetail() { this.fieldmgr.detail = null; this.fieldmgr.detailErr = ''; this.fieldmgr.editing = null; this.ctxEdit = null; },
-    // ---- context editor (name · description · space & issue-type scope · default) ----
+    // ---- context editor (name · description · space & issue-type scope) ----
     editContext(c) {
       this.fieldmgr.editing = null;  // don't run both editors at once
       this.ctxEdit = {
@@ -1835,7 +1869,6 @@ document.addEventListener('alpine:init', () => {
         projects: (c.projects || []).map(p => ({ id: p.id, key: p.key, name: p.name })),
         anyIssueType: !!c.any_issue_type,
         issueTypes: (c.issue_types || []).map(it => it.id),
-        defaultValue: c.default || '',
         psearch: { q: '', results: [] }, busy: false, err: '', confirm: false,
       };
     },
@@ -1871,9 +1904,7 @@ document.addEventListener('alpine:init', () => {
           body: JSON.stringify({ name: e.name, description: e.description,
                                  project_ids: e.projects.map(p => p.id), is_global: e.isGlobal,
                                  any_issue_type: e.anyIssueType,
-                                 issue_type_ids: e.anyIssueType ? [] : e.issueTypes,
-                                 default_value: this.fieldmgr.detail.has_default ? e.defaultValue : null,
-                                 default_type: this.fieldmgr.detail.default_type || '' }),
+                                 issue_type_ids: e.anyIssueType ? [] : e.issueTypes }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { e.err = this.errText(data) || '적용 실패'; e.confirm = false; return; }
@@ -1931,6 +1962,41 @@ document.addEventListener('alpine:init', () => {
         if (!res.ok) { e.err = this.errText(data) || '적용 실패'; e.confirm = false; return; }
         const ctx = this.fieldmgr.detail.contexts.find(c => c.id === e.ctxId);
         if (ctx) ctx.options = data.options || [];
+        this.fieldmgr.editing = null;
+      } catch (err) { e.err = '적용 실패: ' + err; e.confirm = false; }
+      finally { e.busy = false; }
+    },
+    // ---- default-value editor (text-family fields) ----
+    editDefault(c) {
+      this.ctxEdit = null;  // don't run both editors at once
+      this.fieldmgr.editing = {
+        ctxId: c.id, mode: 'default', text: c.default || '',
+        name: c.name || '', description: c.description || '', isGlobal: !!c.global,
+        projectIds: (c.projects || []).map(p => p.id),
+        anyIssueType: !!c.any_issue_type,
+        issueTypes: (c.issue_types || []).map(it => it.id),
+        busy: false, err: '', confirm: false,
+      };
+    },
+    async applyDefault() {
+      const e = this.fieldmgr.editing; e.busy = true; e.err = '';
+      try {
+        const url = '/api/fields/' + encodeURIComponent(this.fieldmgr.detail.id)
+                  + '/contexts/' + encodeURIComponent(e.ctxId) + '/apply';
+        // send the context's current scope unchanged — only the default value moves
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({ name: e.name, description: e.description,
+                                 project_ids: e.projectIds, is_global: e.isGlobal,
+                                 any_issue_type: e.anyIssueType,
+                                 issue_type_ids: e.anyIssueType ? [] : e.issueTypes,
+                                 default_value: e.text,
+                                 default_type: this.fieldmgr.detail.default_type || '' }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { e.err = this.errText(data) || '적용 실패'; e.confirm = false; return; }
+        if (data && data.contexts) this.fieldmgr.detail = data;  // refreshed detail
         this.fieldmgr.editing = null;
       } catch (err) { e.err = '적용 실패: ' + err; e.confirm = false; }
       finally { e.busy = false; }
