@@ -626,15 +626,16 @@
     <div style="margin-bottom:14px">
       <button @click="openFields()"
               :aria-current="String(!selected && landingView === 'fields')">
-        <span class="t">필드 관리 <span class="pill">조회</span></span>
+        <span class="t">필드 관리</span>
         <span class="d">커스텀 필드 목록·유형·컨텍스트</span>
       </button>
     </div>
   </nav>
 
   <section class="work">
-    <template x-if="!selected">
-      <div class="landing-wrap">
+    <!-- landing kept in the DOM (x-show, not x-if) so switching to a task and
+         back doesn't destroy/recreate it — the field/log views stay rendered -->
+    <div class="landing-wrap" x-show="!selected">
         <div class="hero" x-show="landingView === 'dashboard'">
           <h1>워크박스</h1>
           <p class="sub">왼쪽에서 작업을 고르거나, 아래 라이선스 현황·변경 로그를 확인하세요. 변경 작업은 실행 전에 항상 미리보기로 대상을 확인하고, 실행한 뒤에는 <b>작업 기록</b>에서 되돌릴 수 있습니다.</p>
@@ -936,8 +937,7 @@
             </template>
           </div>
         </div>
-      </div>
-    </template>
+    </div>
 
     <!-- ---------- parameters ---------- -->
     <template x-if="selected">
