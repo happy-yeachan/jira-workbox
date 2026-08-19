@@ -804,19 +804,19 @@
         <!-- 필드 관리 — list (search + pagination) / detail (contexts + options) -->
         <div class="dash" x-show="landingView === 'fields'">
           <!-- LIST -->
-          <div x-show="!fields.detail">
+          <div x-show="!fieldmgr.detail">
             <div class="dash-h">
               <h2>필드 관리</h2>
-              <span class="sub" x-show="!fields.loading && !fields.err" x-text="fieldsCountLabel()"></span>
-              <span class="sub" x-show="fields.loading">· 불러오는 중…</span>
+              <span class="sub" x-show="!fieldmgr.loading && !fieldmgr.err" x-text="fieldsCountLabel()"></span>
+              <span class="sub" x-show="fieldmgr.loading">· 불러오는 중…</span>
               <span style="flex:1"></span>
-              <input type="text" class="lic-log-search" placeholder="이름·유형 검색" x-model="fields.q" @input="fields.page = 1">
-              <button class="btn small ghost" @click="loadFields()" :disabled="fields.loading">새로고침</button>
+              <input type="text" class="lic-log-search" placeholder="이름·유형 검색" x-model="fieldmgr.q" @input="fieldmgr.page = 1">
+              <button class="btn small ghost" @click="loadFields()" :disabled="fieldmgr.loading">새로고침</button>
             </div>
             <div class="sub" style="margin:0 2px 8px">스페이스 스코프 = 컨텍스트가 걸린 프로젝트 범위(전역=모두 공통) · 화면 = 필드가 올라간 화면 수</div>
-            <div class="progbar" x-show="fields.loading" style="margin-bottom:10px; border-radius:2px"></div>
-            <div class="notice err" x-show="fields.err" x-text="fields.err" style="margin-bottom:10px"></div>
-            <div class="lic-users" x-show="!fields.err">
+            <div class="progbar" x-show="fieldmgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
+            <div class="notice err" x-show="fieldmgr.err" x-text="fieldmgr.err" style="margin-bottom:10px"></div>
+            <div class="lic-users" x-show="!fieldmgr.err">
               <div class="lic-users-body">
                 <table>
                   <thead><tr>
@@ -840,30 +840,30 @@
                     </template>
                   </tbody>
                 </table>
-                <div class="sub" x-show="fields.loading && !fields.list.length" style="padding:14px">필드를 불러오는 중…</div>
-                <div class="sub" x-show="!fields.loading && !filteredFields().length" style="padding:12px 14px">필드가 없습니다.</div>
+                <div class="sub" x-show="fieldmgr.loading && !fieldmgr.list.length" style="padding:14px">필드를 불러오는 중…</div>
+                <div class="sub" x-show="!fieldmgr.loading && !filteredFields().length" style="padding:12px 14px">필드가 없습니다.</div>
               </div>
               <div class="lic-users-foot" x-show="fieldsPages() > 1">
-                <button class="btn small ghost" @click="setFieldsPage(fields.page - 1)" :disabled="fields.page <= 1">이전</button>
-                <span class="sub"><b x-text="fields.page"></b> / <span x-text="fieldsPages()"></span> 페이지</span>
-                <button class="btn small ghost" @click="setFieldsPage(fields.page + 1)" :disabled="fields.page >= fieldsPages()">다음</button>
+                <button class="btn small ghost" @click="setFieldsPage(fieldmgr.page - 1)" :disabled="fieldmgr.page <= 1">이전</button>
+                <span class="sub"><b x-text="fieldmgr.page"></b> / <span x-text="fieldsPages()"></span> 페이지</span>
+                <button class="btn small ghost" @click="setFieldsPage(fieldmgr.page + 1)" :disabled="fieldmgr.page >= fieldsPages()">다음</button>
               </div>
             </div>
           </div>
 
           <!-- DETAIL -->
-          <div x-show="fields.detail">
+          <div x-show="fieldmgr.detail">
             <div class="dash-h">
               <button class="btn small ghost" @click="closeFieldDetail()">← 목록</button>
-              <h2 x-text="fields.detail && fields.detail.name"></h2>
-              <span class="pill" x-text="fields.detail && fields.detail.type"></span>
-              <span class="sub" x-show="fields.detail" x-text="'컨텍스트 ' + (fields.detail ? fields.detail.contexts.length : 0) + '개'"></span>
+              <h2 x-text="fieldmgr.detail && fieldmgr.detail.name"></h2>
+              <span class="pill" x-text="fieldmgr.detail && fieldmgr.detail.type"></span>
+              <span class="sub" x-show="fieldmgr.detail" x-text="'컨텍스트 ' + (fieldmgr.detail ? fieldmgr.detail.contexts.length : 0) + '개'"></span>
             </div>
-            <div class="progbar" x-show="fields.detailLoading" style="margin-bottom:10px; border-radius:2px"></div>
-            <div class="notice err" x-show="fields.detailErr" x-text="fields.detailErr" style="margin-bottom:10px"></div>
-            <template x-if="fields.detail">
+            <div class="progbar" x-show="fieldmgr.detailLoading" style="margin-bottom:10px; border-radius:2px"></div>
+            <div class="notice err" x-show="fieldmgr.detailErr" x-text="fieldmgr.detailErr" style="margin-bottom:10px"></div>
+            <template x-if="fieldmgr.detail">
               <div>
-                <template x-for="c in fields.detail.contexts" :key="c.id">
+                <template x-for="c in fieldmgr.detail.contexts" :key="c.id">
                   <div class="ctx-card">
                     <div class="ctx-head">
                       <b x-text="c.name || '기본 컨텍스트'"></b>
@@ -878,10 +878,10 @@
                       <span x-show="c.any_issue_type">모든 유형</span>
                       <span x-show="!c.any_issue_type" x-text="c.issue_types.map(t => t.name).join(', ') || '—'"></span>
                     </div>
-                    <template x-if="fields.detail.has_options">
+                    <template x-if="fieldmgr.detail.has_options">
                       <div class="ctx-opts">
                         <!-- read-only view -->
-                        <div x-show="!(fields.editing && fields.editing.ctxId === c.id)">
+                        <div x-show="!(fieldmgr.editing && fieldmgr.editing.ctxId === c.id)">
                           <div class="ctx-opts-h">
                             <span class="sub">옵션 <b x-text="c.options.length"></b>개</span>
                             <button class="btn small ghost" @click="editOptions(c)">옵션 편집</button>
@@ -894,11 +894,11 @@
                           </div>
                         </div>
                         <!-- editor -->
-                        <div class="opt-editor" x-show="fields.editing && fields.editing.ctxId === c.id">
+                        <div class="opt-editor" x-show="fieldmgr.editing && fieldmgr.editing.ctxId === c.id">
                           <div class="sub" style="margin-bottom:6px">드래그(⋮⋮)로 순서 변경 · 값 편집 · 활성/비활성 · 삭제. 아래에서 여러 줄 대량 추가.</div>
-                          <template x-for="(o, i) in (fields.editing ? fields.editing.list : [])" :key="o._key">
+                          <template x-for="(o, i) in (fieldmgr.editing ? fieldmgr.editing.list : [])" :key="o._key">
                             <div class="opt-row" :class="{ off: o.disabled }" draggable="true"
-                                 @dragstart="fields.editing.dragIndex = i" @dragover.prevent
+                                 @dragstart="fieldmgr.editing.dragIndex = i" @dragover.prevent
                                  @drop.prevent="optDrop(i)">
                               <span class="opt-grip">⋮⋮</span>
                               <input class="opt-input" x-model="o.value">
@@ -907,23 +907,23 @@
                             </div>
                           </template>
                           <div class="opt-bulk">
-                            <textarea rows="3" placeholder="여러 줄 붙여넣기 — 한 줄에 옵션 하나씩" x-model="fields.editing.bulk"></textarea>
+                            <textarea rows="3" placeholder="여러 줄 붙여넣기 — 한 줄에 옵션 하나씩" x-model="fieldmgr.editing.bulk"></textarea>
                             <button class="btn small" @click="addBulk()">대량 추가</button>
                           </div>
-                          <div class="notice err" x-show="fields.editing.err" x-text="fields.editing.err" style="margin-top:8px"></div>
+                          <div class="notice err" x-show="fieldmgr.editing.err" x-text="fieldmgr.editing.err" style="margin-top:8px"></div>
                           <div class="row" style="margin-top:10px; gap:8px; align-items:center">
-                            <template x-if="!fields.editing.confirm">
+                            <template x-if="!fieldmgr.editing.confirm">
                               <span style="display:flex; gap:8px">
-                                <button class="btn primary small" @click="fields.editing.confirm = true">적용</button>
+                                <button class="btn primary small" @click="fieldmgr.editing.confirm = true">적용</button>
                                 <button class="btn ghost small" @click="cancelEdit()">편집 닫기</button>
                               </span>
                             </template>
-                            <template x-if="fields.editing.confirm">
+                            <template x-if="fieldmgr.editing.confirm">
                               <span style="display:flex; gap:8px; align-items:center">
                                 <span class="sub" x-text="editSummary()"></span>
-                                <button class="btn danger small" @click="applyOptions()" :disabled="fields.editing.busy"
-                                        x-text="fields.editing.busy ? '적용 중…' : '확정'"></button>
-                                <button class="btn ghost small" @click="fields.editing.confirm = false" :disabled="fields.editing.busy">취소</button>
+                                <button class="btn danger small" @click="applyOptions()" :disabled="fieldmgr.editing.busy"
+                                        x-text="fieldmgr.editing.busy ? '적용 중…' : '확정'"></button>
+                                <button class="btn ghost small" @click="fieldmgr.editing.confirm = false" :disabled="fieldmgr.editing.busy">취소</button>
                               </span>
                             </template>
                           </div>
@@ -932,7 +932,7 @@
                     </template>
                   </div>
                 </template>
-                <div class="sub" x-show="!fields.detailLoading && !fields.detail.contexts.length" style="padding:12px 2px">컨텍스트가 없습니다.</div>
+                <div class="sub" x-show="!fieldmgr.detailLoading && !fieldmgr.detail.contexts.length" style="padding:12px 2px">컨텍스트가 없습니다.</div>
               </div>
             </template>
           </div>
@@ -1575,10 +1575,10 @@ document.addEventListener('alpine:init', () => {
     // sentinels shown as masked dots meaning "keep the stored secret unchanged"
     KEEP_TOKEN: ' keep-token ', KEEP_ORG: ' keep-org ',
     landingView: 'dashboard',
-    fields: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50,
-              detail: null, detailLoading: false, detailErr: '', editing: null },
+    fieldmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50,
+                detail: null, detailLoading: false, detailErr: '', editing: null },
     liclog: { loading: false, err: '', events: [], days: 7, filter: 'all', q: '',
-              product: '', page: 1, pageSize: 100 },
+              product: '', page: 1, pageSize: 100, capped: false },
     logProducts: [
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
       { label: 'JSM (agent)', k: 'jsm' }, { label: 'Confluence', k: 'confluence' },
@@ -1697,89 +1697,89 @@ document.addEventListener('alpine:init', () => {
       this.selected = null; this.landingView = 'fields';
       // back to the list from a clean state (a stale detail/search/page could
       // otherwise leave the view looking blank)
-      this.fields.detail = null; this.fields.q = ''; this.fields.page = 1;
+      this.fieldmgr.detail = null; this.fieldmgr.q = ''; this.fieldmgr.page = 1;
       // cached: only fetch the first time (or after 새로고침), not on every visit
-      if (!this.fields.list.length && !this.fields.loading) this.loadFields();
+      if (!this.fieldmgr.list.length && !this.fieldmgr.loading) this.loadFields();
     },
     async loadFields() {
-      this.fields.loading = true; this.fields.err = ''; this.fields.page = 1;
+      this.fieldmgr.loading = true; this.fieldmgr.err = ''; this.fieldmgr.page = 1;
       try {
         const res = await fetch('/api/fields');
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) { this.fields.err = this.errText(data) || '필드 조회 실패'; this.fields.list = []; return; }
-        this.fields.list = data.fields || [];
-      } catch (e) { this.fields.err = '필드 조회 실패: ' + e; }
-      finally { this.fields.loading = false; }
+        if (!res.ok) { this.fieldmgr.err = this.errText(data) || '필드 조회 실패'; this.fieldmgr.list = []; return; }
+        this.fieldmgr.list = data.fields || [];
+      } catch (e) { this.fieldmgr.err = '필드 조회 실패: ' + e; }
+      finally { this.fieldmgr.loading = false; }
     },
     filteredFields() {
-      const q = (this.fields.q || '').trim().toLowerCase();
-      if (!q) return this.fields.list;
-      return this.fields.list.filter(f =>
+      const q = (this.fieldmgr.q || '').trim().toLowerCase();
+      if (!q) return this.fieldmgr.list;
+      return this.fieldmgr.list.filter(f =>
         (f.name || '').toLowerCase().includes(q) || (f.type || '').toLowerCase().includes(q)
         || (f.searcher || '').toLowerCase().includes(q) || (f.value_type || '').toLowerCase().includes(q)
         || (f.key || '').toLowerCase().includes(q));
     },
     pagedFields() {
-      const list = this.filteredFields(), size = this.fields.pageSize;
-      let page = this.fields.page;
+      const list = this.filteredFields(), size = this.fieldmgr.pageSize;
+      let page = this.fieldmgr.page;
       const pages = Math.max(1, Math.ceil(list.length / size));
-      if (page > pages) { page = pages; this.fields.page = pages; }
+      if (page > pages) { page = pages; this.fieldmgr.page = pages; }
       return list.slice((page - 1) * size, page * size);
     },
-    fieldsPages() { return Math.max(1, Math.ceil(this.filteredFields().length / this.fields.pageSize)); },
-    setFieldsPage(p) { this.fields.page = Math.max(1, Math.min(p, this.fieldsPages())); },
+    fieldsPages() { return Math.max(1, Math.ceil(this.filteredFields().length / this.fieldmgr.pageSize)); },
+    setFieldsPage(p) { this.fieldmgr.page = Math.max(1, Math.min(p, this.fieldsPages())); },
     fieldsCountLabel() {
-      const n = this.filteredFields().length, total = this.fields.list.length;
+      const n = this.filteredFields().length, total = this.fieldmgr.list.length;
       return (n === total ? ('총 ' + total + '개') : (n + ' / ' + total + '개'));
     },
     async openFieldDetail(f) {
       // show a header immediately from the row, then load contexts + options
-      this.fields.detail = { id: f.id, name: f.name, type: f.type, has_options: false, contexts: [] };
-      this.fields.detailErr = ''; this.fields.detailLoading = true;
+      this.fieldmgr.detail = { id: f.id, name: f.name, type: f.type, has_options: false, contexts: [] };
+      this.fieldmgr.detailErr = ''; this.fieldmgr.detailLoading = true;
       try {
         const res = await fetch('/api/fields/' + encodeURIComponent(f.id));
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) { this.fields.detailErr = this.errText(data) || '필드 상세 조회 실패'; return; }
-        this.fields.detail = data;
-      } catch (e) { this.fields.detailErr = '필드 상세 조회 실패: ' + e; }
-      finally { this.fields.detailLoading = false; }
+        if (!res.ok) { this.fieldmgr.detailErr = this.errText(data) || '필드 상세 조회 실패'; return; }
+        this.fieldmgr.detail = data;
+      } catch (e) { this.fieldmgr.detailErr = '필드 상세 조회 실패: ' + e; }
+      finally { this.fieldmgr.detailLoading = false; }
     },
-    closeFieldDetail() { this.fields.detail = null; this.fields.detailErr = ''; this.fields.editing = null; },
+    closeFieldDetail() { this.fieldmgr.detail = null; this.fieldmgr.detailErr = ''; this.fieldmgr.editing = null; },
     // ---- select option editor (drag reorder · bulk add · disable · delete) ----
     editOptions(c) {
-      this.fields.editing = {
+      this.fieldmgr.editing = {
         ctxId: c.id, ctxName: c.name || '기본 컨텍스트',
         list: (c.options || []).map((o, i) => ({ id: o.id, value: o.value, disabled: o.disabled, _key: 'o' + i + '_' + o.id })),
         deleted: [], bulk: '', busy: false, err: '', confirm: false, dragIndex: null,
       };
     },
-    cancelEdit() { this.fields.editing = null; },
+    cancelEdit() { this.fieldmgr.editing = null; },
     optDrop(i) {
-      const e = this.fields.editing, from = e.dragIndex;
+      const e = this.fieldmgr.editing, from = e.dragIndex;
       if (from == null || from === i) return;
       const [m] = e.list.splice(from, 1); e.list.splice(i, 0, m); e.dragIndex = null;
     },
     optDelete(i) {
-      const e = this.fields.editing, o = e.list[i];
+      const e = this.fieldmgr.editing, o = e.list[i];
       if (o.id) e.deleted.push(o.id);
       e.list.splice(i, 1);
     },
     addBulk() {
-      const e = this.fields.editing;
+      const e = this.fieldmgr.editing;
       const vals = (e.bulk || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
       let k = Date.now();
       for (const v of vals) e.list.push({ value: v, disabled: false, _key: 'n' + (k++) });
       e.bulk = '';
     },
     editSummary() {
-      const e = this.fields.editing;
+      const e = this.fieldmgr.editing;
       const added = e.list.filter(o => !o.id).length;
       return `추가 ${added} · 삭제 ${e.deleted.length} · 총 ${e.list.length}개 · 순서 반영`;
     },
     async applyOptions() {
-      const e = this.fields.editing; e.busy = true; e.err = '';
+      const e = this.fieldmgr.editing; e.busy = true; e.err = '';
       try {
-        const url = '/api/fields/' + encodeURIComponent(this.fields.detail.id)
+        const url = '/api/fields/' + encodeURIComponent(this.fieldmgr.detail.id)
                   + '/contexts/' + encodeURIComponent(e.ctxId) + '/options/apply';
         const res = await fetch(url, {
           method: 'POST',
@@ -1791,9 +1791,9 @@ document.addEventListener('alpine:init', () => {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { e.err = this.errText(data) || '적용 실패'; e.confirm = false; return; }
-        const ctx = this.fields.detail.contexts.find(c => c.id === e.ctxId);
+        const ctx = this.fieldmgr.detail.contexts.find(c => c.id === e.ctxId);
         if (ctx) ctx.options = data.options || [];
-        this.fields.editing = null;
+        this.fieldmgr.editing = null;
       } catch (err) { e.err = '적용 실패: ' + err; e.confirm = false; }
       finally { e.busy = false; }
     },
@@ -1807,6 +1807,7 @@ document.addEventListener('alpine:init', () => {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { this.liclog.err = this.errText(data) || '로그 조회 실패'; this.liclog.events = []; return; }
         this.liclog.events = data.events || [];
+        this.liclog.capped = !!data.capped;
       } catch (e) { this.liclog.err = '로그 조회 실패: ' + e; }
       finally { this.liclog.loading = false; }
     },
@@ -1850,7 +1851,8 @@ document.addEventListener('alpine:init', () => {
     setLogPage(p) { this.liclog.page = Math.max(1, Math.min(p, this.logPages())); },
     logCountLabel() {
       const n = this.filteredEvents().length, total = this.liclog.events.length;
-      return (n === total ? ('총 ' + total + '건') : (n + ' / ' + total + '건'));
+      const cap = this.liclog.capped ? ' · 상한 ' + total + '건 (더 많음)' : '';
+      return (n === total ? ('총 ' + total + '건' + cap) : (n + ' / ' + total + '건' + cap));
     },
     fmtTime(iso) {
       if (!iso) return '—';
