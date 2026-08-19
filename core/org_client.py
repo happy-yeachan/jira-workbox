@@ -132,8 +132,9 @@ def _first_by_type(items: Any, *type_words: str) -> dict[str, Any]:
 #: not a license group (its add/remove is ordinary membership, not a license).
 _GROUP_PRODUCT = (
     ("confluence-users", "Confluence"),
-    ("jira-servicedesk-users", "Jira Service Management"),
+    ("jira-servicemanagement-users", "Jira Service Management"),
     ("jira-service-management-users", "Jira Service Management"),
+    ("jira-servicedesk-users", "Jira Service Management"),
     ("jira-software-users", "Jira Software"),
     ("jira-product-discovery-users", "Jira Product Discovery"),
     ("jira-core-users", "Jira Work Management"),

@@ -607,6 +607,8 @@ def _org_events_client():
     added = [
         _group_event("e1", "user_added_to_group", "2026-08-01T10:00:00Z", "alice@x", "jira-users-hmg"),
         _group_event("e3", "user_added_to_group", "2026-08-03T12:00:00Z", "carol@x", "project-alpha-devs"),
+        _group_event("e4", "user_added_to_group", "2026-08-04T09:00:00Z", "dan@x", "jira-servicemanagement-users-hkmc-cci"),
+        _group_event("e5", "user_added_to_group", "2026-08-05T09:00:00Z", "eve@x", "jira-product-discovery-users-hkmc-cci"),
     ]
     removed = [
         _group_event("e2", "user_removed_from_group", "2026-08-02T11:00:00Z", "bob@x", "confluence-users-hmg"),
@@ -638,14 +640,18 @@ async def suite_license_events() -> None:
             row = org_client.classify_license_event(ev)
             if row is not None:
                 rows.append(row)
-    check("non-product-access group add is skipped", len(rows) == 2, [r["group"] for r in rows])
-    grant = next((r for r in rows if r["kind"] == "grant"), None)
+    prods = sorted(r["product"] for r in rows)
+    check("non-product-access group add is skipped; products mapped",
+          prods == ["Confluence", "Jira", "Jira Product Discovery", "Jira Service Management"], prods)
+    grant = next((r for r in rows if r["product"] == "Jira"), None)
     revoke = next((r for r in rows if r["kind"] == "revoke"), None)
     check("add to jira-users → grant, product Jira, user extracted",
-          grant and grant["user_name"] == "alice@x" and grant["product"] == "Jira"
+          grant and grant["user_name"] == "alice@x" and grant["kind"] == "grant"
           and grant["actor_name"] == "API Key", grant)
     check("remove from confluence-users → revoke, product Confluence",
           revoke and revoke["user_name"] == "bob@x" and revoke["product"] == "Confluence", revoke)
+    check("real JSM group (jira-servicemanagement-users) → Jira Service Management",
+          any(r["product"] == "Jira Service Management" for r in rows))
     await org.aclose()
 
 
