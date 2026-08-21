@@ -706,7 +706,7 @@
               <span x-text="selected.spec.title" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis"></span>
               <span class="nav-x" @click.stop="closeTask()" title="작업 닫기">✕</span>
             </span>
-            <span class="d" x-text="running ? '진행 중…' : (plan ? '미리보기 준비됨' : (log.length ? '실행 완료' : '작성 중'))"></span>
+            <span class="d" x-text="planning ? '분석 중…' : (running ? '실행 중…' : (plan ? '미리보기 준비됨' : (log.length ? '완료' : '작성 중')))"></span>
           </span>
         </button>
       </div>
