@@ -791,6 +791,22 @@ async def license_users_stream(app_key: str = Query(alias="app")) -> StreamingRe
     )
 
 
+@app.get("/api/license/jsm-agent-projects")
+async def jsm_agent_projects() -> dict[str, object]:
+    """For each JSM agent, the service-desk projects they work in (membership in
+    each project's 'Service Desk Team' role). Best-effort enrichment for the JSM
+    user list — an empty map just means no per-project detail is shown."""
+    from tasks import license_status
+    client = _require_client()
+    try:
+        mapping = await license_status.agent_project_map(client)
+    except tasks.TaskInputError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"map": mapping}
+
+
 def _tpl_label(node: dict[str, object]) -> str:
     """The display name — the internal endpoint puts it in title.label, an object."""
     title = node.get("title")

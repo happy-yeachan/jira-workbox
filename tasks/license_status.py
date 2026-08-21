@@ -256,6 +256,122 @@ async def application_users(
     return {"key": app_key, "name": name, "count": total, "capped": capped, "users": rows[:limit]}
 
 
+_P_PROJECT_SEARCH = "/project/search"
+_P_ROLE = "/role"
+
+
+async def _service_desk_projects(client: WorkboxClient) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    try:
+        async for p in client.paginate_offset(
+            _P_PROJECT_SEARCH, items_key="values",
+            params={"typeKey": "service_desk", "maxResults": 50}, page_size=50):
+            out.append({"id": _sid(p.get("id")), "key": _sid(p.get("key")),
+                        "name": _sid(p.get("name"))})
+    except UpstreamError:
+        pass
+    return out
+
+
+def _role_id(r: dict[str, Any]) -> str:
+    rid = _sid(r.get("id"))
+    if rid:
+        return rid
+    return _sid(r.get("self")).rstrip("/").split("/")[-1]  # id sits at the end of the self URL
+
+
+async def _agent_role_ids(client: WorkboxClient) -> list[str]:
+    """Instance-wide project-role ids whose members are JSM agents — the
+    'Service Desk Team' role (name can be localised)."""
+    try:
+        roles = await client.get_json(_P_ROLE)
+    except UpstreamError:
+        return []
+    roles = roles if isinstance(roles, list) else (roles.get("value") or [])
+    def match(words: tuple[str, ...]) -> list[str]:
+        ids = []
+        for r in roles:
+            nm = _sid(r.get("name")).lower()
+            if any(w in nm for w in words):
+                rid = _role_id(r)
+                if rid:
+                    ids.append(rid)
+        return ids
+    exact = match(("service desk team", "서비스 데스크 팀", "서비스데스크 팀"))
+    return exact or match(("service desk", "서비스 데스크", "서비스데스크"))
+
+
+async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, str]]]:
+    """``account_id`` → the service-desk projects (``{key, name}``) where the user
+    is an agent: a member of that project's 'Service Desk Team' role, directly or
+    through a group. Best-effort — returns ``{}`` when JSM or roles aren't visible.
+    Extra account ids (e.g. from a broad group) are harmless; the UI only reads
+    entries for users it already lists."""
+    projects = await _service_desk_projects(client)
+    role_ids = await _agent_role_ids(client)
+    if not projects or not role_ids:
+        return {}
+
+    group_cache: dict[str, set[str]] = {}
+    name_to_gid: dict[str, str] = {}
+
+    async def resolve_gid(name: str) -> str:
+        if name in name_to_gid:
+            return name_to_gid[name]
+        gid = ""
+        try:
+            picked = await client.get_json(_P_GROUPS_PICKER, params={"query": name, "maxResults": 1})
+            for g in (picked.get("groups") or []):
+                if g.get("name") == name and g.get("groupId"):
+                    gid = _sid(g["groupId"])
+                    break
+        except UpstreamError:
+            pass
+        name_to_gid[name] = gid
+        return gid
+
+    async def group_members(gid: str) -> set[str]:
+        if gid in group_cache:
+            return group_cache[gid]
+        s: set[str] = set()
+        try:
+            async for m in client.paginate_offset(
+                _P_GROUP_MEMBER, items_key="values",
+                params={"groupId": gid, "includeInactiveUsers": "false"}, page_size=50):
+                aid = _sid(m.get("accountId"))
+                if aid and m.get("active") is not False:
+                    s.add(aid)
+        except UpstreamError:
+            pass
+        group_cache[gid] = s
+        return s
+
+    async def scan(proj: dict[str, str]) -> set[str]:
+        accts: set[str] = set()
+        for rid in role_ids:
+            try:
+                data = await client.get_json(f"/project/{proj['id']}/role/{rid}")
+            except UpstreamError:
+                continue
+            for a in (data.get("actors") or []):
+                au = a.get("actorUser") or {}
+                aid = _sid(au.get("accountId"))
+                if aid:
+                    accts.add(aid)
+                    continue
+                ag = a.get("actorGroup") or {}
+                gid = _sid(ag.get("groupId")) or await resolve_gid(_sid(ag.get("name")))
+                if gid:
+                    accts |= await group_members(gid)
+        return accts
+
+    by_acct: dict[str, list[dict[str, str]]] = {}
+    async for _i, proj, accts in map_bounded(projects, scan, limit=8):
+        for aid in accts:
+            by_acct.setdefault(aid, []).append({"key": proj["key"], "name": proj["name"]})
+    return {aid: sorted(ps, key=lambda p: p["key"]) for aid, ps in by_acct.items()}
+
+
 async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
     client = get_client()
     yield ProgressEvent(type="start", message="라이선스 현황 조회")

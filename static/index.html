@@ -347,6 +347,8 @@
   .opt { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: #f6f7f9; }
   .opt.off { color: var(--muted); text-decoration: line-through; opacity: .7; }
   .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+  .sd-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .sd-list .opt { cursor: default; }
   /* field list: fixed layout so a long value can't force a horizontal scroll */
   .fields-table { table-layout: fixed; width: 100%; }
   .fields-table td, .fields-table th { overflow: hidden; text-overflow: ellipsis; word-break: break-word; }
@@ -718,12 +720,26 @@
             <div class="notice err" x-show="usersErr()" x-text="usersErr()" style="margin:10px 14px"></div>
             <div class="lic-users-body" x-show="!usersErr()">
               <table>
-                <thead><tr><th style="width:40%">이름</th><th>이메일</th></tr></thead>
+                <thead><tr>
+                  <th style="width:34%">이름</th><th>이메일</th>
+                  <th x-show="dash.selApp === JSM_KEY" style="width:32%">서비스데스크</th>
+                </tr></thead>
                 <tbody>
                   <template x-for="u in pagedUsers()" :key="u.account_id">
                     <tr>
                       <td x-text="u.name"></td>
                       <td class="u-off" x-text="u.email || '—'"></td>
+                      <td x-show="dash.selApp === JSM_KEY">
+                        <span class="sub" x-show="dash.jsm.loading">…</span>
+                        <template x-if="!dash.jsm.loading">
+                          <span class="sd-list">
+                            <template x-for="p in jsmProjectsFor(u)" :key="p.key">
+                              <span class="opt" :title="p.name" x-text="p.key"></span>
+                            </template>
+                            <span class="sub" x-show="!jsmProjectsFor(u).length">—</span>
+                          </span>
+                        </template>
+                      </td>
                     </tr>
                   </template>
                 </tbody>
@@ -1791,7 +1807,9 @@ document.addEventListener('alpine:init', () => {
     ],
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], userQ: '', userPage: 1, userPageSize: 100,
-            userCache: {}, _preloadCtrl: null },
+            userCache: {}, _preloadCtrl: null,
+            jsm: { loading: false, loaded: false, map: {} } },
+    JSM_KEY: 'jira-servicedesk',
 
     async boot() {
       // Any parameter edit invalidates the result, so Execute can never run
@@ -2264,6 +2282,7 @@ document.addEventListener('alpine:init', () => {
       // Preload every product's user list in the background and cache it, so
       // opening any card is instant (the counts/donuts already show immediately).
       this.dash.userCache = {};
+      this.dash.jsm = { loading: false, loaded: false, map: {} };
       this.preloadUsers();
       // and the license change log (org audit events), if the org key is set
       this.loadEvents();
@@ -2326,7 +2345,21 @@ document.addEventListener('alpine:init', () => {
       this.dash.userQ = ''; this.dash.userPage = 1;
       this.ensureUsers(key, this.dash._preloadCtrl && this.dash._preloadCtrl.signal);
       this.dash.users = this.dash.userCache[key].users;  // same ref, fills live
+      if (key === this.JSM_KEY) this.ensureJsmProjects();  // annotate agents with their service desks
     },
+    // Which service-desk projects each JSM agent works in — a heavier site-wide
+    // scan, so it loads lazily only when the JSM card is opened, and once.
+    async ensureJsmProjects() {
+      if (this.dash.jsm.loaded || this.dash.jsm.loading) return;
+      this.dash.jsm.loading = true;
+      try {
+        const res = await fetch('/api/license/jsm-agent-projects');
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) this.dash.jsm.map = data.map || {};
+      } catch (_) { /* best-effort enrichment */ }
+      finally { this.dash.jsm.loading = false; this.dash.jsm.loaded = true; }
+    },
+    jsmProjectsFor(u) { return (this.dash.jsm.map && this.dash.jsm.map[u.account_id]) || []; },
     curEntry() { return this.dash.userCache[this.dash.selApp] || null; },
     usersBusy() { const e = this.curEntry(); return !!(e && e.loading); },
     usersErr() { const e = this.curEntry(); return e ? e.err : ''; },

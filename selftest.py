@@ -517,6 +517,41 @@ async def suite_license_users() -> None:
     await client.aclose()
     set_client(None)
 
+    # JSM agent → service-desk projects (Service Desk Team role membership)
+    def jsm_projects_site(request: httpx.Request) -> httpx.Response:
+        p, q = request.url.path, request.url.params
+        if p == "/rest/api/3/project/search":
+            check("agent map: filters to service_desk projects", q.get("typeKey") == "service_desk")
+            rows = [{"id": "10001", "key": "SD1", "name": "Support 1"},
+                    {"id": "10002", "key": "SD2", "name": "Support 2"}]
+            return httpx.Response(200, json={"values": rows, "isLast": True,
+                                             "startAt": 0, "maxResults": 50, "total": len(rows)})
+        if p == "/rest/api/3/role":
+            return httpx.Response(200, json=[{"id": "10100", "name": "Service Desk Team"},
+                                             {"id": "10002", "name": "Administrators"}])
+        if p == "/rest/api/3/project/10001/role/10100":
+            return httpx.Response(200, json={"actors": [
+                {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "a1"}},
+                {"type": "atlassian-group-role-actor", "actorGroup": {"name": "gA", "groupId": "gA"}}]})
+        if p == "/rest/api/3/project/10002/role/10100":
+            return httpx.Response(200, json={"actors": [
+                {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "a2"}}]})
+        if p == "/rest/api/3/group/member":
+            if q.get("groupId") == "gA":
+                rows = [{"accountId": "a1", "active": True}, {"accountId": "a3", "active": True}]
+                return httpx.Response(200, json={"values": rows, "isLast": True,
+                                                 "startAt": 0, "maxResults": 50, "total": len(rows)})
+            return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 50, "total": 0})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+
+    client = _client_for(jsm_projects_site)
+    amap = await lic.agent_project_map(client)
+    check("agent map: direct actor mapped to its project", [x["key"] for x in amap.get("a1", [])] == ["SD1"], amap.get("a1"))
+    check("agent map: group member mapped via the group actor", [x["key"] for x in amap.get("a3", [])] == ["SD1"], amap.get("a3"))
+    check("agent map: second project's agent", [x["key"] for x in amap.get("a2", [])] == ["SD2"], amap.get("a2"))
+    await client.aclose()
+    set_client(None)
+
 
 def _license_stream_site():
     """One big Jira Software group (to exercise batching), a JSM role, and a
