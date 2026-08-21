@@ -934,6 +934,56 @@ async def suite_field_inventory() -> None:
     await c5.aclose()
 
 
+async def suite_screen_clone() -> None:
+    print("config_isolate: screen clone copies tabs + fields")
+    import tasks.config_isolate as iso
+
+    posts: list[tuple[str, dict]] = []
+    deletes: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        p, m = request.url.path, request.method
+        base = "/rest/api/3"
+        body = _json.loads(request.content) if request.content else {}
+        # source screen 100: two tabs with fields
+        if p == f"{base}/screens/100/tabs" and m == "GET":
+            return httpx.Response(200, json=[{"id": "9001", "name": "Field Tab"},
+                                             {"id": "9002", "name": "Details"}])
+        if p == f"{base}/screens/100/tabs/9001/fields":
+            return httpx.Response(200, json=[{"id": "summary"}, {"id": "assignee"}])
+        if p == f"{base}/screens/100/tabs/9002/fields":
+            return httpx.Response(200, json=[{"id": "duedate"}])
+        # clone screen 200: one auto-created default tab
+        if p == f"{base}/screens/200/tabs" and m == "GET":
+            return httpx.Response(200, json=[{"id": "7001", "name": "General"}])
+        if p == f"{base}/screens/200/tabs" and m == "POST":
+            posts.append(("tab", body))
+            return httpx.Response(200, json={"id": "7002", "name": body.get("name")})
+        if p.startswith(f"{base}/screens/200/tabs/") and p.endswith("/fields") and m == "POST":
+            posts.append(("field:" + p.split("/tabs/")[1].split("/")[0], body))
+            return httpx.Response(200, json={})
+        if p.startswith(f"{base}/screens/200/tabs/") and m == "PUT":
+            posts.append(("rename:" + p.rsplit("/", 1)[1], body))
+            return httpx.Response(200, json={"id": p.rsplit("/", 1)[1], "name": body.get("name")})
+        if p.startswith(f"{base}/screens/200/tabs/") and m == "DELETE":
+            deletes.append(p.rsplit("/", 1)[1])
+            return httpx.Response(204)
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+
+    client = _client_for(handler)
+    await iso._copy_screen_contents(client, "100", "200")
+    check("clone: default tab reused (renamed to first source tab)",
+          ("rename:7001", {"name": "Field Tab"}) in posts, posts)
+    check("clone: second tab created", ("tab", {"name": "Details"}) in posts, posts)
+    check("clone: first tab's fields added in order",
+          [b["fieldId"] for k, b in posts if k == "field:7001"] == ["summary", "assignee"], posts)
+    check("clone: second tab's field added",
+          [b["fieldId"] for k, b in posts if k == "field:7002"] == ["duedate"], posts)
+    check("clone: no leftover tabs to delete (source had >= clone tabs)", deletes == [], deletes)
+    await client.aclose()
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -948,6 +998,8 @@ async def main() -> None:
     await suite_license_events()
     print()
     await suite_field_inventory()
+    print()
+    await suite_screen_clone()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")

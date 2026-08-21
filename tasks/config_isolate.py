@@ -343,6 +343,57 @@ _P_WFS_DRAFT = "/workflowscheme/{id}/draft"
 _P_WFS_PUBLISH = "/workflowscheme/{id}/draft/publish"
 
 
+def _as_list(data: Any) -> list[dict[str, Any]]:
+    """Some screen endpoints return a bare JSON array (get_json wraps it as
+    {'value': [...]}); normalise either shape to a list."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("value") or data.get("values") or []
+    return []
+
+
+async def _copy_screen_contents(client: WorkboxClient, src_id: str, dst_id: str) -> None:
+    """Replicate a screen's tabs and their fields (in order) onto a freshly
+    created clone. ``POST /screens`` only makes an empty screen with one default
+    tab, so without this the clone has no fields at all. Best-effort per field —
+    a field that can't be added (already present / not addable) is skipped rather
+    than failing the whole isolate."""
+    src_tabs = _as_list(await client.get_json(f"/screens/{src_id}/tabs"))
+    dst_tab_ids = [_sid(t.get("id")) for t in _as_list(await client.get_json(f"/screens/{dst_id}/tabs"))]
+
+    for idx, st in enumerate(src_tabs):
+        st_id = _sid(st.get("id"))
+        st_name = _sid(st.get("name")) or f"Tab {idx + 1}"
+        if idx < len(dst_tab_ids):          # reuse (and rename) the auto-created tab
+            dt_id = dst_tab_ids[idx]
+            try:
+                await client.json("PUT", f"/screens/{dst_id}/tabs/{dt_id}", json={"name": st_name})
+            except UpstreamError:
+                pass
+        else:
+            resp = await client.json("POST", f"/screens/{dst_id}/tabs", json={"name": st_name})
+            dt_id = _sid(resp.get("id"))
+            dst_tab_ids.append(dt_id)
+        if not (dt_id and st_id):
+            continue
+        for f in _as_list(await client.get_json(f"/screens/{src_id}/tabs/{st_id}/fields")):
+            fid = _sid(f.get("id"))
+            if not fid:
+                continue
+            try:
+                await client.json("POST", f"/screens/{dst_id}/tabs/{dt_id}/fields", json={"fieldId": fid})
+            except UpstreamError:
+                pass
+    # drop any leftover auto-created tabs the source didn't have
+    for extra in dst_tab_ids[len(src_tabs):]:
+        if extra:
+            try:
+                await client.request("DELETE", f"/screens/{dst_id}/tabs/{extra}")
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _subst(value: Any, ids: dict[str, str]) -> Any:
     """Replace '@ref' tokens with the id an earlier step created for that ref."""
     if isinstance(value, str) and value.startswith("@"):
@@ -406,7 +457,7 @@ async def _plan_screen_fork(
         sc_name = _sid(sc_row.get("name")) or f"#{screen_id}"
         sc_clone = f"{kp}: {it_lab} 스크린"
         steps.append({"ref": "screen", "create_path": _P_SCREEN_ONE, "one_path": _P_SCREEN_ONE + "/{id}",
-                      "created_id_keys": ["id"],
+                      "created_id_keys": ["id"], "copy_from": screen_id,
                       "body": {"name": sc_clone,
                                **({"description": sc_row["description"][:255]} if sc_row.get("description") else {})}})
         plan_rows.append({"kind": "스크린", "from": sc_name, "to": sc_clone})
@@ -807,6 +858,8 @@ async def _apply_fork_isolate(
                 raise UpstreamError(f"{step['ref']} 복제본 id를 응답에서 찾지 못했습니다.")
             ids[step["ref"]] = nid
             created.append([step["one_path"], nid])
+            if step.get("copy_from"):  # screen clones start empty — copy tabs+fields
+                await _copy_screen_contents(client, _sid(step["copy_from"]), nid)
         for edit in a.get("inplace", []):
             resp = await client.request("PUT", edit["path"], json=_subst(edit["body"], ids))
             if not (200 <= resp.status_code < 300):
