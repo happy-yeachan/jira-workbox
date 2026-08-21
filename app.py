@@ -707,6 +707,76 @@ async def license_events(days: int = 30, limit: int = 1000) -> dict[str, object]
     return {"events": out, "days": days, "scanned": scanned, "capped": len(out) >= limit}
 
 
+@app.get("/api/license/events/stream")
+async def license_events_stream(days: int = 30) -> StreamingResponse:
+    """Same license log as /api/license/events, but streamed as newline-delimited
+    JSON so the UI fills as batches arrive instead of blocking on the whole scan.
+    Each batch is enriched (display names) before it is sent, newest-first within
+    the batch. Events: ``{type:'batch', events:[…]}`` then ``{type:'done', scanned,
+    capped}``, or ``{type:'error', message}``."""
+    from core import org_client
+    org = _org_client_or_none()
+    if org is None:
+        raise HTTPException(status_code=403,
+                            detail="조직 admin API 키가 설정되지 않았습니다. 접속 정보에서 연결하세요.")
+    days = max(1, min(days, 365))
+    from_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    queries = [
+        ("user_added_to_group", "users"),
+        ("user_removed_from_group", "users"),
+        ("product_access_granted", None),
+        ("product_access_revoked", None),
+    ]
+    _BATCH = 40
+
+    async def lines() -> AsyncIterator[str]:
+        scanned = 0
+        try:
+            org_id = await org.org_id()
+            for action, q in queries:
+                batch: list[dict[str, object]] = []
+                got = 0
+                async for ev in org.iter_events(org_id, from_ms=from_ms, action=action,
+                                                q=q, page_size=100):
+                    scanned += 1
+                    row = org_client.classify_license_event(ev)
+                    if row is not None:
+                        batch.append(row)
+                        got += 1
+                        if len(batch) >= _BATCH:
+                            await _enrich_display_names(batch)
+                            batch.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
+                            yield json.dumps({"type": "batch", "events": batch}, ensure_ascii=False) + "\n"
+                            batch = []
+                    if got >= 1000 or scanned >= _EVENT_SCAN_CAP:
+                        break
+                if batch:
+                    await _enrich_display_names(batch)
+                    batch.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
+                    yield json.dumps({"type": "batch", "events": batch}, ensure_ascii=False) + "\n"
+                if scanned >= _EVENT_SCAN_CAP:
+                    break
+            yield json.dumps({"type": "done", "scanned": scanned,
+                              "capped": scanned >= _EVENT_SCAN_CAP}, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            raise
+        except UpstreamError as exc:
+            msg = ("조직 이벤트 API 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요."
+                   if exc.status_code == 429 else str(exc)[:200])
+            yield json.dumps({"type": "error", "message": msg}, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001 — surface it in the stream
+            log.exception("license event stream failed")
+            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:200]},
+                             ensure_ascii=False) + "\n"
+        finally:
+            await org.aclose()
+
+    return StreamingResponse(
+        lines(), media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/api/debug/jsm-role")
 async def debug_jsm_role(project: str = Query(...)) -> dict[str, object]:
     """Diagnostic: every project role and its actors (users + groups, with member

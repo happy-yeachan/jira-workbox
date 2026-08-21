@@ -1832,7 +1832,7 @@ document.addEventListener('alpine:init', () => {
     ctxDelBusy: false,
     ctxDelErr: '',
     liclog: { loading: false, err: '', events: [], days: 7, filter: 'all', q: '',
-              product: '', page: 1, pageSize: 100, capped: false },
+              product: '', page: 1, pageSize: 100, capped: false, _ctrl: null },
     logProducts: [
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
       { label: 'JSM (agent)', k: 'jsm' }, { label: 'Confluence', k: 'confluence' },
@@ -2243,15 +2243,32 @@ document.addEventListener('alpine:init', () => {
     // ---------- license change log (org audit events) ----------
     async loadEvents() {
       if (!this.health.org_configured) return;
+      // stream the log so it fills as batches arrive instead of blocking on the
+      // whole scan (a wide window is thousands of events)
+      if (this.liclog._ctrl) this.liclog._ctrl.abort();
+      const ctrl = new AbortController(); this.liclog._ctrl = ctrl;
       this.liclog.loading = true; this.liclog.err = ''; this.liclog.page = 1;
+      this.liclog.events = []; this.liclog.capped = false;
       try {
-        const res = await fetch('/api/license/events?days=' + encodeURIComponent(this.liclog.days));
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) { this.liclog.err = this.errText(data) || '로그 조회 실패'; this.liclog.events = []; return; }
-        this.liclog.events = data.events || [];
-        this.liclog.capped = !!data.capped;
-      } catch (e) { this.liclog.err = '로그 조회 실패: ' + e; }
-      finally { this.liclog.loading = false; }
+        const res = await fetch('/api/license/events/stream?days=' + encodeURIComponent(this.liclog.days),
+                                { signal: ctrl.signal });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          this.liclog.err = this.errText(d) || '로그 조회 실패'; return;
+        }
+        await this.readNdjson(res, (ev) => {
+          if (ev.type === 'batch') {
+            this.liclog.events.push(...(ev.events || []));
+            // keep newest-first as batches (per action) interleave
+            this.liclog.events.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
+          } else if (ev.type === 'done') {
+            this.liclog.capped = !!ev.capped;
+          } else if (ev.type === 'error') {
+            this.liclog.err = ev.message || '로그 조회 실패';
+          }
+        });
+      } catch (e) { if (e.name !== 'AbortError') this.liclog.err = '로그 조회 실패: ' + e; }
+      finally { if (this.liclog._ctrl === ctrl) { this.liclog.loading = false; this.liclog._ctrl = null; } }
     },
     // Collapse every product into three simple buckets for the log: Confluence,
     // JSM (agent), or Jira (Software / Work Mgmt / Product Discovery all → Jira).
