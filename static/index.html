@@ -330,7 +330,8 @@
   .lic-log-search { padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; min-width: 150px; }
   .tag-grant { font-size: 11px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok-line); background: var(--ok-bg); padding: 1px 8px; border-radius: 999px; }
   .tag-revoke { font-size: 11px; font-weight: 700; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 1px 8px; border-radius: 999px; }
-  .lic-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px 2px; }
+  .lic-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px 2px; align-items: center; }
+  .lic-chips .chip-label { min-width: 34px; margin-right: 2px; }
   .lic-chips .chip {
     font: inherit; font-size: 12.5px; padding: 4px 12px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
@@ -776,19 +777,22 @@
                     <option value="30">최근 30일</option>
                     <option value="90">최근 90일</option>
                   </select>
-                  <select class="lic-sel" x-model="liclog.filter" @change="liclog.page = 1">
-                    <option value="all">전체</option>
-                    <option value="grant">추가</option>
-                    <option value="revoke">삭제</option>
-                  </select>
                   <input type="text" class="lic-log-search" placeholder="사용자·제품 검색" x-model="liclog.q" @input="liclog.page = 1">
                   <button class="btn small ghost" @click="loadEvents()" :disabled="liclog.loading">새로고침</button>
                 </span>
               </template>
             </div>
             <div class="progbar" x-show="liclog.loading"></div>
-            <!-- product filter chips -->
+            <!-- add/delete filter chips -->
             <div class="lic-chips" x-show="health.org_configured && !liclog.err">
+              <span class="sub chip-label">변경</span>
+              <template x-for="c in logKinds" :key="c.k">
+                <button class="chip" :class="{ on: liclog.filter === c.k }" @click="setLogKind(c.k)" x-text="c.label"></button>
+              </template>
+            </div>
+            <!-- product filter chips -->
+            <div class="lic-chips" x-show="health.org_configured && !liclog.err" style="padding-top:2px">
+              <span class="sub chip-label">제품</span>
               <template x-for="c in logProducts" :key="c.k">
                 <button class="chip" :class="{ on: liclog.product === c.k }" @click="setLogProduct(c.k)" x-text="c.label"></button>
               </template>
@@ -1833,6 +1837,9 @@ document.addEventListener('alpine:init', () => {
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
       { label: 'JSM (agent)', k: 'jsm' }, { label: 'Confluence', k: 'confluence' },
     ],
+    logKinds: [
+      { label: '전체', k: 'all' }, { label: '추가', k: 'grant' }, { label: '삭제', k: 'revoke' },
+    ],
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], userQ: '', userPage: 1, userPageSize: 100,
             userCache: {}, _preloadCtrl: null,
@@ -2259,6 +2266,7 @@ document.addEventListener('alpine:init', () => {
       return { jira: 'Jira', jsm: 'JSM (agent)', confluence: 'Confluence' }[this.productKey(p)] || (p || '—');
     },
     setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
+    setLogKind(k) { this.liclog.filter = k; this.liclog.page = 1; },
     filteredEvents() {
       const f = this.liclog.filter, pk = this.liclog.product, q = (this.liclog.q || '').trim().toLowerCase();
       // client-side date window too: the org /events `from` filter is unreliable,
