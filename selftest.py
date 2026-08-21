@@ -1204,10 +1204,8 @@ async def suite_group_inventory() -> None:
     client = _client_for(handler)
 
     groups = [g async for g in gi.iter_groups(client)]
-    check("groups: streamed full list", [g["name"] for g in groups] == ["팀A", "팀B"], groups)
-    searched = [g async for g in gi.iter_groups(client, query="팀")]
-    check("groups: search hits the server-side picker (results without full load)",
-          [g["name"] for g in searched] == ["팀A", "팀B"], searched)
+    check("groups: streamed full list from /group/bulk (complete, incl. admin groups)",
+          [g["name"] for g in groups] == ["팀A", "팀B"], groups)
     members = [m async for m in gi.iter_members(client, "g1")]
     check("members: streamed with active flag", [(m["name"], m["active"]) for m in members] == [("Alice", True), ("Bob", False)], members)
     check("group name resolved", await gi.group_name(client, "g1") == "팀A")

@@ -31,25 +31,14 @@ def _sid(v: Any) -> str:
     return "" if v is None else str(v)
 
 
-async def iter_groups(client: WorkboxClient, query: str = "") -> AsyncIterator[dict[str, str]]:
-    """Groups streamed as ``{groupId, name}``.
-
-    With a ``query`` we hit ``/groups/picker`` (server-side substring match) so a
-    search returns its hits immediately instead of waiting for the whole
-    directory to stream. Without one we page the full list via ``/group/bulk``."""
-    q = (query or "").strip()
-    if q:
-        # let a picker error propagate so the stream reports it (instead of an
-        # empty result that looks like "no matches"); maxResults matches the
-        # proven /api/groups picker cap
-        picked = await client.get_json(_P_GROUPS_PICKER, params={"query": q, "maxResults": 100})
-        for g in (picked.get("groups") or []):
-            gid = _sid(g.get("groupId"))
-            if gid:
-                yield {"groupId": gid, "name": _sid(g.get("name")) or gid}
-        return
+async def iter_groups(client: WorkboxClient) -> AsyncIterator[dict[str, str]]:
+    """Every group as ``{groupId, name}``, streamed page by page from
+    ``/group/bulk`` — the complete directory (the groups picker is a smaller,
+    inconsistent set: it can omit admin groups like ``org-admins`` and, on some
+    tenants, the group id). The UI streams this once, caches it, and filters
+    client-side, so search stays complete and, after the first load, instant."""
     async for g in client.paginate_offset(
-        _P_GROUP_BULK, items_key="values", params={"maxResults": 50}, page_size=50):
+        _P_GROUP_BULK, items_key="values", params={"maxResults": 100}, page_size=100):
         gid = _sid(g.get("groupId"))
         if gid:
             yield {"groupId": gid, "name": _sid(g.get("name")) or gid}
