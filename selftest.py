@@ -537,14 +537,17 @@ async def suite_license_users() -> None:
             return httpx.Response(200, json={"actors": [
                 {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "a2"}},
                 # flat group actor: type + top-level name, no nested actorGroup/groupId
-                {"type": "atlassian-group-role-actor", "name": "flatgroup"}]})
+                {"type": "atlassian-group-role-actor", "name": "flatgroup"},
+                # group actor carrying the id under actorGroup.id (not groupId)
+                {"type": "atlassian-group-role-actor", "actorGroup": {"id": "gID"}}]})
         if p == "/rest/api/3/groups/picker":
             if (q.get("query") or "") == "flatgroup":
                 return httpx.Response(200, json={"groups": [{"name": "flatgroup", "groupId": "gF"}]})
             return httpx.Response(200, json={"groups": []})
         if p == "/rest/api/3/group/member":
             gid = q.get("groupId")
-            table = {"gA": ["a1", "a3"], "gF": ["a4"]}
+            # gF (in SD2) also contains a1 → a1 is an agent on BOTH SD1 and SD2
+            table = {"gA": ["a1", "a3"], "gF": ["a1", "a4"], "gID": ["a5"]}
             rows = [{"accountId": aid, "active": True} for aid in table.get(gid, [])]
             return httpx.Response(200, json={"values": rows, "isLast": True,
                                              "startAt": 0, "maxResults": 50, "total": len(rows)})
@@ -552,11 +555,14 @@ async def suite_license_users() -> None:
 
     client = _client_for(jsm_projects_site)
     amap = await lic.agent_project_map(client)
-    check("agent map: direct actor mapped to its project", [x["key"] for x in amap.get("a1", [])] == ["SD1"], amap.get("a1"))
+    check("agent map: one person can span multiple projects (direct + via group)",
+          [x["key"] for x in amap.get("a1", [])] == ["SD1", "SD2"], amap.get("a1"))
     check("agent map: group member mapped via the group actor", [x["key"] for x in amap.get("a3", [])] == ["SD1"], amap.get("a3"))
-    check("agent map: second project's agent", [x["key"] for x in amap.get("a2", [])] == ["SD2"], amap.get("a2"))
+    check("agent map: second project's direct agent", [x["key"] for x in amap.get("a2", [])] == ["SD2"], amap.get("a2"))
     check("agent map: flat group actor resolved via picker + expanded",
           [x["key"] for x in amap.get("a4", [])] == ["SD2"], amap.get("a4"))
+    check("agent map: group id under actorGroup.id is expanded too",
+          [x["key"] for x in amap.get("a5", [])] == ["SD2"], amap.get("a5"))
     await client.aclose()
     set_client(None)
 

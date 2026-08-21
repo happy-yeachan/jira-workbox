@@ -298,7 +298,7 @@ async def _agent_role_ids(client: WorkboxClient) -> list[str]:
                     ids.append(rid)
         return ids
     exact = match(("service desk team", "서비스 데스크 팀", "서비스데스크 팀"))
-    return exact or match(("service desk", "서비스 데스크", "서비스데스크"))
+    return exact or match(("service desk", "서비스 데스크", "서비스데스크", "agent", "에이전트"))
 
 
 async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, str]]]:
@@ -316,18 +316,24 @@ async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, s
     name_to_gid: dict[str, str] = {}
 
     async def resolve_gid(name: str) -> str:
-        if name in name_to_gid:
-            return name_to_gid[name]
+        key = (name or "").strip()
+        if not key:
+            return ""
+        if key in name_to_gid:
+            return name_to_gid[key]
         gid = ""
         try:
-            picked = await client.get_json(_P_GROUPS_PICKER, params={"query": name, "maxResults": 1})
-            for g in (picked.get("groups") or []):
-                if g.get("name") == name and g.get("groupId"):
-                    gid = _sid(g["groupId"])
-                    break
+            picked = await client.get_json(_P_GROUPS_PICKER, params={"query": key, "maxResults": 5})
+            groups = picked.get("groups") or []
+            exact = next((g for g in groups
+                          if _sid(g.get("name")).strip().lower() == key.lower() and g.get("groupId")), None)
+            if exact:
+                gid = _sid(exact["groupId"])
+            elif len(groups) == 1 and groups[0].get("groupId"):  # unambiguous
+                gid = _sid(groups[0]["groupId"])
         except UpstreamError:
             pass
-        name_to_gid[name] = gid
+        name_to_gid[key] = gid
         return gid
 
     async def group_members(gid: str) -> set[str]:
@@ -354,31 +360,32 @@ async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, s
             except UpstreamError:
                 continue
             for a in (data.get("actors") or []):
-                atype = _sid(a.get("type")).lower()
-                ag = a.get("actorGroup") or {}
-                is_group = "group" in atype or bool(ag)
-                if is_group:
-                    # group actors grant a seat to every member — the "included via
-                    # a group" case. groupId when present, else resolve the name
-                    # (payloads sometimes carry it at the top level, not in actorGroup).
-                    gid = _sid(ag.get("groupId"))
-                    if not gid:
-                        gid = await resolve_gid(_sid(ag.get("name")) or _sid(a.get("name"))
-                                                or _sid(a.get("displayName")))
-                    if gid:
-                        accts |= await group_members(gid)
-                    continue
+                # A direct user actor carries an account id; anything else with a
+                # group shape (nested actorGroup, or a group-type actor whose name
+                # sits at the top level) is a group — expand it to its members, so
+                # agents added *via a group* count too.
                 au = a.get("actorUser") or {}
                 aid = _sid(au.get("accountId")) or _sid(a.get("actorUserAccountId"))
                 if aid:
                     accts.add(aid)
+                    continue
+                ag = a.get("actorGroup") or {}
+                gid = _sid(ag.get("groupId")) or _sid(ag.get("id")) or _sid(a.get("groupId"))
+                if not gid:
+                    gid = await resolve_gid(_sid(ag.get("name")) or _sid(ag.get("displayName"))
+                                            or _sid(a.get("name")) or _sid(a.get("displayName")))
+                if gid:
+                    accts |= await group_members(gid)
         return accts
 
-    by_acct: dict[str, list[dict[str, str]]] = {}
+    # one account can be an agent on several projects — collect every hit, then
+    # dedupe by project key so a user listed both directly and via a group in the
+    # same project shows that project once.
+    by_acct: dict[str, dict[str, dict[str, str]]] = {}
     async for _i, proj, accts in map_bounded(projects, scan, limit=8):
         for aid in accts:
-            by_acct.setdefault(aid, []).append({"key": proj["key"], "name": proj["name"]})
-    return {aid: sorted(ps, key=lambda p: p["key"]) for aid, ps in by_acct.items()}
+            by_acct.setdefault(aid, {})[proj["key"]] = {"key": proj["key"], "name": proj["name"]}
+    return {aid: sorted(ps.values(), key=lambda p: p["key"]) for aid, ps in by_acct.items()}
 
 
 async def _group_member_count(client: WorkboxClient, gid: str) -> int:
