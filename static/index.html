@@ -2152,16 +2152,22 @@ document.addEventListener('alpine:init', () => {
     async loadGroups() {
       if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
       const ctrl = new AbortController(); this.groupmgr._ctrl = ctrl;
-      this.groupmgr.loading = true; this.groupmgr.err = ''; this.groupmgr.page = 1; this.groupmgr.list = [];
+      this.groupmgr.loading = true; this.groupmgr.err = ''; this.groupmgr.page = 1;
       this.groupmgr._loadedQ = (this.groupmgr.q || '').trim();
+      // keep the current list visible (so typing filters it instantly) until the
+      // first new batch arrives, then replace — avoids a blank flash mid-search
+      let first = true;
       try {
         const res = await fetch('/api/groups/manage/stream?q=' + encodeURIComponent(this.groupmgr.q || ''),
                                 { signal: ctrl.signal });
         if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.err = this.errText(d) || '그룹 조회 실패'; return; }
         await this.readNdjson(res, (ev) => {
           if (ev.type === 'batch') {
+            if (first) { this.groupmgr.list = []; first = false; }
             this.groupmgr.list.push(...(ev.groups || []));
             this.groupmgr.list.sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
+          } else if (ev.type === 'done') {
+            if (first) { this.groupmgr.list = []; first = false; }  // empty result set
           } else if (ev.type === 'error') { this.groupmgr.err = ev.message || '그룹 조회 실패'; }
         });
       } catch (e) { if (e.name !== 'AbortError') this.groupmgr.err = '그룹 조회 실패: ' + e; }

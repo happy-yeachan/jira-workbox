@@ -39,10 +39,10 @@ async def iter_groups(client: WorkboxClient, query: str = "") -> AsyncIterator[d
     directory to stream. Without one we page the full list via ``/group/bulk``."""
     q = (query or "").strip()
     if q:
-        try:
-            picked = await client.get_json(_P_GROUPS_PICKER, params={"query": q, "maxResults": 200})
-        except UpstreamError:
-            return
+        # let a picker error propagate so the stream reports it (instead of an
+        # empty result that looks like "no matches"); maxResults matches the
+        # proven /api/groups picker cap
+        picked = await client.get_json(_P_GROUPS_PICKER, params={"query": q, "maxResults": 100})
         for g in (picked.get("groups") or []):
             gid = _sid(g.get("groupId"))
             if gid:
