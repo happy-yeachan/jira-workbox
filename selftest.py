@@ -983,6 +983,33 @@ async def suite_screen_clone() -> None:
     check("clone: no leftover tabs to delete (source had >= clone tabs)", deletes == [], deletes)
     await client.aclose()
 
+    # rollback: re-point succeeds but the orphan clone won't delete → success + ⚠ note
+    from core.models import Change
+
+    def restore_handler(request: httpx.Request) -> httpx.Response:
+        p, m = request.url.path, request.method
+        if m == "PUT" and p == "/rest/api/3/issuetypescreenscheme/project":
+            return httpx.Response(204)  # re-point back to original: OK
+        if m == "DELETE" and p.startswith("/rest/api/3/issuetypescreenscheme/"):
+            return httpx.Response(400, json={"errorMessages": ["still active"]})  # clone won't delete
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+
+    client = _client_for(restore_handler)
+    change = Change(target_id="t", label="원복", after={
+        "op": "restore", "scheme_type": "issuetypescreen", "label": "화면",
+        "project_id": "P", "project_key": "NZGE",
+        "restore_scheme_id": "orig", "restore_scheme_name": "원본",
+        "delete_scheme_id": "clone99",
+        "project_path": "/issuetypescreenscheme/project", "id_body_key": "issueTypeScreenSchemeId",
+        "one_path": "/issuetypescreenscheme/{id}", "create_path": "/issuetypescreenscheme",
+        "create_body": {}, "created_id_keys": ["id"], "remap": ""})
+    item, undo = await iso._apply_one(client, change)
+    check("rollback: essential re-point makes it a success", item.ok is True, item)
+    check("rollback: undeletable orphan surfaces as a ⚠ note, not a failure",
+          bool(item.error) and "복제본" in item.error, item.error)
+    check("rollback: redo undo recorded", undo.get("op") == "isolate", undo)
+    await client.aclose()
+
 
 async def main() -> None:
     await suite_write_task()

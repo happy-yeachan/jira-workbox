@@ -394,6 +394,29 @@ async def _copy_screen_contents(client: WorkboxClient, src_id: str, dst_id: str)
                 pass
 
 
+_LEFTOVER_KIND = {
+    "screens": "스크린", "screenscheme": "화면 스킴",
+    "issuetypescreenscheme": "이슈 유형 화면 스킴", "workflowscheme": "워크플로우 스킴",
+    "workflows": "워크플로우",
+}
+
+
+def _leftover_label(one_path: str, nid: str) -> str:
+    kind = one_path.strip("/").split("/")[0]
+    return f"{_LEFTOVER_KIND.get(kind, kind)} #{nid}"
+
+
+def _leftover_note(items: list[str]) -> str | None:
+    """A rollback whose essential re-point succeeded but that couldn't delete its
+    now-orphaned clones is still a success — this is a warning, not an error.
+    Jira briefly keeps a just-detached workflow/scheme 'active' and refuses its
+    delete; the leftover is unassigned (unused) and safe to remove later."""
+    if not items:
+        return None
+    return ("원복은 완료됐습니다. 다만 사용하지 않는 복제본을 삭제하지 못했습니다: "
+            + ", ".join(items) + ". 미할당 상태라 안전하며 Jira에서 나중에 삭제할 수 있습니다.")
+
+
 def _subst(value: Any, ids: dict[str, str]) -> Any:
     """Replace '@ref' tokens with the id an earlier step created for that ref."""
     if isinstance(value, str) and value.startswith("@"):
@@ -896,11 +919,11 @@ async def _apply_fork_restore(
     """Undo a path clone: first revert the in-place edits (dropping references to
     the clones), re-point to the original ITSS if the project was moved, then
     delete the clones (already in dependents-first order)."""
-    gone = True
+    essential_err: list[str] = []
     for path, restore_body in a.get("inplace_restore", []):
         resp = await client.request("PUT", path, json=restore_body)
         if not (200 <= resp.status_code < 300):
-            gone = False
+            essential_err.append(f"제자리 재지정 원복 실패({resp.status_code})")
     rp = a.get("repoint")
     if rp:
         ok, code, err = await _repoint(
@@ -908,16 +931,20 @@ async def _apply_fork_restore(
         if not ok:
             return ItemResult(target_id=change.target_id, ok=False, status_code=code,
                               error=f"원복 재지정 실패({code}). {err}"[:200]), {}
+    # essential restore done — deleting the orphaned clones is cleanup only
+    leftovers: list[str] = []
     for one_path, nid in a.get("delete", []):
         resp = await client.request("DELETE", one_path.format(id=nid))
         if not (resp.status_code < 400 or resp.status_code == 404):
-            gone = False
+            leftovers.append(_leftover_label(one_path, nid))
     undo = {"op": "isolate", "scheme_type": a["scheme_type"], "label": a["label"],
             "project_id": a["project_id"], "project_key": a["project_key"],
             "steps": a["steps"], "inplace": a.get("inplace", []),
             "repoint": rp, "restore_scheme_id": a["restore_scheme_id"]}
-    return ItemResult(target_id=change.target_id, ok=gone,
-                      error=None if gone else "일부 복원 실패"), undo
+    if essential_err:
+        return ItemResult(target_id=change.target_id, ok=False,
+                          error="; ".join(essential_err)[:200]), undo
+    return ItemResult(target_id=change.target_id, ok=True, error=_leftover_note(leftovers)), undo
 
 
 async def _publish_draft_if_any(client: WorkboxClient, ws_id: str) -> tuple[bool, str]:
@@ -1020,38 +1047,44 @@ async def _apply_workflow_restore(
             return ItemResult(target_id=change.target_id, ok=False, status_code=resp.status_code,
                               error=f"원복 실패({resp.status_code}). {WorkboxClient.short_error(resp)}"[:200]), {}
         ok, err = await _publish_draft_if_any(client, wsid)
-        gone = ok
+        if not ok:  # the mapping restore didn't publish → not actually restored
+            return ItemResult(target_id=change.target_id, ok=False,
+                              error=f"드래프트 게시 실패 — 매핑 원복이 반영되지 않았습니다. {err}"[:200]), {}
+        leftovers: list[str] = []
         try:
             await client.json("POST", _P_WF_DELETE, json={"workflowIds": [a["new_wf_id"]]})
         except UpstreamError:
-            gone = False
+            leftovers.append(_leftover_label(_P_WF_READ, a["new_wf_id"]))
         undo = {"op": "isolate_workflow", "ws_mode": "inplace", "scheme_type": "workflow",
                 "label": a["label"], "project_id": a["project_id"], "project_key": a["project_key"],
                 "ws_id": wsid, "ws_update_body": a["ws_update_body"],
                 "ws_restore_body": a["ws_restore_body"],
                 "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"]}
-        return ItemResult(target_id=change.target_id, ok=gone,
-                          error=None if gone else f"일부 원복 실패. {err}"[:200]), undo
+        return ItemResult(target_id=change.target_id, ok=True,
+                          error=_leftover_note(leftovers)), undo
 
     ok, code, err = await _repoint(
         client, _P_WFS_PROJECT, {"workflowSchemeId": a["restore_ws_id"], "projectId": a["project_id"]})
     if not ok:
         return ItemResult(target_id=change.target_id, ok=False, status_code=code,
                           error=f"원복 재지정 실패({code}). {err}"[:200]), {}
-    gone = True
+    # re-point (the essential restore) done — deleting the orphaned clones is
+    # cleanup; if Jira refuses (a just-detached workflow lingers 'active'), report
+    # success with a warning rather than failing the whole rollback.
+    leftovers: list[str] = []
     r1 = await client.request("DELETE", _P_WFS_ONE + f"/{a['new_ws_id']}")
     if not (r1.status_code < 400 or r1.status_code == 404):
-        gone = False
+        leftovers.append(_leftover_label(_P_WFS_ONE, a["new_ws_id"]))
     try:
         await client.json("POST", _P_WF_DELETE, json={"workflowIds": [a["new_wf_id"]]})
     except UpstreamError:
-        gone = False
+        leftovers.append(_leftover_label(_P_WF_READ, a["new_wf_id"]))
     undo = {"op": "isolate_workflow", "ws_mode": "clone", "scheme_type": "workflow", "label": a["label"],
             "project_id": a["project_id"], "project_key": a["project_key"],
             "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"],
             "ws_body": a["ws_body"], "restore_ws_id": a["restore_ws_id"]}
-    return ItemResult(target_id=change.target_id, ok=gone,
-                      error=None if gone else "일부 복제본 삭제 실패"), undo
+    return ItemResult(target_id=change.target_id, ok=True, status_code=code or 200,
+                      error=_leftover_note(leftovers)), undo
 
 
 async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult, dict[str, Any]]:
@@ -1119,9 +1152,11 @@ async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult,
                     "created_id_keys": a["created_id_keys"],
                     "project_path": a["project_path"], "id_body_key": a["id_body_key"],
                     "one_path": a["one_path"], "remap": a.get("remap", "")}
-            gone = resp.status_code < 400 or resp.status_code == 404
-            return ItemResult(target_id=change.target_id, ok=gone, status_code=resp.status_code,
-                              error=None if gone else WorkboxClient.short_error(resp)), undo
+            # re-point (essential) succeeded; a refused clone delete is a warning
+            leftover = None if (resp.status_code < 400 or resp.status_code == 404) else \
+                _leftover_note([_leftover_label(a["one_path"], a["delete_scheme_id"])])
+            return ItemResult(target_id=change.target_id, ok=True, status_code=code or 200,
+                              error=leftover), undo
     except asyncio.CancelledError:
         raise
     except UpstreamError as exc:
