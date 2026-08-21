@@ -348,6 +348,8 @@
   .opt.off { color: var(--muted); text-decoration: line-through; opacity: .7; }
   .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
   .iso-names { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; background: var(--surface); }
+  .sub.bad { color: var(--bad); }
+  input.input-bad { border-color: var(--bad); }
   .sd-list { display: flex; flex-wrap: wrap; gap: 4px; }
   .sd-list .opt { cursor: default; }
   /* field list: fixed layout so a long value can't force a horizontal scroll */
@@ -1546,7 +1548,9 @@
               <template x-for="f in isoNameFields()" :key="f.param">
                 <label class="field" style="margin-bottom:8px">
                   <span class="name" x-text="f.label"></span>
-                  <input type="text" x-model="isoNames[f.param]" :placeholder="f.value">
+                  <input type="text" x-model="isoNames[f.param]" :placeholder="f.value"
+                         :class="f.exists ? 'input-bad' : ''">
+                  <span class="sub bad" x-show="f.exists" x-text="'이미 있는 이름입니다: ' + f.value"></span>
                 </label>
               </template>
               <div class="row" style="gap:8px; align-items:center; margin-top:4px">
@@ -1732,11 +1736,12 @@
           </template>
 
           <template x-if="!plan.readonly">
-            <div class="row" style="margin-top:4px">
+            <div class="row" style="margin-top:4px; align-items:center; gap:10px">
               <button class="btn danger" @click="confirming = true"
-                      :disabled="running || !plan.changes.length">
+                      :disabled="running || !plan.changes.length || isoHasConflict()">
                 <span x-text="plan.changes.length"></span>건 실행
               </button>
+              <span class="sub bad" x-show="isoHasConflict()">이미 있는 이름이 있어 실행할 수 없습니다 — 위에서 이름을 바꾸고 다시 미리보기하세요.</span>
             </div>
           </template>
         </div>
@@ -2747,6 +2752,7 @@ document.addEventListener('alpine:init', () => {
     },
     // re-preview with the edited names so the plan (and what executes) matches
     applyIsoNames() { this.doPlan(); },
+    isoHasConflict() { return this.isoNameFields().some(f => f.exists); },
 
     async doExecute() {
       const total = this.plan.changes.length;

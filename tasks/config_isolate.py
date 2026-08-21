@@ -405,6 +405,43 @@ _LEFTOVER_KIND = {
 }
 
 
+#: param name → the list endpoint whose existing names we check for a collision
+_NAME_CHECK_PATH = {
+    "screen_name": _P_SCREEN_ONE,
+    "screen_scheme_name": _P_SS_ONE,
+    "itss_name": _P_ITSS_ONE,
+    "workflow_name": "/workflows/search",
+    "workflow_scheme_name": _P_WFS_ONE,
+}
+
+
+async def _name_taken(client: WorkboxClient, list_path: str, name: str) -> bool:
+    """Whether a same-kind object with exactly ``name`` already exists. Best-effort:
+    a check that itself errors returns False (never block a plan on a failed check).
+    ``queryString`` narrows the scan where the endpoint supports it and is harmless
+    where it doesn't (we still match names exactly on the client)."""
+    target = (name or "").strip()
+    if not target:
+        return False
+    try:
+        async for row in client.paginate_offset(
+            list_path, items_key="values",
+            params={"queryString": target, "maxResults": 100}, page_size=100):
+            if _sid(row.get("name")).strip() == target:
+                return True
+    except UpstreamError:
+        return False
+    return False
+
+
+async def _mark_name_conflicts(client: WorkboxClient, name_fields: list[dict[str, Any]]) -> None:
+    """Set ``exists`` on each name field so the preview can flag a collision before
+    execution (the create APIs 400 on a duplicate name)."""
+    for f in name_fields:
+        path = _NAME_CHECK_PATH.get(f.get("param", ""))
+        f["exists"] = await _name_taken(client, path, f.get("value", "")) if path else False
+
+
 def _leftover_label(one_path: str, nid: str) -> str:
     kind = one_path.strip("/").split("/")[0]
     return f"{_LEFTOVER_KIND.get(kind, kind)} #{nid}"
@@ -569,6 +606,7 @@ async def _plan_screen_fork(
         note="공유된 노드만 복제합니다. 이미 이 프로젝트 전용인 상위(화면 스킴·ITSS)는 새로 만들지 않고 "
              "제자리에서 재지정합니다. 다른 프로젝트·다른 가지는 공유 원본 그대로입니다.",
     )
+    await _mark_name_conflicts(client, name_fields)
     result = planstore.register(
         task=TASK_NAME,
         params_echo={"project": target_key, "scheme_type": "issuetypescreen",
@@ -742,6 +780,7 @@ async def _plan_workflow_fork(
         rows=[{"kind": "워크플로우", "from": wf_name, "to": new_wf_name}, ws_row],
         note=tnote,
     )
+    await _mark_name_conflicts(client, name_fields)
     result = planstore.register(
         task=TASK_NAME,
         params_echo={"project": target_key, "scheme_type": "workflow", "node_kind": "workflow"},
@@ -831,7 +870,8 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         changes=[change],
         warnings=warnings,
         tables=[table],
-        data={"isolate_names": [{"param": "clone_name", "label": f"새 {strat.label} 이름", "value": new_name}]},
+        data={"isolate_names": [{"param": "clone_name", "label": f"새 {strat.label} 이름", "value": new_name,
+                                 "exists": await _name_taken(client, strat.create_path, new_name)}]},
     )
     audit.record_plan(result)
     yield ProgressEvent(type="plan", total=1, plan=result)

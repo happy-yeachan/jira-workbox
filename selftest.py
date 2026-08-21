@@ -1010,21 +1010,30 @@ async def suite_screen_clone() -> None:
     check("rollback: redo undo recorded", undo.get("op") == "isolate", undo)
     await client.aclose()
 
-    # screen fork naming: each clone's name is overridable and echoed for the UI
+    # screen fork naming: each clone's name is overridable and echoed for the UI.
+    # The mock also answers the name-collision checks: "이미 있는 스킴" already exists.
     def fork_site(request: httpx.Request) -> httpx.Response:
         p, q = request.url.path, request.url.params
         base = "/rest/api/3"
+        qs = q.get("queryString")
         if p == f"{base}/issuetypescreenscheme":
+            if qs is not None:  # name-existence check
+                return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
             return httpx.Response(200, json={"values": [{"id": "700", "name": "원본 ITSS"}]})
         if p == f"{base}/issuetypescreenscheme/mapping":
             rows = [{"issueTypeScreenSchemeId": "700", "issueTypeId": "default", "screenSchemeId": "600"}]
             return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 100, "total": 1})
         if p == f"{base}/screenscheme":
+            if qs is not None:
+                hit = [{"id": "999", "name": qs}] if qs == "이미 있는 스킴" else []
+                return httpx.Response(200, json={"values": hit, "isLast": True, "startAt": 0, "maxResults": 100, "total": len(hit)})
             return httpx.Response(200, json={"values": [{"id": "600", "name": "원본 화면 스킴",
                                                           "screens": {"default": "500", "view": "500"}}]})
         if p == f"{base}/issuetype":
             return httpx.Response(200, json=[])
         if p == f"{base}/screens":
+            if qs is not None:
+                return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
             return httpx.Response(200, json={"values": [{"id": "500", "name": "원본 스크린"}]})
         return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
 
@@ -1044,6 +1053,23 @@ async def suite_screen_clone() -> None:
     names = {f["param"]: f["value"] for f in plan.data["isolate_names"]}
     check("screen fork: one editable name field per clone (screen+scheme+itss)",
           names == {"screen_name": "내 스크린", "screen_scheme_name": "내 화면 스킴", "itss_name": "내 ITSS"}, names)
+    check("screen fork: names checked, none taken here",
+          all(f["exists"] is False for f in plan.data["isolate_names"]), plan.data["isolate_names"])
+    await client.aclose()
+
+    # a name that already exists is flagged before execution
+    client = _client_for(fork_site)
+    Pc = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="screen",
+                    node_id="500", itss_id="700", screen_scheme_id="600",
+                    itss_shared=True, screen_scheme_shared=True,
+                    screen_name="새 스크린", screen_scheme_name="이미 있는 스킴", itss_name="새 ITSS")
+    planc = None
+    async for ev in iso._plan_screen_fork(client, Pc, "10000", "NZGE"):
+        if ev.type == "plan":
+            planc = ev.plan
+    ex = {f["param"]: f["exists"] for f in planc.data["isolate_names"]}
+    check("screen fork: existing name flagged, others clear",
+          ex == {"screen_name": False, "screen_scheme_name": True, "itss_name": False}, ex)
     await client.aclose()
 
     # defaults when no override is given (and a dedicated screen scheme → only the screen is cloned)
