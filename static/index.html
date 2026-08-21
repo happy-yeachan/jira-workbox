@@ -710,22 +710,14 @@
       </button>
     </div>
     <div style="margin-bottom:12px">
-      <div class="nav-label">스페이스 관리</div>
-      <template x-for="t in orderedTasks()" :key="t.spec.name">
-        <button @click="select(t)"
-                :aria-current="String(selected && selected.spec.name === t.spec.name)">
-          <span class="nav-ico" x-html="navIcon(t.spec.name)"></span>
-          <span class="nav-body">
-            <span class="t">
-              <span x-text="t.spec.title"></span>
-              <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
-            </span>
-            <span class="d" x-text="t.spec.description"></span>
-          </span>
-        </button>
-      </template>
-    </div>
-    <div style="margin-bottom:12px">
+      <button @click="openSpaces()"
+              :aria-current="String(!selected && landingView === 'spaces')">
+        <span class="nav-ico" x-html="navIcon('space_create')"></span>
+        <span class="nav-body">
+          <span class="t">스페이스 관리</span>
+          <span class="d">스페이스 검색 · 진단 · 생성</span>
+        </span>
+      </button>
       <button @click="openFields()"
               :aria-current="String(!selected && landingView === 'fields')">
         <span class="nav-ico" x-html="navIcon('fields')"></span>
@@ -924,6 +916,38 @@
                 </div>
               </div>
             </template>
+          </div>
+        </div>
+
+        <!-- 스페이스 관리 — search a space → 진단, or ＋ 스페이스 추가 (search-first) -->
+        <div class="dash" x-show="landingView === 'spaces'">
+          <div class="dash-h">
+            <h2>스페이스 관리</h2>
+            <span class="sub" x-show="spacemgr.loading">· 검색 중…</span>
+            <span style="flex:1"></span>
+            <input type="text" class="lic-log-search" placeholder="스페이스 키·이름으로 검색" x-model="spacemgr.q" @input.debounce.300ms="searchSpaces()">
+            <button class="btn small" @click="openSpaceCreate()">＋ 스페이스 추가</button>
+          </div>
+          <div class="sub" style="margin:0 2px 10px">스페이스를 클릭하면 설정 공유 진단(화면·워크플로우·권한 공유 여부)을 실행합니다.</div>
+          <div class="progbar" x-show="spacemgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
+          <div class="notice err" x-show="spacemgr.err" x-text="spacemgr.err" style="margin-bottom:10px"></div>
+          <div class="lic-users" x-show="!spacemgr.err">
+            <div class="lic-users-body">
+              <table class="fields-table">
+                <thead><tr><th style="width:160px">키</th><th>이름</th></tr></thead>
+                <tbody>
+                  <template x-for="p in spacemgr.list" :key="p.id">
+                    <tr class="clickrow" @click="openSpaceAudit(p)" title="클릭하면 설정 공유 진단을 실행합니다">
+                      <td class="mono" x-text="p.key"></td>
+                      <td x-text="p.name"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+              <div class="sub" x-show="spacemgr.loading && !spacemgr.list.length" style="padding:14px">검색 중…</div>
+              <div class="sub" x-show="!spacemgr.loading && !spacemgr.list.length" style="padding:12px 14px"
+                   x-text="spacemgr.q.trim() ? '검색 결과가 없습니다.' : '스페이스 키·이름으로 검색하거나, ＋ 스페이스 추가로 새로 만드세요.'"></div>
+            </div>
           </div>
         </div>
 
@@ -2044,6 +2068,7 @@ document.addEventListener('alpine:init', () => {
                 detail: null, detailLoading: false, detailErr: '', memberQ: '', memberPage: 1,
                 creating: null, delConfirm: false, delBusy: false,
                 addText: '', addBusy: false, addResults: null, _mctrl: null },
+    spacemgr: { loading: false, err: '', list: [], q: '', _ctrl: null },
     ctxEdit: null,
     ctxNew: null,
     ctxDelId: null,
@@ -2090,6 +2115,42 @@ document.addEventListener('alpine:init', () => {
       document.documentElement.setAttribute('data-theme', next);
       try { localStorage.setItem('wb-theme', next); } catch (e) {}
       this.dark = next === 'dark';
+    },
+    // ---------- 스페이스 관리 (search-first hub → 진단 / 생성) ----------
+    openSpaces() {
+      this.selected = null; this.landingView = 'spaces';
+      this.spacemgr.q = ''; this.spacemgr.list = []; this.spacemgr.err = ''; this.spacemgr.loading = false;
+    },
+    async searchSpaces() {
+      const q = (this.spacemgr.q || '').trim();
+      if (this.spacemgr._ctrl) this.spacemgr._ctrl.abort();
+      if (!q) { this.spacemgr.list = []; this.spacemgr.loading = false; this.spacemgr.err = ''; return; }
+      const ctrl = new AbortController(); this.spacemgr._ctrl = ctrl;
+      this.spacemgr.loading = true; this.spacemgr.err = '';
+      try {
+        const res = await fetch('/api/projects?q=' + encodeURIComponent(q) + '&limit=50', { signal: ctrl.signal });
+        const data = await res.json().catch(() => []);
+        if (!res.ok) { this.spacemgr.err = this.errText(data) || '스페이스 검색 실패'; this.spacemgr.list = []; return; }
+        this.spacemgr.list = Array.isArray(data) ? data : [];
+      } catch (e) { if (e.name !== 'AbortError') this.spacemgr.err = '스페이스 검색 실패: ' + e; }
+      finally { if (this.spacemgr._ctrl === ctrl) { this.spacemgr.loading = false; this.spacemgr._ctrl = null; } }
+    },
+    // click a space → run 설정 공유 진단 for it (reuses the audit task's result pane)
+    openSpaceAudit(p) {
+      const task = this.tasks.find(t => t.spec.name === 'project_config_audit');
+      if (!task) { this.spacemgr.err = '진단 작업을 찾을 수 없습니다.'; return; }
+      this.select(task);
+      this.form.project = p.key;
+      this.projectNames = { [p.key]: (p.key + (p.name ? ' · ' + p.name : '')) };
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      this.doPlan();
+    },
+    // ＋ 스페이스 추가 → open the space-create task form
+    openSpaceCreate() {
+      const task = this.tasks.find(t => t.spec.name === 'space_create');
+      if (!task) { this.spacemgr.err = '생성 작업을 찾을 수 없습니다.'; return; }
+      this.select(task);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     },
     // inline line icons for the sidebar (currentColor stroke, no external assets)
     navIcon(key) {

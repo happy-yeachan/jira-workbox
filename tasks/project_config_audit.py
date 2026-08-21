@@ -557,6 +557,8 @@ TASK = register(
             title="설정 공유 진단",
             description="프로젝트 키 하나로 이슈타입·워크플로우·보안 스킴과 화면 구성(화면·화면스킴·워크플로우 전환 화면)이 다른 프로젝트와 공유 중인지 한 번에 봅니다.",
             readonly=True,
+            # reached from the 스페이스 관리 view (click a space → 진단), not the menu
+            launcher=False,
         ),
         params_model=Params,
         plan_stream=plan_stream,

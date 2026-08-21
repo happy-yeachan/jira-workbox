@@ -351,6 +351,8 @@ TASK = register(
             title="스페이스 생성",
             description="이름·키·어드민·템플릿으로 Jira 스페이스(프로젝트)를 만듭니다.",
             danger="새 스페이스가 실제로 생성됩니다. 되돌리면 휴지통으로 이동합니다.",
+            # reached from the 스페이스 관리 view (＋ 스페이스 추가), not the menu
+            launcher=False,
         ),
         params_model=Params,
         plan_stream=plan_stream,
