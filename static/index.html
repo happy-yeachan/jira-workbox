@@ -1716,7 +1716,7 @@
     </template>
 
     <!-- ---------- run report ---------- -->
-    <template x-if="log.length">
+    <template x-if="selected && log.length">
       <div class="card" :class="runMode === 'undo' ? 'undo-run' : ''">
         <header>
           <h2 x-text="runMode === 'undo' ? '↩ 되돌리기' : '실행 결과'"></h2>
@@ -1757,7 +1757,7 @@
     </template>
 
     <!-- ---------- result ---------- -->
-    <template x-if="plan">
+    <template x-if="selected && plan">
       <div class="card">
         <header>
           <span class="step">2</span>
