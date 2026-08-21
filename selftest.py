@@ -675,6 +675,7 @@ def _org_events_client():
         _group_event("e3", "user_added_to_group", "2026-08-03T12:00:00Z", "carol@x", "project-alpha-devs"),
         _group_event("e4", "user_added_to_group", "2026-08-04T09:00:00Z", "dan@x", "jira-servicemanagement-users-hkmc-cci"),
         _group_event("e5", "user_added_to_group", "2026-08-05T09:00:00Z", "eve@x", "jira-product-discovery-users-hkmc-cci"),
+        _group_event("e6", "user_added_to_group", "2026-08-06T09:00:00Z", "root@x", "org-admins"),
     ]
     removed = [
         _group_event("e2", "user_removed_from_group", "2026-08-02T11:00:00Z", "bob@x", "confluence-users-hmg"),
@@ -707,8 +708,12 @@ async def suite_license_events() -> None:
             if row is not None:
                 rows.append(row)
     prods = sorted(r["product"] for r in rows)
-    check("non-product-access group add is skipped; products mapped",
-          prods == ["Confluence", "Jira", "Jira Product Discovery", "Jira Service Management"], prods)
+    check("non-product-access group add is skipped; products mapped (incl. org-admins)",
+          prods == ["Confluence", "Jira", "Jira Product Discovery", "Jira Service Management",
+                    "조직 관리자 (모든 제품)"], prods)
+    check("org-admins add is a license change (all products)",
+          any(r["product"] == "조직 관리자 (모든 제품)" and r["kind"] == "grant"
+              and r["user_name"] == "root@x" for r in rows), rows)
     grant = next((r for r in rows if r["product"] == "Jira"), None)
     revoke = next((r for r in rows if r["kind"] == "revoke"), None)
     check("add to jira-users → grant, product Jira, user extracted",

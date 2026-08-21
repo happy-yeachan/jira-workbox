@@ -142,10 +142,21 @@ _GROUP_PRODUCT = (
 )
 
 
+#: admin groups grant access to EVERY product by virtue of being an org/site
+#: admin, so their membership changes are license changes too.
+_ADMIN_GROUPS = ("org-admins", "site-admins")
+_ADMIN_PRODUCT = "조직 관리자 (모든 제품)"
+
 #: the distinct group-name substrings to query the audit log by — one dense
-#: query per product family, so a high-volume product (Jira) can't crowd a
-#: low-volume one (JSM) out of a shared row cap. Longest-first, deduped.
-LICENSE_GROUP_QUERIES = tuple(dict.fromkeys(prefix for prefix, _ in _GROUP_PRODUCT))
+#: query per product family (plus the admin groups), so a high-volume product
+#: (Jira) can't crowd a low-volume one (JSM) out of a shared row cap. Deduped.
+LICENSE_GROUP_QUERIES = tuple(dict.fromkeys(
+    [prefix for prefix, _ in _GROUP_PRODUCT] + list(_ADMIN_GROUPS)))
+
+
+def _is_admin_group(name: str) -> bool:
+    n = (name or "").lower().strip()
+    return n in _ADMIN_GROUPS or n.startswith("org-admin") or n.startswith("site-admin")
 
 
 def _product_for_group(name: str) -> str:
@@ -153,6 +164,8 @@ def _product_for_group(name: str) -> str:
     for prefix, product in _GROUP_PRODUCT:
         if n.startswith(prefix):
             return product
+    if _is_admin_group(n):
+        return _ADMIN_PRODUCT
     return ""
 
 

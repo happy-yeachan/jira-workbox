@@ -1836,6 +1836,7 @@ document.addEventListener('alpine:init', () => {
     logProducts: [
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
       { label: 'JSM (agent)', k: 'jsm' }, { label: 'Confluence', k: 'confluence' },
+      { label: '조직 관리자', k: 'admin' },
     ],
     logKinds: [
       { label: '전체', k: 'all' }, { label: '추가', k: 'grant' }, { label: '삭제', k: 'revoke' },
@@ -2274,13 +2275,14 @@ document.addEventListener('alpine:init', () => {
     // JSM (agent), or Jira (Software / Work Mgmt / Product Discovery all → Jira).
     productKey(p) {
       p = (p || '').toLowerCase();
+      if (p.includes('관리자') || p.includes('admin')) return 'admin';
       if (p.includes('confluence')) return 'confluence';
       if (p.includes('service management') || p.includes('service desk') || p.includes('servicedesk')) return 'jsm';
       if (p.includes('jira') || p.includes('product discovery')) return 'jira';
       return 'other';
     },
     productShort(p) {
-      return { jira: 'Jira', jsm: 'JSM (agent)', confluence: 'Confluence' }[this.productKey(p)] || (p || '—');
+      return { jira: 'Jira', jsm: 'JSM (agent)', confluence: 'Confluence', admin: '조직 관리자' }[this.productKey(p)] || (p || '—');
     },
     setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
     setLogKind(k) { this.liclog.filter = k; this.liclog.page = 1; },
