@@ -1091,6 +1091,37 @@ async def suite_screen_clone() -> None:
     await client.aclose()
 
 
+async def suite_space_create() -> None:
+    print("space_create: new project defaults to Unassigned")
+    import tasks.space_create as sc
+    from core.models import Change
+
+    puts: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        p, m = request.url.path, request.method
+        if m == "POST" and p == "/rest/api/3/project":
+            return httpx.Response(201, json={"key": "NEW", "id": "1"})
+        if m == "PUT" and p == "/rest/api/3/project/NEW":
+            puts.append(_json.loads(request.content) if request.content else {})
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+
+    client = _client_for(handler)
+    change = Change(target_id="NEW", label="새 스페이스", after={
+        "op": "create", "key": "NEW", "name": "새 스페이스",
+        "create_body": {"key": "NEW", "name": "새 스페이스", "leadAccountId": "lead-1",
+                        "projectTypeKey": "software", "projectTemplateKey": "t"}})
+    res = await sc._apply_one(client, change)
+    check("space_create: creation succeeds", res.ok and res.status_code == 201, res)
+    check("space_create: post-create PUT sets Unassigned default + lead",
+          puts == [{"assigneeType": "UNASSIGNED", "leadAccountId": "lead-1"}], puts)
+    check("space_create: assigneeType stays out of the create body (avoids a 400)",
+          "assigneeType" not in change.after["create_body"], change.after["create_body"])
+    await client.aclose()
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -1107,6 +1138,8 @@ async def main() -> None:
     await suite_field_inventory()
     print()
     await suite_screen_clone()
+    print()
+    await suite_space_create()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")

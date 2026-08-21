@@ -241,24 +241,30 @@ async def _apply_one(client: WorkboxClient, change: Change) -> ItemResult:
         return ItemResult(target_id=change.target_id, ok=False,
                           status_code=resp.status_code, error=WorkboxClient.short_error(resp))
 
-    # The project exists now. Some templates (notably custom "custom:<uuid>" ones)
-    # ignore leadAccountId on create, so set the owner explicitly — idempotent for
-    # templates that already applied it. A failure here does NOT fail the run (the
-    # project is created and rollback-able); it is reported as a caveat.
+    # The project exists now. Two post-create fixups via PUT, both idempotent and
+    # both NON-fatal (the project is created and rollback-able; a failure is a
+    # caveat, not a run failure):
+    #   * leadAccountId — some templates (notably custom "custom:<uuid>" ones)
+    #     ignore it on create, so set the owner explicitly.
+    #   * assigneeType=UNASSIGNED — Jira defaults a new project's assignee to the
+    #     project lead; we want new issues to start Unassigned. Kept out of the
+    #     create body because a tenant that disallows unassigned issues would 400
+    #     the whole create; here it only downgrades to a caveat.
+    put_body: dict[str, Any] = {"assigneeType": "UNASSIGNED"}
     lead = (change.after.get("create_body") or {}).get("leadAccountId")
     if lead:
-        try:
-            put = await client.request("PUT", _P_PROJECT_ONE.format(key=key),
-                                       json={"leadAccountId": lead})
-            if put.status_code >= 400:
-                return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code,
-                                  error=f"생성됨 · 소유자 지정 실패({put.status_code}): "
-                                        f"{WorkboxClient.short_error(put)}"[:200])
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — project exists; note the caveat
+        put_body["leadAccountId"] = lead
+    try:
+        put = await client.request("PUT", _P_PROJECT_ONE.format(key=key), json=put_body)
+        if put.status_code >= 400:
             return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code,
-                              error=f"생성됨 · 소유자 지정 오류: {type(exc).__name__}"[:200])
+                              error=f"생성됨 · 소유자·기본 담당자 설정 실패({put.status_code}): "
+                                    f"{WorkboxClient.short_error(put)}"[:200])
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — project exists; note the caveat
+        return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code,
+                          error=f"생성됨 · 소유자·기본 담당자 설정 오류: {type(exc).__name__}"[:200])
     return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code)
 
 
