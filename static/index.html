@@ -855,11 +855,11 @@
           <div x-show="!fieldmgr.detail">
             <div class="dash-h">
               <h2>필드 관리</h2>
-              <span class="sub" x-show="!fieldmgr.loading && !fieldmgr.err" x-text="fieldsCountLabel()"></span>
-              <span class="sub" x-show="fieldmgr.loading">· 불러오는 중…</span>
+              <span class="sub" x-show="!fieldmgr.loading && !fieldmgr.err && fieldmgr.list.length" x-text="fieldsCountLabel()"></span>
+              <span class="sub" x-show="fieldmgr.loading">· 검색 중…</span>
               <span style="flex:1"></span>
-              <input type="text" class="lic-log-search" placeholder="이름·유형 검색" x-model="fieldmgr.q" @input="fieldmgr.page = 1">
-              <button class="btn small ghost" @click="loadFields()" :disabled="fieldmgr.loading">새로고침</button>
+              <input type="text" class="lic-log-search" placeholder="필드 이름으로 검색" x-model="fieldmgr.q" @input.debounce.300ms="loadFields()">
+              <button class="btn small ghost" @click="loadFields()" :disabled="fieldmgr.loading || !fieldmgr.q.trim()">새로고침</button>
             </div>
             <div class="sub" style="margin:0 2px 8px">스페이스 스코프 = 컨텍스트가 걸린 프로젝트 범위(전역=모두 공통) · 화면 = 필드가 올라간 화면 수</div>
             <div class="progbar" x-show="fieldmgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
@@ -888,8 +888,9 @@
                     </template>
                   </tbody>
                 </table>
-                <div class="sub" x-show="fieldmgr.loading && !fieldmgr.list.length" style="padding:14px">필드를 불러오는 중…</div>
-                <div class="sub" x-show="!fieldmgr.loading && !filteredFields().length" style="padding:12px 14px">필드가 없습니다.</div>
+                <div class="sub" x-show="fieldmgr.loading && !fieldmgr.list.length" style="padding:14px">검색 중…</div>
+                <div class="sub" x-show="!fieldmgr.loading && !filteredFields().length" style="padding:12px 14px"
+                     x-text="fieldmgr.q.trim() ? '검색 결과가 없습니다.' : '필드 이름으로 검색하세요.'"></div>
               </div>
               <div class="lic-users-foot" x-show="fieldsPages() > 1">
                 <button class="btn small ghost" @click="setFieldsPage(fieldmgr.page - 1)" :disabled="fieldmgr.page <= 1">이전</button>
@@ -1182,9 +1183,9 @@
               <span class="sub" x-show="!groupmgr.loading && !groupmgr.err && groupmgr.list.length" x-text="groupsCountLabel()"></span>
               <span class="sub" x-show="groupmgr.loading">· 불러오는 중…</span>
               <span style="flex:1"></span>
-              <input type="text" class="lic-log-search" placeholder="그룹 이름 검색" x-model="groupmgr.q" @input="groupmgr.page = 1">
+              <input type="text" class="lic-log-search" placeholder="그룹 이름으로 검색" x-model="groupmgr.q" @input.debounce.300ms="searchGroups()">
               <button class="btn small" x-show="!groupmgr.creating" @click="newGroup()">＋ 그룹 추가</button>
-              <button class="btn small ghost" @click="loadGroups()" :disabled="groupmgr.loading">새로고침</button>
+              <button class="btn small ghost" @click="searchGroups()" :disabled="groupmgr.loading || !groupmgr.q.trim()">새로고침</button>
             </div>
             <div class="progbar" x-show="groupmgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
             <div class="notice err" x-show="groupmgr.err" x-text="groupmgr.err" style="margin-bottom:10px"></div>
@@ -1215,9 +1216,9 @@
                     </template>
                   </tbody>
                 </table>
-                <div class="sub" x-show="groupmgr.loading && !groupmgr.list.length" style="padding:14px">그룹을 불러오는 중…</div>
+                <div class="sub" x-show="groupmgr.loading && !groupmgr.list.length" style="padding:14px">검색 중…</div>
                 <div class="sub" x-show="!groupmgr.loading && !filteredGroups().length" style="padding:12px 14px"
-                     x-text="groupmgr.q.trim() ? '검색 결과가 없습니다.' : '그룹이 없습니다.'"></div>
+                     x-text="groupmgr.q.trim() ? '검색 결과가 없습니다.' : '그룹 이름으로 검색하세요.'"></div>
               </div>
               <div class="lic-users-foot" x-show="groupsPages() > 1">
                 <button class="btn small ghost" @click="setGroupsPage(groupmgr.page - 1)" :disabled="groupmgr.page <= 1">이전</button>
@@ -2091,22 +2092,22 @@ document.addEventListener('alpine:init', () => {
       finally { this.orgSetupBusy = false; }
     },
 
-    // ---------- 필드 관리 ----------
+    // ---------- 필드 관리 (search-first) ----------
     openFields() {
       this.selected = null; this.landingView = 'fields';
-      // back to the list from a clean state (a stale detail/search/page could
-      // otherwise leave the view looking blank)
       this.fieldmgr.detail = null; this.fieldmgr.q = ''; this.fieldmgr.page = 1;
-      // cached: only fetch the first time (or after 새로고침), not on every visit
-      if (!this.fieldmgr.list.length && !this.fieldmgr.loading) this.loadFields();
+      this.fieldmgr.list = []; this.fieldmgr.err = '';  // search-first: no auto-load
     },
+    // search-first: type → server field search (name), streamed; empty → prompt
     async loadFields() {
+      const q = (this.fieldmgr.q || '').trim();
       if (this.fieldmgr._ctrl) this.fieldmgr._ctrl.abort();
+      this.fieldmgr.page = 1;
+      if (!q) { this.fieldmgr.list = []; this.fieldmgr.loading = false; this.fieldmgr.err = ''; return; }
       const ctrl = new AbortController(); this.fieldmgr._ctrl = ctrl;
-      this.fieldmgr.loading = true; this.fieldmgr.err = ''; this.fieldmgr.page = 1;
-      this.fieldmgr.list = [];
+      this.fieldmgr.loading = true; this.fieldmgr.err = ''; this.fieldmgr.list = [];
       try {
-        const res = await fetch('/api/fields/stream', { signal: ctrl.signal });
+        const res = await fetch('/api/fields/stream?q=' + encodeURIComponent(q), { signal: ctrl.signal });
         if (!res.ok) { const d = await res.json().catch(() => ({})); this.fieldmgr.err = this.errText(d) || '필드 조회 실패'; return; }
         await this.readNdjson(res, (ev) => {
           if (ev.type === 'batch') {
@@ -2143,27 +2144,23 @@ document.addEventListener('alpine:init', () => {
     openGroups() {
       this.selected = null; this.landingView = 'groups';
       this.groupmgr.detail = null; this.groupmgr.q = ''; this.groupmgr.page = 1; this.groupmgr.creating = null;
+      this.groupmgr.list = []; this.groupmgr.err = '';  // search-first: no auto-load
       this.ensureOrgAdmins();  // for the 조직 관리자 tag on members
-      // stream the full directory once and cache it — search then filters
-      // client-side (complete, incl. org-admins, and instant after the load)
-      if (!this.groupmgr.list.length && !this.groupmgr.loading) this.loadGroups();
     },
-    // client-side filter fills live as the list streams; just reset the page
-    searchGroups() { this.groupmgr.page = 1; },
-    async loadGroups() {
+    // search-first: type → server looks up matching groups (no full-directory load)
+    async searchGroups() {
+      const q = (this.groupmgr.q || '').trim();
       if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
+      this.groupmgr.page = 1;
+      if (!q) { this.groupmgr.list = []; this.groupmgr.loading = false; this.groupmgr.err = ''; return; }
       const ctrl = new AbortController(); this.groupmgr._ctrl = ctrl;
-      this.groupmgr.loading = true; this.groupmgr.err = ''; this.groupmgr.page = 1; this.groupmgr.list = [];
+      this.groupmgr.loading = true; this.groupmgr.err = '';
       try {
-        const res = await fetch('/api/groups/manage/stream', { signal: ctrl.signal });
-        if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.err = this.errText(d) || '그룹 조회 실패'; return; }
-        await this.readNdjson(res, (ev) => {
-          if (ev.type === 'batch') {
-            this.groupmgr.list.push(...(ev.groups || []));
-            this.groupmgr.list.sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
-          } else if (ev.type === 'error') { this.groupmgr.err = ev.message || '그룹 조회 실패'; }
-        });
-      } catch (e) { if (e.name !== 'AbortError') this.groupmgr.err = '그룹 조회 실패: ' + e; }
+        const res = await fetch('/api/groups/manage/search?q=' + encodeURIComponent(q), { signal: ctrl.signal });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.groupmgr.err = this.errText(data) || '그룹 검색 실패'; this.groupmgr.list = []; return; }
+        this.groupmgr.list = data.groups || [];
+      } catch (e) { if (e.name !== 'AbortError') this.groupmgr.err = '그룹 검색 실패: ' + e; }
       finally { if (this.groupmgr._ctrl === ctrl) { this.groupmgr.loading = false; this.groupmgr._ctrl = null; } }
     },
     filteredGroups() {

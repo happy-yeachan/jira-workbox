@@ -667,6 +667,22 @@ async def groups_manage_stream() -> StreamingResponse:
     return _ndjson(lines)
 
 
+@app.get("/api/groups/manage/search")
+async def groups_manage_search(q: str = "") -> dict[str, object]:
+    """Search-first group lookup: name matches for ``q`` (picker + id resolve), so
+    the view never has to load the whole directory. Empty ``q`` → no results."""
+    from tasks import group_inventory
+    client = _require_client()
+    if not q.strip():
+        return {"groups": []}
+    try:
+        groups = await group_inventory.search_groups(client, q.strip())
+    except UpstreamError as exc:
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
+    return {"groups": groups}
+
+
 @app.get("/api/groups/manage/{group_id}/members/stream")
 async def group_members_stream(group_id: str) -> StreamingResponse:
     """One group's members, streamed. First a ``{type:'meta', name}`` (404-style

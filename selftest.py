@@ -1167,6 +1167,10 @@ async def suite_group_inventory() -> None:
         if p == "/rest/api/3/group/bulk":
             if q.get_list("groupId"):
                 return httpx.Response(200, json={"values": [{"groupId": "g1", "name": "팀A"}]})
+            if q.get_list("groupName"):  # resolve names → ids (search id fallback)
+                want = set(q.get_list("groupName"))
+                vals = [{"groupId": "gA", "name": "org-admins"}] if "org-admins" in want else []
+                return httpx.Response(200, json={"values": vals})
             rows = [{"groupId": "g1", "name": "팀A"}, {"groupId": "g2", "name": "팀B"}]
             return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 50, "total": 2})
         if p == "/rest/api/3/group/member":
@@ -1177,9 +1181,11 @@ async def suite_group_inventory() -> None:
             query = (q.get("query") or "")
             if query == "이미있음":
                 return httpx.Response(200, json={"groups": [{"name": "이미있음", "groupId": "gX"}]})
-            if query == "팀":  # substring search returns both teams from the server
+            if query == "팀":  # normal case: picker returns name + groupId
                 return httpx.Response(200, json={"groups": [{"name": "팀A", "groupId": "g1"},
                                                              {"name": "팀B", "groupId": "g2"}]})
+            if query == "org":  # picker returns the admin group's name but NO groupId
+                return httpx.Response(200, json={"groups": [{"name": "org-admins"}]})
             return httpx.Response(200, json={"groups": []})
         if p == "/rest/api/3/group" and m == "POST":
             body = _json.loads(request.content) if request.content else {}
@@ -1204,8 +1210,12 @@ async def suite_group_inventory() -> None:
     client = _client_for(handler)
 
     groups = [g async for g in gi.iter_groups(client)]
-    check("groups: streamed full list from /group/bulk (complete, incl. admin groups)",
-          [g["name"] for g in groups] == ["팀A", "팀B"], groups)
+    check("groups: streamed full list from /group/bulk", [g["name"] for g in groups] == ["팀A", "팀B"], groups)
+    hits = await gi.search_groups(client, "팀")
+    check("search: picker hits with ids", [g["name"] for g in hits] == ["팀A", "팀B"], hits)
+    admin = await gi.search_groups(client, "org")
+    check("search: picker name without id is resolved via bulk (finds org-admins)",
+          admin == [{"groupId": "gA", "name": "org-admins"}], admin)
     members = [m async for m in gi.iter_members(client, "g1")]
     check("members: streamed with active flag", [(m["name"], m["active"]) for m in members] == [("Alice", True), ("Bob", False)], members)
     check("group name resolved", await gi.group_name(client, "g1") == "팀A")

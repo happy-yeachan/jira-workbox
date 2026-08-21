@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from core.client import UpstreamError, WorkboxClient
+from core.concurrency import chunked
 
 _P_GROUP = "/group"
 _P_GROUP_BULK = "/group/bulk"
@@ -42,6 +43,44 @@ async def iter_groups(client: WorkboxClient) -> AsyncIterator[dict[str, str]]:
         gid = _sid(g.get("groupId"))
         if gid:
             yield {"groupId": gid, "name": _sid(g.get("name")) or gid}
+
+
+async def search_groups(client: WorkboxClient, query: str) -> list[dict[str, str]]:
+    """Groups whose name matches ``query`` — search-first, no full-directory load.
+
+    ``/groups/picker`` does the server-side substring match. On some tenants it
+    returns a group's ``name`` but not its ``groupId`` (and it can omit admin
+    groups from the id set), so any name that comes back without an id is resolved
+    to its id via ``/group/bulk?groupName=`` (exact). Deduped, sorted by name."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    picked = await client.get_json(_P_GROUPS_PICKER, params={"query": q, "maxResults": 100})
+    out: list[dict[str, str]] = []
+    need: list[str] = []
+    for r in (picked.get("groups") or []):
+        name = _sid(r.get("name"))
+        if not name:
+            continue
+        gid = _sid(r.get("groupId"))
+        if gid:
+            out.append({"groupId": gid, "name": name})
+        else:
+            need.append(name)
+    for chunk in chunked(need, 50):
+        meta = await client.get_json(_P_GROUP_BULK, params={"groupName": chunk, "maxResults": 50})
+        for g in (meta.get("values") or []):
+            gid = _sid(g.get("groupId"))
+            if gid:
+                out.append({"groupId": gid, "name": _sid(g.get("name")) or gid})
+    seen: set[str] = set()
+    dedup: list[dict[str, str]] = []
+    for g in sorted(out, key=lambda x: x["name"].lower()):
+        if g["groupId"] in seen:
+            continue
+        seen.add(g["groupId"])
+        dedup.append(g)
+    return dedup
 
 
 async def group_name(client: WorkboxClient, group_id: str) -> str | None:
@@ -128,5 +167,5 @@ async def add_members(client: WorkboxClient, group_id: str, emails: list[str]) -
     return out
 
 
-__all__ = ["iter_groups", "group_name", "iter_members", "group_exists",
+__all__ = ["iter_groups", "search_groups", "group_name", "iter_members", "group_exists",
            "create_group", "delete_group", "remove_member", "add_members", "UpstreamError"]
