@@ -142,6 +142,12 @@ _GROUP_PRODUCT = (
 )
 
 
+#: the distinct group-name substrings to query the audit log by — one dense
+#: query per product family, so a high-volume product (Jira) can't crowd a
+#: low-volume one (JSM) out of a shared row cap. Longest-first, deduped.
+LICENSE_GROUP_QUERIES = tuple(dict.fromkeys(prefix for prefix, _ in _GROUP_PRODUCT))
+
+
 def _product_for_group(name: str) -> str:
     n = (name or "").lower()
     for prefix, product in _GROUP_PRODUCT:

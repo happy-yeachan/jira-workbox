@@ -718,6 +718,11 @@ async def suite_license_events() -> None:
           revoke and revoke["user_name"] == "bob@x" and revoke["product"] == "Confluence", revoke)
     check("real JSM group (jira-servicemanagement-users) → Jira Service Management",
           any(r["product"] == "Jira Service Management" for r in rows))
+    # the log streams one dense query per product group so JSM isn't starved by Jira
+    check("per-product query terms include JSM and are deduped",
+          "jira-servicemanagement-users" in org_client.LICENSE_GROUP_QUERIES
+          and len(org_client.LICENSE_GROUP_QUERIES) == len(set(org_client.LICENSE_GROUP_QUERIES)),
+          org_client.LICENSE_GROUP_QUERIES)
     await org.aclose()
 
 

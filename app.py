@@ -721,26 +721,42 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
                             detail="조직 admin API 키가 설정되지 않았습니다. 접속 정보에서 연결하세요.")
     days = max(1, min(days, 365))
     from_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
-    queries = [
-        ("user_added_to_group", "users"),
-        ("user_removed_from_group", "users"),
-        ("product_access_granted", None),
-        ("product_access_revoked", None),
-    ]
+    # One dense query PER product group, not a single shared q="users" scan — else
+    # a high-volume product (Jira) fills the row cap first and starves a low-volume
+    # one (JSM). Each (action, product-group) query gets its own independent budget,
+    # so every product is fetched separately. product_access_* (no q) covers
+    # tenants that emit direct access events.
+    group_actions = ("user_added_to_group", "user_removed_from_group")
+    direct_actions = ("product_access_granted", "product_access_revoked")
+    plan: list[tuple[str, str | None]] = (
+        [(a, term) for a in group_actions for term in org_client.LICENSE_GROUP_QUERIES]
+        + [(a, None) for a in direct_actions])
     _BATCH = 40
+    _PER_QUERY_ROWS = 500     # classified rows kept per (action, group)
+    _PER_QUERY_SCAN = 1200    # events read per query before moving on (dense filter)
+    _TOTAL_SCAN = 40000       # runaway backstop across all queries
 
     async def lines() -> AsyncIterator[str]:
         scanned = 0
+        seen: set[str] = set()  # dedupe an event that matched more than one query
         try:
             org_id = await org.org_id()
-            for action, q in queries:
+            for action, q in plan:
                 batch: list[dict[str, object]] = []
-                got = 0
+                got = local = 0
                 async for ev in org.iter_events(org_id, from_ms=from_ms, action=action,
                                                 q=q, page_size=100):
                     scanned += 1
+                    local += 1
+                    eid = str(ev.get("id") or "")
+                    if eid and eid in seen:
+                        if local >= _PER_QUERY_SCAN:
+                            break
+                        continue
                     row = org_client.classify_license_event(ev)
                     if row is not None:
+                        if eid:
+                            seen.add(eid)
                         batch.append(row)
                         got += 1
                         if len(batch) >= _BATCH:
@@ -748,16 +764,16 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
                             batch.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
                             yield json.dumps({"type": "batch", "events": batch}, ensure_ascii=False) + "\n"
                             batch = []
-                    if got >= 1000 or scanned >= _EVENT_SCAN_CAP:
+                    if got >= _PER_QUERY_ROWS or local >= _PER_QUERY_SCAN or scanned >= _TOTAL_SCAN:
                         break
                 if batch:
                     await _enrich_display_names(batch)
                     batch.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
                     yield json.dumps({"type": "batch", "events": batch}, ensure_ascii=False) + "\n"
-                if scanned >= _EVENT_SCAN_CAP:
+                if scanned >= _TOTAL_SCAN:
                     break
             yield json.dumps({"type": "done", "scanned": scanned,
-                              "capped": scanned >= _EVENT_SCAN_CAP}, ensure_ascii=False) + "\n"
+                              "capped": scanned >= _TOTAL_SCAN}, ensure_ascii=False) + "\n"
         except asyncio.CancelledError:
             raise
         except UpstreamError as exc:
