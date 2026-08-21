@@ -468,7 +468,7 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
             limit=params.max_workflows,
         )
         async for collected, expected in scan:
-            yield _phase("scan_workflows", "워크플로우 전환 검사",
+            yield _phase("scan_workflows", f"워크플로우 전환 검사 {collected}/{expected or '?'}",
                          index=collected, total=expected)
         wf_rows, integrity = scan.result()
         index.scans.append(integrity)

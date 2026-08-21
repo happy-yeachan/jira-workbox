@@ -3367,7 +3367,16 @@ document.addEventListener('alpine:init', () => {
       } else if (ev.type === 'phase') {
         this.phase = this.PHASES[ev.phase] || (ev.phase || '').replace(/_/g, ' ');
         if (ev.index != null) { this.progress.done = ev.index; this.progress.total = ev.total ?? 0; }
-        this.push('sys', '·', `${ev.phase}${ev.message ? ': ' + ev.message : ''}`);
+        // same phase (e.g. the workflow scan ticking) updates its one line in
+        // place instead of flooding the log with identical rows
+        const text = `${ev.phase}${ev.message ? ': ' + ev.message : ''}`;
+        const last = this.log[this.log.length - 1];
+        if (last && last._phase === ev.phase) {
+          last.text = text;
+        } else {
+          this.log.push({ cls: 'sys', tag: '·', text, _phase: ev.phase });
+          this.$nextTick(() => { const el = this.$refs.log; if (el) el.scrollTop = el.scrollHeight; });
+        }
       } else if (ev.type === 'warning') {
         this.push('warn', '!', ev.message || '');
       } else if (ev.type === 'plan') {
