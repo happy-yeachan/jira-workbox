@@ -34,9 +34,9 @@
     --danger: #d92d20; --danger-hover: #b42318;
     --track: #eceef1;
     --overlay: var(--overlay);
-    --radius: 10px;
-    --shadow: 0 1px 2px rgba(16,24,40,.05);
-    --shadow-lg: 0 6px 20px rgba(16,24,40,.10);
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+    --shadow-lg: 0 8px 28px rgba(16,24,40,.12);
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
     color-scheme: light;
   }
@@ -52,7 +52,7 @@
     --bad: #ff7063; --bad-bg: rgba(255,112,99,.13); --bad-line: rgba(255,112,99,.32);
     --danger: #e5544a; --danger-hover: #f0655b;
     --track: #2c333f; --overlay: rgba(0,0,0,.6);
-    --shadow: 0 1px 2px rgba(0,0,0,.5); --shadow-lg: 0 10px 30px rgba(0,0,0,.55);
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.5); --shadow-lg: 0 12px 34px rgba(0,0,0,.6);
     color-scheme: dark;
   }
   @media (prefers-color-scheme: dark) {
@@ -67,7 +67,7 @@
       --bad: #ff7063; --bad-bg: rgba(255,112,99,.13); --bad-line: rgba(255,112,99,.32);
       --danger: #e5544a; --danger-hover: #f0655b;
       --track: #2c333f; --overlay: rgba(0,0,0,.6);
-      --shadow: 0 1px 2px rgba(0,0,0,.5); --shadow-lg: 0 10px 30px rgba(0,0,0,.55);
+      --shadow: 0 1px 2px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.5); --shadow-lg: 0 12px 34px rgba(0,0,0,.6);
       color-scheme: dark;
     }
   }
@@ -83,10 +83,16 @@
 
   /* ---------- header ---------- */
   header {
-    display: flex; align-items: center; gap: 12px;
-    padding: 0 20px; height: 52px;
+    display: flex; align-items: center; gap: 11px;
+    padding: 0 18px; height: 54px;
     background: var(--surface); border-bottom: 1px solid var(--line);
     position: sticky; top: 0; z-index: 10;
+  }
+  .logo {
+    width: 26px; height: 26px; flex: none; border-radius: 8px; display: inline-flex;
+    align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 14px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+    box-shadow: 0 2px 6px rgba(79,70,229,.35);
   }
   .brand { font-weight: 650; letter-spacing: -.01em; font-size: 15px; }
   .brand .dim { color: var(--muted); font-weight: 400; }
@@ -107,23 +113,29 @@
   }
 
   /* ---------- layout ---------- */
-  main { display: flex; align-items: flex-start; }
+  main { display: flex; align-items: stretch; }
   nav {
-    width: 248px; flex: none; padding: 16px 12px;
-    position: sticky; top: 52px; align-self: flex-start;
+    width: 236px; flex: none; padding: 12px 10px;
+    background: var(--surface); border-right: 1px solid var(--line);
+    position: sticky; top: 54px; height: calc(100vh - 54px); overflow-y: auto;
   }
   .nav-label {
     font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
     color: var(--muted); padding: 0 10px 8px;
   }
   nav button {
-    display: block; width: 100%; text-align: left; border: 0; background: none;
-    padding: 7px 10px; border-radius: 8px; cursor: pointer; font: inherit;
+    position: relative; display: flex; gap: 10px; width: 100%; text-align: left; border: 0; background: none;
+    padding: 8px 10px; border-radius: 9px; cursor: pointer; font: inherit;
     color: var(--ink-2); margin-bottom: 2px;
   }
+  .nav-ico { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--muted); }
+  .nav-ico svg { width: 18px; height: 18px; display: block; }
+  .nav-body { min-width: 0; flex: 1; }
   nav button:hover { background: var(--hover); }
-  nav button[aria-current="true"] { background: var(--accent-soft); color: var(--ink); }
+  nav button[aria-current="true"] { background: var(--accent-soft); }
+  nav button[aria-current="true"]::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
   nav button[aria-current="true"] .t { color: var(--accent); }
+  nav button[aria-current="true"] .nav-ico { color: var(--accent); }
   nav .t { font-weight: 550; font-size: 13.5px; display: block; }
   nav .d {
     font-size: 12px; color: var(--muted); display: block; margin-top: 2px;
@@ -135,7 +147,7 @@
   }
 
   section.work {
-    flex: 1; min-width: 0; padding: 14px 20px 40px;
+    flex: 1; min-width: 0; padding: 18px 22px 44px;
     display: flex; flex-direction: column; gap: 12px;
   }
   .card {
@@ -201,7 +213,7 @@
     transition: background .12s, border-color .12s, box-shadow .12s;
   }
   .btn:hover:not(:disabled) { background: var(--hover); }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(79,70,229,.28); }
   .btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
   .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .btn.danger:hover:not(:disabled) { background: var(--danger-hover); border-color: var(--danger-hover); }
@@ -528,7 +540,10 @@
 <body x-data="workbox" x-init="boot()">
 
 <header>
-  <span class="brand" @click="selected = null" title="홈으로" style="cursor:pointer">jira<span class="dim">-workbox</span></span>
+  <span class="brand" @click="selected = null; landingView = 'dashboard'" title="홈으로"
+        style="cursor:pointer; display:inline-flex; align-items:center; gap:9px">
+    <span class="logo">W</span><span>jira<span class="dim">-workbox</span></span>
+  </span>
   <template x-if="health.configured">
     <span class="status">
       <span class="dot" :class="health.connected ? 'on' : 'off'"></span>
@@ -676,35 +691,47 @@
 <main x-show="health.configured !== false && !setupOpen">
   <nav>
     <!-- fixed order: 라이선스 · 그룹 관리 · (tasks) · 필드 관리 -->
-    <div style="margin-bottom:14px">
+    <div style="margin-bottom:12px">
       <button @click="selected = null; landingView = 'dashboard'"
               :aria-current="String(!selected && landingView === 'dashboard')">
-        <span class="t">라이선스 현황</span>
-        <span class="d">시트 사용량 · 변경 로그</span>
+        <span class="nav-ico" x-html="navIcon('license')"></span>
+        <span class="nav-body">
+          <span class="t">라이선스 현황</span>
+          <span class="d">시트 사용량 · 변경 로그</span>
+        </span>
       </button>
       <button @click="openGroups()"
               :aria-current="String(!selected && landingView === 'groups')">
-        <span class="t">그룹 관리</span>
-        <span class="d">그룹 검색 · 멤버 · 생성 · 삭제</span>
+        <span class="nav-ico" x-html="navIcon('groups')"></span>
+        <span class="nav-body">
+          <span class="t">그룹 관리</span>
+          <span class="d">그룹 검색 · 멤버 · 생성 · 삭제</span>
+        </span>
       </button>
     </div>
-    <div style="margin-bottom:14px">
+    <div style="margin-bottom:12px">
       <template x-for="t in orderedTasks()" :key="t.spec.name">
         <button @click="select(t)"
                 :aria-current="String(selected && selected.spec.name === t.spec.name)">
-          <span class="t">
-            <span x-text="t.spec.title"></span>
-            <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
+          <span class="nav-ico" x-html="navIcon(t.spec.name)"></span>
+          <span class="nav-body">
+            <span class="t">
+              <span x-text="t.spec.title"></span>
+              <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
+            </span>
+            <span class="d" x-text="t.spec.description"></span>
           </span>
-          <span class="d" x-text="t.spec.description"></span>
         </button>
       </template>
     </div>
-    <div style="margin-bottom:14px">
+    <div style="margin-bottom:12px">
       <button @click="openFields()"
               :aria-current="String(!selected && landingView === 'fields')">
-        <span class="t">필드 관리</span>
-        <span class="d">커스텀 필드 검색 · 유형 · 컨텍스트</span>
+        <span class="nav-ico" x-html="navIcon('fields')"></span>
+        <span class="nav-body">
+          <span class="t">필드 관리</span>
+          <span class="d">커스텀 필드 검색 · 유형 · 컨텍스트</span>
+        </span>
       </button>
     </div>
   </nav>
@@ -2062,6 +2089,18 @@ document.addEventListener('alpine:init', () => {
       document.documentElement.setAttribute('data-theme', next);
       try { localStorage.setItem('wb-theme', next); } catch (e) {}
       this.dark = next === 'dark';
+    },
+    // inline line icons for the sidebar (currentColor stroke, no external assets)
+    navIcon(key) {
+      const svg = (b) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + b + '</svg>';
+      const I = {
+        license: '<path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="5" rx="1"/><rect x="12" y="8" width="3" height="9" rx="1"/><rect x="17" y="14" width="3" height="3" rx="1"/>',
+        groups: '<circle cx="9" cy="8" r="3.2"/><path d="M3.6 19a5.4 5.4 0 0 1 10.8 0"/><path d="M16.2 6.6a3 3 0 0 1 0 5.4"/><path d="M18.4 19a5 5 0 0 0-3-4.4"/>',
+        fields: '<path d="M20.6 13.4 13 21a2 2 0 0 1-2.8 0l-6.2-6.2a2 2 0 0 1-.6-1.4V5a2 2 0 0 1 2-2h6.4a2 2 0 0 1 1.4.6l6.4 6.4a2 2 0 0 1 0 2.8z"/><circle cx="8" cy="8" r="1.2"/>',
+        space_create: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11.5v4M10 13.5h4"/>',
+        project_config_audit: '<circle cx="11" cy="11" r="6"/><path d="m20 20-3.4-3.4"/>',
+      };
+      return svg(I[key] || '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>');
     },
     // sidebar task order (menu-visible launcher tasks only). Names not listed
     // fall to the end in their registration order.
