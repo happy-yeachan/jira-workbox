@@ -707,6 +707,22 @@ async def license_events(days: int = 30, limit: int = 1000) -> dict[str, object]
     return {"events": out, "days": days, "scanned": scanned, "capped": len(out) >= limit}
 
 
+@app.get("/api/license/org-admins")
+async def license_org_admins() -> dict[str, object]:
+    """Account ids of org/site admins — they hold every product license by virtue
+    of being an admin, so every license list flags them. Best-effort."""
+    from tasks import license_status
+    client = _require_client()
+    try:
+        admins = await license_status.org_admin_members(client)
+    except tasks.TaskInputError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except UpstreamError as exc:
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
+    return {"account_ids": sorted(admins)}
+
+
 @app.get("/api/license/events/stream")
 async def license_events_stream(days: int = 30) -> StreamingResponse:
     """Same license log as /api/license/events, but streamed as newline-delimited

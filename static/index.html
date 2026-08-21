@@ -733,18 +733,20 @@
                 <tbody>
                   <template x-for="u in pagedUsers()" :key="u.account_id">
                     <tr>
-                      <td x-text="u.name"></td>
+                      <td>
+                        <span x-text="u.name"></span>
+                        <span class="opt admin-tag" x-show="isOrgAdmin(u)" style="margin-left:6px"
+                              title="org-admins 그룹으로 모든 제품 라이선스를 가진 조직 관리자입니다">조직 관리자</span>
+                      </td>
                       <td class="u-off" x-text="u.email || '—'"></td>
                       <td x-show="dash.selApp === JSM_KEY">
                         <span class="sub" x-show="dash.jsm.loading">…</span>
                         <template x-if="!dash.jsm.loading">
                           <span class="sd-list">
-                            <span class="opt admin-tag" x-show="isOrgAdmin(u)"
-                                  title="org-admins 그룹으로 라이선스를 받은 조직 관리자입니다 (서비스데스크 배정 아님)">조직 관리자</span>
                             <template x-for="p in jsmProjectsFor(u)" :key="p.key">
                               <span class="opt" :title="p.name" x-text="p.key"></span>
                             </template>
-                            <span class="sub" x-show="!jsmProjectsFor(u).length && !isOrgAdmin(u)">—</span>
+                            <span class="sub" x-show="!jsmProjectsFor(u).length">—</span>
                           </span>
                         </template>
                       </td>
@@ -1844,7 +1846,8 @@ document.addEventListener('alpine:init', () => {
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], userQ: '', userPage: 1, userPageSize: 100,
             userCache: {}, _preloadCtrl: null,
-            jsm: { loading: false, loaded: false, map: {}, orgAdmins: [] } },
+            orgAdmins: [], _adminLoaded: false,
+            jsm: { loading: false, loaded: false, map: {} } },
     JSM_KEY: 'jira-servicedesk',
 
     async boot() {
@@ -2337,7 +2340,9 @@ document.addEventListener('alpine:init', () => {
       // Preload every product's user list in the background and cache it, so
       // opening any card is instant (the counts/donuts already show immediately).
       this.dash.userCache = {};
-      this.dash.jsm = { loading: false, loaded: false, map: {}, orgAdmins: [] };
+      this.dash.jsm = { loading: false, loaded: false, map: {} };
+      this.dash.orgAdmins = []; this.dash._adminLoaded = false;
+      this.ensureOrgAdmins();  // flag org admins across every license list
       this.preloadUsers();
       // and the license change log (org audit events), if the org key is set
       this.loadEvents();
@@ -2410,12 +2415,25 @@ document.addEventListener('alpine:init', () => {
       try {
         const res = await fetch('/api/license/jsm-agent-projects');
         const data = await res.json().catch(() => ({}));
-        if (res.ok) { this.dash.jsm.map = data.map || {}; this.dash.jsm.orgAdmins = data.org_admins || []; }
+        if (res.ok) {
+          this.dash.jsm.map = data.map || {};
+          if (!this.dash._adminLoaded && data.org_admins) { this.dash.orgAdmins = data.org_admins; this.dash._adminLoaded = true; }
+        }
       } catch (_) { /* best-effort enrichment */ }
       finally { this.dash.jsm.loading = false; this.dash.jsm.loaded = true; }
     },
+    // Org/site admins hold every product license; flag them in every list.
+    async ensureOrgAdmins() {
+      if (this.dash._adminLoaded) return;
+      try {
+        const res = await fetch('/api/license/org-admins');
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) this.dash.orgAdmins = data.account_ids || [];
+      } catch (_) { /* best-effort */ }
+      finally { this.dash._adminLoaded = true; }
+    },
     jsmProjectsFor(u) { return (this.dash.jsm.map && this.dash.jsm.map[u.account_id]) || []; },
-    isOrgAdmin(u) { return (this.dash.jsm.orgAdmins || []).includes(u.account_id); },
+    isOrgAdmin(u) { return (this.dash.orgAdmins || []).includes(u.account_id); },
     curEntry() { return this.dash.userCache[this.dash.selApp] || null; },
     usersBusy() { const e = this.curEntry(); return !!(e && e.loading); },
     usersErr() { const e = this.curEntry(); return e ? e.err : ''; },
