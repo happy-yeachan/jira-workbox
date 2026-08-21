@@ -1174,8 +1174,13 @@ async def suite_group_inventory() -> None:
                     {"accountId": "u2", "displayName": "Bob", "emailAddress": "bob@x", "active": False}]
             return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 50, "total": 2})
         if p == "/rest/api/3/groups/picker":
-            hit = [{"name": "이미있음", "groupId": "gX"}] if (q.get("query") or "") == "이미있음" else []
-            return httpx.Response(200, json={"groups": hit})
+            query = (q.get("query") or "")
+            if query == "이미있음":
+                return httpx.Response(200, json={"groups": [{"name": "이미있음", "groupId": "gX"}]})
+            if query == "팀":  # substring search returns both teams from the server
+                return httpx.Response(200, json={"groups": [{"name": "팀A", "groupId": "g1"},
+                                                             {"name": "팀B", "groupId": "g2"}]})
+            return httpx.Response(200, json={"groups": []})
         if p == "/rest/api/3/group" and m == "POST":
             body = _json.loads(request.content) if request.content else {}
             calls["post"].append(body.get("name"))
@@ -1199,7 +1204,10 @@ async def suite_group_inventory() -> None:
     client = _client_for(handler)
 
     groups = [g async for g in gi.iter_groups(client)]
-    check("groups: streamed list", [g["name"] for g in groups] == ["팀A", "팀B"], groups)
+    check("groups: streamed full list", [g["name"] for g in groups] == ["팀A", "팀B"], groups)
+    searched = [g async for g in gi.iter_groups(client, query="팀")]
+    check("groups: search hits the server-side picker (results without full load)",
+          [g["name"] for g in searched] == ["팀A", "팀B"], searched)
     members = [m async for m in gi.iter_members(client, "g1")]
     check("members: streamed with active flag", [(m["name"], m["active"]) for m in members] == [("Alice", True), ("Bob", False)], members)
     check("group name resolved", await gi.group_name(client, "g1") == "팀A")

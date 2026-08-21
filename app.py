@@ -634,9 +634,11 @@ def _ndjson(gen_factory) -> StreamingResponse:
 
 
 @app.get("/api/groups/manage/stream")
-async def groups_manage_stream() -> StreamingResponse:
-    """Every group, streamed as NDJSON batches so the list fills as pages arrive.
-    Events: ``{type:'batch', groups:[…]}`` then ``{type:'done', count}``."""
+async def groups_manage_stream(q: str = "") -> StreamingResponse:
+    """Groups streamed as NDJSON batches so the list fills as pages arrive. With
+    ``q`` the matches come back immediately (server-side picker) instead of after
+    the whole directory streams. Events: ``{type:'batch', groups:[…]}`` then
+    ``{type:'done', count}``."""
     from tasks import group_inventory
     client = _require_client()
 
@@ -644,7 +646,7 @@ async def groups_manage_stream() -> StreamingResponse:
         buf: list[dict[str, object]] = []
         n = 0
         try:
-            async for g in group_inventory.iter_groups(client):
+            async for g in group_inventory.iter_groups(client, query=q):
                 buf.append(g)
                 n += 1
                 if len(buf) >= 100:

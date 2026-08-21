@@ -31,9 +31,23 @@ def _sid(v: Any) -> str:
     return "" if v is None else str(v)
 
 
-async def iter_groups(client: WorkboxClient) -> AsyncIterator[dict[str, str]]:
-    """Every group (id + name), streamed page by page. Search is client-side, so
-    the list can start rendering before the whole directory is read."""
+async def iter_groups(client: WorkboxClient, query: str = "") -> AsyncIterator[dict[str, str]]:
+    """Groups streamed as ``{groupId, name}``.
+
+    With a ``query`` we hit ``/groups/picker`` (server-side substring match) so a
+    search returns its hits immediately instead of waiting for the whole
+    directory to stream. Without one we page the full list via ``/group/bulk``."""
+    q = (query or "").strip()
+    if q:
+        try:
+            picked = await client.get_json(_P_GROUPS_PICKER, params={"query": q, "maxResults": 200})
+        except UpstreamError:
+            return
+        for g in (picked.get("groups") or []):
+            gid = _sid(g.get("groupId"))
+            if gid:
+                yield {"groupId": gid, "name": _sid(g.get("name")) or gid}
+        return
     async for g in client.paginate_offset(
         _P_GROUP_BULK, items_key="values", params={"maxResults": 50}, page_size=50):
         gid = _sid(g.get("groupId"))

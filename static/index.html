@@ -1182,7 +1182,7 @@
               <span class="sub" x-show="!groupmgr.loading && !groupmgr.err" x-text="groupsCountLabel()"></span>
               <span class="sub" x-show="groupmgr.loading">· 불러오는 중…</span>
               <span style="flex:1"></span>
-              <input type="text" class="lic-log-search" placeholder="그룹 이름 검색" x-model="groupmgr.q" @input="groupmgr.page = 1">
+              <input type="text" class="lic-log-search" placeholder="그룹 이름 검색" x-model="groupmgr.q" @input.debounce.300ms="searchGroups()">
               <button class="btn small" x-show="!groupmgr.creating" @click="newGroup()">＋ 그룹 추가</button>
               <button class="btn small ghost" @click="loadGroups()" :disabled="groupmgr.loading">새로고침</button>
             </div>
@@ -1959,7 +1959,7 @@ document.addEventListener('alpine:init', () => {
     landingView: 'dashboard',
     fieldmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50,
                 detail: null, detailLoading: false, detailErr: '', editing: null, _ctrl: null },
-    groupmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50, _ctrl: null,
+    groupmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50, _ctrl: null, _loadedQ: '',
                 detail: null, detailLoading: false, detailErr: '', memberQ: '', memberPage: 1,
                 creating: null, delConfirm: false, delBusy: false,
                 addText: '', addBusy: false, addResults: null, _mctrl: null },
@@ -2143,14 +2143,20 @@ document.addEventListener('alpine:init', () => {
       this.selected = null; this.landingView = 'groups';
       this.groupmgr.detail = null; this.groupmgr.q = ''; this.groupmgr.page = 1; this.groupmgr.creating = null;
       this.ensureOrgAdmins();  // for the 조직 관리자 tag on members
-      if (!this.groupmgr.list.length && !this.groupmgr.loading) this.loadGroups();
+      // reload if never loaded, or if what's shown is a stale search result set
+      if ((!this.groupmgr.list.length || this.groupmgr._loadedQ) && !this.groupmgr.loading) this.loadGroups();
     },
+    // typing re-queries the server (picker) so matches show immediately, without
+    // waiting for the whole directory to stream in
+    searchGroups() { this.loadGroups(); },
     async loadGroups() {
       if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
       const ctrl = new AbortController(); this.groupmgr._ctrl = ctrl;
       this.groupmgr.loading = true; this.groupmgr.err = ''; this.groupmgr.page = 1; this.groupmgr.list = [];
+      this.groupmgr._loadedQ = (this.groupmgr.q || '').trim();
       try {
-        const res = await fetch('/api/groups/manage/stream', { signal: ctrl.signal });
+        const res = await fetch('/api/groups/manage/stream?q=' + encodeURIComponent(this.groupmgr.q || ''),
+                                { signal: ctrl.signal });
         if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.err = this.errText(d) || '그룹 조회 실패'; return; }
         await this.readNdjson(res, (ev) => {
           if (ev.type === 'batch') {
