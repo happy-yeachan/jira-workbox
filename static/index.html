@@ -1179,7 +1179,7 @@
           <div x-show="!groupmgr.detail">
             <div class="dash-h">
               <h2>그룹 관리</h2>
-              <span class="sub" x-show="!groupmgr.loading && !groupmgr.err" x-text="groupsCountLabel()"></span>
+              <span class="sub" x-show="!groupmgr.loading && !groupmgr.err && groupmgr.list.length" x-text="groupsCountLabel()"></span>
               <span class="sub" x-show="groupmgr.loading">· 불러오는 중…</span>
               <span style="flex:1"></span>
               <input type="text" class="lic-log-search" placeholder="그룹 이름 검색" x-model="groupmgr.q" @input.debounce.300ms="searchGroups()">
@@ -1215,8 +1215,14 @@
                     </template>
                   </tbody>
                 </table>
-                <div class="sub" x-show="groupmgr.loading && !groupmgr.list.length" style="padding:14px">그룹을 불러오는 중…</div>
-                <div class="sub" x-show="!groupmgr.loading && !filteredGroups().length" style="padding:12px 14px">그룹이 없습니다.</div>
+                <div class="sub" x-show="groupmgr.loading && !groupmgr.list.length" style="padding:14px">불러오는 중…</div>
+                <div class="sub" x-show="!groupmgr.loading && !filteredGroups().length" style="padding:14px">
+                  <template x-if="!groupmgr.q.trim()">
+                    <span>그룹 이름으로 검색하세요. 전체를 보려면
+                      <a href="#" @click.prevent="loadGroups()" style="text-decoration:underline">전체 목록 불러오기</a>.</span>
+                  </template>
+                  <template x-if="groupmgr.q.trim()"><span>검색 결과가 없습니다.</span></template>
+                </div>
               </div>
               <div class="lic-users-foot" x-show="groupsPages() > 1">
                 <button class="btn small ghost" @click="setGroupsPage(groupmgr.page - 1)" :disabled="groupmgr.page <= 1">이전</button>
@@ -2143,12 +2149,22 @@ document.addEventListener('alpine:init', () => {
       this.selected = null; this.landingView = 'groups';
       this.groupmgr.detail = null; this.groupmgr.q = ''; this.groupmgr.page = 1; this.groupmgr.creating = null;
       this.ensureOrgAdmins();  // for the 조직 관리자 tag on members
-      // reload if never loaded, or if what's shown is a stale search result set
-      if ((!this.groupmgr.list.length || this.groupmgr._loadedQ) && !this.groupmgr.loading) this.loadGroups();
+      // Do NOT auto-stream the whole directory (thousands of groups → slow, and it
+      // competes with search). Start on the search prompt; a query hits the fast
+      // server picker, or the operator can explicitly load all.
+      if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
+      this.groupmgr.list = []; this.groupmgr._loadedQ = ''; this.groupmgr.loading = false; this.groupmgr.err = '';
     },
-    // typing re-queries the server (picker) so matches show immediately, without
-    // waiting for the whole directory to stream in
-    searchGroups() { this.loadGroups(); },
+    // typing hits the server picker directly (fast); an empty box clears back to
+    // the prompt instead of dumping the whole directory
+    searchGroups() {
+      if (!(this.groupmgr.q || '').trim()) {
+        if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
+        this.groupmgr.list = []; this.groupmgr._loadedQ = ''; this.groupmgr.page = 1; this.groupmgr.loading = false;
+        return;
+      }
+      this.loadGroups();
+    },
     async loadGroups() {
       if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
       const ctrl = new AbortController(); this.groupmgr._ctrl = ctrl;
