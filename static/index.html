@@ -131,6 +131,8 @@
   .nav-ico { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--muted); }
   .nav-ico svg { width: 18px; height: 18px; display: block; }
   .nav-body { min-width: 0; flex: 1; }
+  .nav-x { flex: none; color: var(--muted); font-size: 12px; padding: 0 2px; border-radius: 4px; }
+  .nav-x:hover { color: var(--bad); background: var(--hover); }
   nav button:hover { background: var(--hover); }
   nav button[aria-current="true"] { background: var(--accent-soft); }
   nav button[aria-current="true"]::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
@@ -540,7 +542,7 @@
 <body x-data="workbox" x-init="boot()">
 
 <header>
-  <span class="brand" @click="selected = null; landingView = 'dashboard'" title="홈으로"
+  <span class="brand" @click="landingView = 'dashboard'" title="홈으로"
         style="cursor:pointer; display:inline-flex; align-items:center; gap:9px">
     <span class="logo">W</span><span>jira<span class="dim">-workbox</span></span>
   </span>
@@ -690,10 +692,26 @@
 
 <main x-show="health.configured !== false && !setupOpen">
   <nav>
+    <!-- current task (kept while you browse other tabs; ✕ closes it) -->
+    <template x-if="selected">
+      <div style="margin-bottom:12px">
+        <div class="nav-label">현재 작업</div>
+        <button @click="landingView = 'task'" :aria-current="String(landingView === 'task')">
+          <span class="nav-ico" x-html="navIcon(selected.spec.name)"></span>
+          <span class="nav-body">
+            <span class="t" style="display:flex; align-items:center; gap:6px">
+              <span x-text="selected.spec.title" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis"></span>
+              <span class="nav-x" @click.stop="closeTask()" title="작업 닫기">✕</span>
+            </span>
+            <span class="d" x-text="running ? '진행 중…' : (plan ? '미리보기 준비됨' : (log.length ? '실행 완료' : '작성 중'))"></span>
+          </span>
+        </button>
+      </div>
+    </template>
     <!-- fixed order: 라이선스 · 그룹 관리 · (tasks) · 필드 관리 -->
     <div style="margin-bottom:12px">
-      <button @click="selected = null; landingView = 'dashboard'"
-              :aria-current="String(!selected && landingView === 'dashboard')">
+      <button @click="landingView = 'dashboard'"
+              :aria-current="String(landingView === 'dashboard')">
         <span class="nav-ico" x-html="navIcon('license')"></span>
         <span class="nav-body">
           <span class="t">라이선스 현황</span>
@@ -701,7 +719,7 @@
         </span>
       </button>
       <button @click="openGroups()"
-              :aria-current="String(!selected && landingView === 'groups')">
+              :aria-current="String(landingView === 'groups')">
         <span class="nav-ico" x-html="navIcon('groups')"></span>
         <span class="nav-body">
           <span class="t">그룹 관리</span>
@@ -711,7 +729,7 @@
     </div>
     <div style="margin-bottom:12px">
       <button @click="openSpaces()"
-              :aria-current="String(!selected && landingView === 'spaces')">
+              :aria-current="String(landingView === 'spaces')">
         <span class="nav-ico" x-html="navIcon('space_create')"></span>
         <span class="nav-body">
           <span class="t">스페이스 관리</span>
@@ -719,7 +737,7 @@
         </span>
       </button>
       <button @click="openFields()"
-              :aria-current="String(!selected && landingView === 'fields')">
+              :aria-current="String(landingView === 'fields')">
         <span class="nav-ico" x-html="navIcon('fields')"></span>
         <span class="nav-body">
           <span class="t">필드 관리</span>
@@ -732,7 +750,7 @@
   <section class="work">
     <!-- landing kept in the DOM (x-show, not x-if) so switching to a task and
          back doesn't destroy/recreate it — the field/log views stay rendered -->
-    <div class="landing-wrap" x-show="!selected">
+    <div class="landing-wrap" x-show="landingView !== 'task'">
         <div class="hero" x-show="landingView === 'dashboard'">
           <h1>워크박스</h1>
           <p class="sub">왼쪽에서 작업을 고르거나, 아래 라이선스 현황·변경 로그를 확인하세요. 변경 작업은 실행 전에 항상 미리보기로 대상을 확인하고, 실행한 뒤에는 <b>작업 기록</b>에서 되돌릴 수 있습니다.</p>
@@ -1405,7 +1423,7 @@
     </div>
 
     <!-- ---------- parameters ---------- -->
-    <template x-if="selected">
+    <template x-if="selected && landingView === 'task'">
       <div class="card narrow">
         <header>
           <span class="step">1</span>
@@ -1716,7 +1734,7 @@
     </template>
 
     <!-- ---------- run report ---------- -->
-    <template x-if="selected && log.length">
+    <template x-if="landingView === 'task' && log.length">
       <div class="card" :class="runMode === 'undo' ? 'undo-run' : ''">
         <header>
           <h2 x-text="runMode === 'undo' ? '↩ 되돌리기' : '실행 결과'"></h2>
@@ -1757,7 +1775,7 @@
     </template>
 
     <!-- ---------- result ---------- -->
-    <template x-if="selected && plan">
+    <template x-if="landingView === 'task' && plan">
       <div class="card">
         <header>
           <span class="step">2</span>
@@ -2118,7 +2136,7 @@ document.addEventListener('alpine:init', () => {
     },
     // ---------- 스페이스 관리 (search-first hub → 진단 / 생성) ----------
     openSpaces() {
-      this.selected = null; this.landingView = 'spaces';
+      this.landingView = 'spaces';
       this.spacemgr.q = ''; this.spacemgr.list = []; this.spacemgr.err = ''; this.spacemgr.loading = false;
     },
     async searchSpaces() {
@@ -2260,7 +2278,7 @@ document.addEventListener('alpine:init', () => {
 
     // ---------- 필드 관리 (search-first) ----------
     openFields() {
-      this.selected = null; this.landingView = 'fields';
+      this.landingView = 'fields';
       this.fieldmgr.detail = null; this.fieldmgr.q = ''; this.fieldmgr.page = 1;
       this.fieldmgr.list = []; this.fieldmgr.err = '';  // search-first: no auto-load
     },
@@ -2308,7 +2326,7 @@ document.addEventListener('alpine:init', () => {
 
     // ---------- 그룹 관리 (custom view, streamed like 필드 관리) ----------
     openGroups() {
-      this.selected = null; this.landingView = 'groups';
+      this.landingView = 'groups';
       this.groupmgr.detail = null; this.groupmgr.q = ''; this.groupmgr.page = 1; this.groupmgr.creating = null;
       this.groupmgr.list = []; this.groupmgr.err = '';  // search-first: no auto-load
       this.ensureOrgAdmins();  // for the 조직 관리자 tag on members
@@ -2995,8 +3013,14 @@ document.addEventListener('alpine:init', () => {
       return p;
     },
 
+    // close the current task workspace and go back to the dashboard
+    closeTask() {
+      if (this.controller) { try { this.controller.abort(); } catch (e) {} }
+      this.selected = null; this.plan = null; this.resetRun(); this.error = '';
+      if (this.landingView === 'task') this.landingView = 'dashboard';
+    },
     select(task) {
-      this.selected = task;
+      this.selected = task; this.landingView = 'task';  // show the task workspace
       this.plan = null; this.error = ''; this.isolateParams = null; this.isoNames = {}; this.resetRun();
       this.gp = { q: '', results: [], loading: false, err: '' }; this.groupNames = {};
       this.up = { q: '', results: [], loading: false, err: '' }; this.userNames = {};
