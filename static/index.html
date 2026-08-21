@@ -622,39 +622,36 @@
 
 <main x-show="health.configured !== false && !setupOpen">
   <nav>
+    <!-- fixed order: 라이선스 · 그룹 관리 · (tasks) · 필드 관리 -->
     <div style="margin-bottom:14px">
       <button @click="selected = null; landingView = 'dashboard'"
               :aria-current="String(!selected && landingView === 'dashboard')">
         <span class="t">라이선스 현황</span>
         <span class="d">시트 사용량 · 변경 로그</span>
       </button>
+      <button @click="openGroups()"
+              :aria-current="String(!selected && landingView === 'groups')">
+        <span class="t">그룹 관리</span>
+        <span class="d">그룹 검색 · 멤버 · 생성 · 삭제</span>
+      </button>
     </div>
-    <template x-for="group in groups" :key="group.name">
-      <div style="margin-bottom:14px">
-        <div class="nav-label" x-text="group.name"></div>
-        <template x-for="t in group.tasks" :key="t.spec.name">
-          <button @click="select(t)"
-                  :aria-current="String(selected && selected.spec.name === t.spec.name)">
-            <span class="t">
-              <span x-text="t.spec.title"></span>
-              <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
-            </span>
-            <span class="d" x-text="t.spec.description"></span>
-          </button>
-        </template>
-      </div>
-    </template>
-    <!-- field / group management pinned to the bottom of the nav -->
+    <div style="margin-bottom:14px">
+      <template x-for="t in orderedTasks()" :key="t.spec.name">
+        <button @click="select(t)"
+                :aria-current="String(selected && selected.spec.name === t.spec.name)">
+          <span class="t">
+            <span x-text="t.spec.title"></span>
+            <template x-if="t.spec.readonly"><span class="pill">조회</span></template>
+          </span>
+          <span class="d" x-text="t.spec.description"></span>
+        </button>
+      </template>
+    </div>
     <div style="margin-bottom:14px">
       <button @click="openFields()"
               :aria-current="String(!selected && landingView === 'fields')">
         <span class="t">필드 관리</span>
-        <span class="d">커스텀 필드 목록·유형·컨텍스트</span>
-      </button>
-      <button @click="openGroups()"
-              :aria-current="String(!selected && landingView === 'groups')">
-        <span class="t">그룹 관리</span>
-        <span class="d">그룹 목록·멤버·생성·삭제</span>
+        <span class="d">커스텀 필드 검색 · 유형 · 컨텍스트</span>
       </button>
     </div>
   </nav>
@@ -1997,16 +1994,17 @@ document.addEventListener('alpine:init', () => {
       // the license dashboard is the landing headline — load it as soon as we
       // have working credentials (and again after the operator connects)
       if (this.health.configured) this.loadDashboard();
-      // the server already orders by category, so grouping is a fold; tasks with
-      // launcher:false (e.g. 설정 분리) stay in `tasks` for lookup but off the menu
-      this.groups = this.tasks.filter(t => t.spec.launcher !== false).reduce((acc, t) => {
-        const name = t.spec.category || '기타';
-        const last = acc[acc.length - 1];
-        if (last && last.name === name) last.tasks.push(t);
-        else acc.push({ name, tasks: [t] });
-        return acc;
-      }, []);
       // no auto-select: land on the overview, let the operator choose
+    },
+    // sidebar task order (menu-visible launcher tasks only). Names not listed
+    // fall to the end in their registration order.
+    orderedTasks() {
+      const ORDER = ['space_create', 'project_config_audit'];
+      const rank = (n) => { const i = ORDER.indexOf(n); return i < 0 ? ORDER.length : i; };
+      return this.tasks
+        .filter(t => t.spec.launcher !== false)
+        .slice()
+        .sort((a, b) => rank(a.spec.name) - rank(b.spec.name));
     },
 
     async refreshHealth() {
