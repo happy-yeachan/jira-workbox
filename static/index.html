@@ -347,6 +347,7 @@
   .opt { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: #f6f7f9; }
   .opt.off { color: var(--muted); text-decoration: line-through; opacity: .7; }
   .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+  .iso-names { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; background: var(--surface); }
   .sd-list { display: flex; flex-wrap: wrap; gap: 4px; }
   .sd-list .opt { cursor: default; }
   /* field list: fixed layout so a long value can't force a horizontal scroll */
@@ -1538,6 +1539,23 @@
             · 내려받기는 이 화면에서 만들어집니다 (서버는 디스크에 아무것도 쓰지 않습니다)
           </div>
 
+          <!-- config_isolate: edit the name of each clone that will be created -->
+          <template x-if="isoNameFields().length && !running">
+            <div class="iso-names">
+              <div class="name" style="margin-bottom:8px">새 이름 지정</div>
+              <template x-for="f in isoNameFields()" :key="f.param">
+                <label class="field" style="margin-bottom:8px">
+                  <span class="name" x-text="f.label"></span>
+                  <input type="text" x-model="isoNames[f.param]" :placeholder="f.value">
+                </label>
+              </template>
+              <div class="row" style="gap:8px; align-items:center; margin-top:4px">
+                <button class="btn small" @click="applyIsoNames()" :disabled="planning">이름 적용 후 다시 미리보기</button>
+                <span class="sub">이름을 바꾸면 다시 미리보기를 눌러야 실행에 반영됩니다.</span>
+              </div>
+            </div>
+          </template>
+
           <!-- write tasks: before/after diff -->
           <template x-if="!configTree() && !plan.tables.length">
             <div class="tablewrap">
@@ -1777,6 +1795,7 @@ document.addEventListener('alpine:init', () => {
     health: {}, tasks: [], groups: [], selected: null, fields: [], form: {},
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
+    isoNames: {},  // config_isolate: editable name per clone that will be created
     batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [],
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
@@ -2453,7 +2472,7 @@ document.addEventListener('alpine:init', () => {
 
     select(task) {
       this.selected = task;
-      this.plan = null; this.error = ''; this.isolateParams = null; this.resetRun();
+      this.plan = null; this.error = ''; this.isolateParams = null; this.isoNames = {}; this.resetRun();
       this.gp = { q: '', results: [], loading: false, err: '' }; this.groupNames = {};
       this.up = { q: '', results: [], loading: false, err: '' }; this.userNames = {};
       this.pp = { q: '', results: [], loading: false, err: '' }; this.projectNames = {};
@@ -2496,6 +2515,12 @@ document.addEventListener('alpine:init', () => {
       if (this.selected?.spec.name === 'config_isolate' && this.isolateParams) {
         for (const [k, v] of Object.entries(this.isolateParams)) {
           if (k !== 'project') out[k] = v;  // project is a rendered form field
+        }
+      }
+      // edited clone names (config_isolate) — override the computed defaults
+      if (this.selected?.spec.name === 'config_isolate') {
+        for (const [k, v] of Object.entries(this.isoNames)) {
+          if (typeof v === 'string' && v.trim()) out[k] = v.trim();
         }
       }
       return out;
@@ -2701,6 +2726,7 @@ document.addEventListener('alpine:init', () => {
           await this.readStream(res.body.getReader());
         } else {
           this.plan = await res.json();
+          this.syncIsoNames();
         }
       } catch (e) {
         if (e.name === 'AbortError') { this.status = '중단됨'; this.push('sys', '·', '사용자가 중단'); }
@@ -2709,6 +2735,18 @@ document.addEventListener('alpine:init', () => {
         this.planning = false; this.controller = null; this.phase = '';
       }
     },
+
+    // config_isolate: the plan echoes an editable name per clone it will create.
+    isoNameFields() {
+      return (this.selected?.spec.name === 'config_isolate' && this.plan?.data?.isolate_names) || [];
+    },
+    syncIsoNames() {
+      const out = {};
+      for (const f of this.isoNameFields()) out[f.param] = f.value;
+      this.isoNames = out;
+    },
+    // re-preview with the edited names so the plan (and what executes) matches
+    applyIsoNames() { this.doPlan(); },
 
     async doExecute() {
       const total = this.plan.changes.length;
@@ -2808,6 +2846,7 @@ document.addEventListener('alpine:init', () => {
         this.push('warn', '!', ev.message || '');
       } else if (ev.type === 'plan') {
         this.plan = ev.plan;
+        this.syncIsoNames();
         this.status = ev.plan && ev.plan.complete === false ? '완료 (불완전)' : '완료';
         this.push('sys', '·', `결과 ${ev.total ?? 0}건`);
         this.logOpen = false;

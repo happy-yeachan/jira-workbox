@@ -244,12 +244,16 @@ class Params(BaseModel):
     itss_shared: bool = Field(default=True, json_schema_extra={"hidden": True})
     screen_scheme_shared: bool = Field(default=True, json_schema_extra={"hidden": True})
     ws_shared: bool = Field(default=True, json_schema_extra={"hidden": True})
-    clone_name: str = Field(
-        default="",
-        title="새 스킴 이름",
-        description="비워두면 '{프로젝트키}: {원래 이름}'으로 만듭니다. 미리보기에서 확인하세요.",
-        json_schema_extra={"advanced": True},
-    )
+    # New-clone names. Left empty they default to "{KEY}: {원래 이름}"; the preview
+    # echoes the effective names (see PlanResult.data["isolate_names"]) and the UI
+    # lets the operator edit each clone that will actually be created, so these
+    # are hidden inputs the UI fills, not fields on the initial form.
+    clone_name: str = Field(default="", json_schema_extra={"hidden": True})          # generic whole-scheme
+    screen_name: str = Field(default="", json_schema_extra={"hidden": True})
+    screen_scheme_name: str = Field(default="", json_schema_extra={"hidden": True})
+    itss_name: str = Field(default="", json_schema_extra={"hidden": True})
+    workflow_name: str = Field(default="", json_schema_extra={"hidden": True})
+    workflow_scheme_name: str = Field(default="", json_schema_extra={"hidden": True})
 
     @field_validator("project")
     @classmethod
@@ -459,8 +463,8 @@ async def _plan_screen_fork(
     served = [m["issueTypeId"] for m in mappings if m["screenSchemeId"] == ss_id]
     it_lab = _it_label(served, it_names)
     kp = target_key
-    ss_clone = f"{kp}: {it_lab} 화면 스킴"
-    itss_clone = f"{kp}: 전체 이슈 유형 화면 스킴"
+    ss_clone = params.screen_scheme_name.strip() or f"{kp}: {it_lab} 화면 스킴"
+    itss_clone = params.itss_name.strip() or f"{kp}: 전체 이슈 유형 화면 스킴"
 
     # Only SHARED ancestors are cloned. A dedicated ancestor is already
     # target-private, so we edit it *in place* (repoint its child reference) and
@@ -469,6 +473,7 @@ async def _plan_screen_fork(
     steps: list[dict[str, Any]] = []       # clones, in dependency order
     inplace: list[dict[str, Any]] = []     # in-place edits (applied after clones)
     plan_rows: list[dict[str, Any]] = []
+    name_fields: list[dict[str, str]] = []  # editable name per clone actually created
     repoint: dict[str, Any] | None = None
 
     # ---- leaf + screen scheme -------------------------------------------------
@@ -478,18 +483,20 @@ async def _plan_screen_fork(
         sc_meta = await client.get_json(_P_SCREEN_ONE, params={"id": [screen_id]})
         sc_row = next((x for x in (sc_meta.get("values") or []) if _sid(x.get("id")) == screen_id), {})
         sc_name = _sid(sc_row.get("name")) or f"#{screen_id}"
-        sc_clone = f"{kp}: {it_lab} 스크린"
+        sc_clone = params.screen_name.strip() or f"{kp}: {it_lab} 스크린"
         steps.append({"ref": "screen", "create_path": _P_SCREEN_ONE, "one_path": _P_SCREEN_ONE + "/{id}",
                       "created_id_keys": ["id"], "copy_from": screen_id,
                       "body": {"name": sc_clone,
                                **({"description": sc_row["description"][:255]} if sc_row.get("description") else {})}})
         plan_rows.append({"kind": "스크린", "from": sc_name, "to": sc_clone})
+        name_fields.append({"param": "screen_name", "label": "스크린 이름", "value": sc_clone})
         new_screens = {op: ("@screen" if sid == screen_id else sid) for op, sid in ss_screens.items()}
         if params.screen_scheme_shared:
             steps.append({"ref": "screen_scheme", "create_path": _P_SS_ONE, "one_path": _P_SS_ONE + "/{id}",
                           "created_id_keys": ["id"],
                           "body": {"name": ss_clone, "screens": new_screens}})
             plan_rows.append({"kind": "화면 스킴", "from": ss_name, "to": ss_clone})
+            name_fields.append({"param": "screen_scheme_name", "label": "화면 스킴 이름", "value": ss_clone})
             rewritten_ss = "@screen_scheme"
         else:
             # dedicated screen scheme: point its operation at the new screen in place
@@ -503,6 +510,7 @@ async def _plan_screen_fork(
                       "created_id_keys": ["id"],
                       "body": {"name": ss_clone, "screens": ss_screens}})
         plan_rows.append({"kind": "화면 스킴", "from": ss_name, "to": ss_clone})
+        name_fields.append({"param": "screen_scheme_name", "label": "화면 스킴 이름", "value": ss_clone})
         rewritten_ss = "@screen_scheme"
 
     # ---- ITSS (only when a screen scheme clone needs re-referencing) ----------
@@ -515,6 +523,7 @@ async def _plan_screen_fork(
                           "created_id_keys": ["id"],
                           "body": {"name": itss_clone, "issueTypeMappings": new_mappings}})
             plan_rows.append({"kind": "이슈 유형 화면 스킴", "from": itss_name, "to": itss_clone})
+            name_fields.append({"param": "itss_name", "label": "이슈 유형 화면 스킴 이름", "value": itss_clone})
             repoint = {"project_path": _P_ITSS_PROJECT,
                        "id_body_key": "issueTypeScreenSchemeId", "ref": "itss"}
         else:
@@ -566,6 +575,7 @@ async def _plan_screen_fork(
                      "node_kind": params.node_kind},
         changes=[change],
         tables=[table],
+        data={"isolate_names": name_fields},
     )
     audit.record_plan(result)
     yield ProgressEvent(type="plan", total=1, plan=result)
@@ -668,8 +678,12 @@ async def _plan_workflow_fork(
     if default_wf == wf_name:
         served.append("default")
     it_lab = _it_label(served, it_names)
-    new_wf_name = f"{target_key}: {it_lab} 워크플로우"
-    new_ws_name = f"{target_key}: 전체 워크플로우 스킴"
+    new_wf_name = params.workflow_name.strip() or f"{target_key}: {it_lab} 워크플로우"
+    new_ws_name = params.workflow_scheme_name.strip() or f"{target_key}: 전체 워크플로우 스킴"
+    name_fields: list[dict[str, str]] = [
+        {"param": "workflow_name", "label": "워크플로우 이름", "value": new_wf_name}]
+    if params.ws_shared:  # a shared workflow scheme is cloned → its name is editable too
+        name_fields.append({"param": "workflow_scheme_name", "label": "워크플로우 스킴 이름", "value": new_ws_name})
 
     yield ProgressEvent(type="phase", phase="workflow", message="워크플로우 정의 읽기")
     read = await client.json("POST", _P_WF_READ, json={"workflowNames": [wf_name]})
@@ -732,6 +746,7 @@ async def _plan_workflow_fork(
         task=TASK_NAME,
         params_echo={"project": target_key, "scheme_type": "workflow", "node_kind": "workflow"},
         changes=[change], warnings=warnings, tables=[table],
+        data={"isolate_names": name_fields},
     )
     audit.record_plan(result)
     yield ProgressEvent(type="plan", total=1, plan=result)
@@ -816,6 +831,7 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         changes=[change],
         warnings=warnings,
         tables=[table],
+        data={"isolate_names": [{"param": "clone_name", "label": f"새 {strat.label} 이름", "value": new_name}]},
     )
     audit.record_plan(result)
     yield ProgressEvent(type="plan", total=1, plan=result)

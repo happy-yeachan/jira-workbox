@@ -1010,6 +1010,60 @@ async def suite_screen_clone() -> None:
     check("rollback: redo undo recorded", undo.get("op") == "isolate", undo)
     await client.aclose()
 
+    # screen fork naming: each clone's name is overridable and echoed for the UI
+    def fork_site(request: httpx.Request) -> httpx.Response:
+        p, q = request.url.path, request.url.params
+        base = "/rest/api/3"
+        if p == f"{base}/issuetypescreenscheme":
+            return httpx.Response(200, json={"values": [{"id": "700", "name": "원본 ITSS"}]})
+        if p == f"{base}/issuetypescreenscheme/mapping":
+            rows = [{"issueTypeScreenSchemeId": "700", "issueTypeId": "default", "screenSchemeId": "600"}]
+            return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 100, "total": 1})
+        if p == f"{base}/screenscheme":
+            return httpx.Response(200, json={"values": [{"id": "600", "name": "원본 화면 스킴",
+                                                          "screens": {"default": "500", "view": "500"}}]})
+        if p == f"{base}/issuetype":
+            return httpx.Response(200, json=[])
+        if p == f"{base}/screens":
+            return httpx.Response(200, json={"values": [{"id": "500", "name": "원본 스크린"}]})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+
+    client = _client_for(fork_site)
+    P = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="screen",
+                   node_id="500", itss_id="700", screen_scheme_id="600",
+                   itss_shared=True, screen_scheme_shared=True,
+                   screen_name="내 스크린", screen_scheme_name="내 화면 스킴", itss_name="내 ITSS")
+    plan = None
+    async for ev in iso._plan_screen_fork(client, P, "10000", "NZGE"):
+        if ev.type == "plan":
+            plan = ev.plan
+    tos = {r["kind"]: r["to"] for r in plan.tables[0].rows}
+    check("screen fork: overridden clone names used",
+          tos.get("스크린") == "내 스크린" and tos.get("화면 스킴") == "내 화면 스킴"
+          and tos.get("이슈 유형 화면 스킴") == "내 ITSS", tos)
+    names = {f["param"]: f["value"] for f in plan.data["isolate_names"]}
+    check("screen fork: one editable name field per clone (screen+scheme+itss)",
+          names == {"screen_name": "내 스크린", "screen_scheme_name": "내 화면 스킴", "itss_name": "내 ITSS"}, names)
+    await client.aclose()
+
+    # defaults when no override is given (and a dedicated screen scheme → only the screen is cloned)
+    client = _client_for(fork_site)
+    P2 = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="screen",
+                    node_id="500", itss_id="700", screen_scheme_id="600",
+                    itss_shared=False, screen_scheme_shared=False)
+    plan2 = None
+    async for ev in iso._plan_screen_fork(client, P2, "10000", "NZGE"):
+        if ev.type == "plan":
+            plan2 = ev.plan
+    names2 = [f["param"] for f in plan2.data["isolate_names"]]
+    check("screen fork: dedicated ancestors → only the screen name is offered",
+          names2 == ["screen_name"], names2)
+    check("screen fork: default name is {KEY}: … 스크린",
+          plan2.data["isolate_names"][0]["value"].startswith("NZGE:")
+          and plan2.data["isolate_names"][0]["value"].endswith("스크린"),
+          plan2.data["isolate_names"][0]["value"])
+    await client.aclose()
+
 
 async def main() -> None:
     await suite_write_task()
