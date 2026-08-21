@@ -354,15 +354,24 @@ async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, s
             except UpstreamError:
                 continue
             for a in (data.get("actors") or []):
+                atype = _sid(a.get("type")).lower()
+                ag = a.get("actorGroup") or {}
+                is_group = "group" in atype or bool(ag)
+                if is_group:
+                    # group actors grant a seat to every member — the "included via
+                    # a group" case. groupId when present, else resolve the name
+                    # (payloads sometimes carry it at the top level, not in actorGroup).
+                    gid = _sid(ag.get("groupId"))
+                    if not gid:
+                        gid = await resolve_gid(_sid(ag.get("name")) or _sid(a.get("name"))
+                                                or _sid(a.get("displayName")))
+                    if gid:
+                        accts |= await group_members(gid)
+                    continue
                 au = a.get("actorUser") or {}
-                aid = _sid(au.get("accountId"))
+                aid = _sid(au.get("accountId")) or _sid(a.get("actorUserAccountId"))
                 if aid:
                     accts.add(aid)
-                    continue
-                ag = a.get("actorGroup") or {}
-                gid = _sid(ag.get("groupId")) or await resolve_gid(_sid(ag.get("name")))
-                if gid:
-                    accts |= await group_members(gid)
         return accts
 
     by_acct: dict[str, list[dict[str, str]]] = {}
