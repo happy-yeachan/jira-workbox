@@ -259,6 +259,37 @@ async def application_users(
 _P_PROJECT_SEARCH = "/project/search"
 _P_ROLE = "/role"
 
+#: admin groups that grant a product seat by virtue of being an org/site admin,
+#: not by a real agent assignment — members are flagged separately in the UI
+_ADMIN_GROUP_NAMES = ("org-admins", "site-admins")
+
+
+async def org_admin_members(client: WorkboxClient) -> set[str]:
+    """Account ids of users in the org-/site-admin groups. Their JSM seat comes
+    from being an admin, not from a service-desk assignment, so the UI marks them
+    apart. Best-effort → empty set if the groups aren't visible."""
+    gids: list[str] = []
+    try:
+        picked = await client.get_json(_P_GROUPS_PICKER, params={"query": "admin", "maxResults": 50})
+    except UpstreamError:
+        return set()
+    for g in (picked.get("groups") or []):
+        nm = _sid(g.get("name")).strip().lower()
+        if (nm in _ADMIN_GROUP_NAMES or nm.startswith("org-admin") or nm.startswith("site-admin")) and g.get("groupId"):
+            gids.append(_sid(g["groupId"]))
+    out: set[str] = set()
+    for gid in gids:
+        try:
+            async for m in client.paginate_offset(
+                _P_GROUP_MEMBER, items_key="values",
+                params={"groupId": gid, "includeInactiveUsers": "false"}, page_size=50):
+                aid = _sid(m.get("accountId"))
+                if aid and m.get("active") is not False:
+                    out.add(aid)
+        except UpstreamError:
+            continue
+    return out
+
 
 async def _service_desk_projects(client: WorkboxClient) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []

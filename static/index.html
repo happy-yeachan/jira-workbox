@@ -352,6 +352,8 @@
   input.input-bad { border-color: var(--bad); }
   .sd-list { display: flex; flex-wrap: wrap; gap: 4px; }
   .sd-list .opt { cursor: default; }
+  .opt.admin-tag { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+  @media (prefers-color-scheme: dark) { .opt.admin-tag { background: #3b2f0b; border-color: #7c5e12; color: #fde68a; } }
   /* field list: fixed layout so a long value can't force a horizontal scroll */
   .fields-table { table-layout: fixed; width: 100%; }
   .fields-table td, .fields-table th { overflow: hidden; text-overflow: ellipsis; word-break: break-word; }
@@ -736,10 +738,12 @@
                         <span class="sub" x-show="dash.jsm.loading">…</span>
                         <template x-if="!dash.jsm.loading">
                           <span class="sd-list">
+                            <span class="opt admin-tag" x-show="isOrgAdmin(u)"
+                                  title="org-admins 그룹으로 라이선스를 받은 조직 관리자입니다 (서비스데스크 배정 아님)">조직 관리자</span>
                             <template x-for="p in jsmProjectsFor(u)" :key="p.key">
                               <span class="opt" :title="p.name" x-text="p.key"></span>
                             </template>
-                            <span class="sub" x-show="!jsmProjectsFor(u).length">—</span>
+                            <span class="sub" x-show="!jsmProjectsFor(u).length && !isOrgAdmin(u)">—</span>
                           </span>
                         </template>
                       </td>
@@ -1832,7 +1836,7 @@ document.addEventListener('alpine:init', () => {
     dash: { loading: false, err: '', apps: [], selApp: '', selAppName: '',
             users: [], userQ: '', userPage: 1, userPageSize: 100,
             userCache: {}, _preloadCtrl: null,
-            jsm: { loading: false, loaded: false, map: {} } },
+            jsm: { loading: false, loaded: false, map: {}, orgAdmins: [] } },
     JSM_KEY: 'jira-servicedesk',
 
     async boot() {
@@ -2306,7 +2310,7 @@ document.addEventListener('alpine:init', () => {
       // Preload every product's user list in the background and cache it, so
       // opening any card is instant (the counts/donuts already show immediately).
       this.dash.userCache = {};
-      this.dash.jsm = { loading: false, loaded: false, map: {} };
+      this.dash.jsm = { loading: false, loaded: false, map: {}, orgAdmins: [] };
       this.preloadUsers();
       // and the license change log (org audit events), if the org key is set
       this.loadEvents();
@@ -2379,11 +2383,12 @@ document.addEventListener('alpine:init', () => {
       try {
         const res = await fetch('/api/license/jsm-agent-projects');
         const data = await res.json().catch(() => ({}));
-        if (res.ok) this.dash.jsm.map = data.map || {};
+        if (res.ok) { this.dash.jsm.map = data.map || {}; this.dash.jsm.orgAdmins = data.org_admins || []; }
       } catch (_) { /* best-effort enrichment */ }
       finally { this.dash.jsm.loading = false; this.dash.jsm.loaded = true; }
     },
     jsmProjectsFor(u) { return (this.dash.jsm.map && this.dash.jsm.map[u.account_id]) || []; },
+    isOrgAdmin(u) { return (this.dash.jsm.orgAdmins || []).includes(u.account_id); },
     curEntry() { return this.dash.userCache[this.dash.selApp] || null; },
     usersBusy() { const e = this.curEntry(); return !!(e && e.loading); },
     usersErr() { const e = this.curEntry(); return e ? e.err : ''; },

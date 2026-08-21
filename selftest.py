@@ -564,6 +564,23 @@ async def suite_license_users() -> None:
     check("agent map: group id under actorGroup.id is expanded too",
           [x["key"] for x in amap.get("a5", [])] == ["SD2"], amap.get("a5"))
     await client.aclose()
+
+    # org-admins: members are flagged as licensed via the admin group
+    def admin_site(request: httpx.Request) -> httpx.Response:
+        p, q = request.url.path, request.url.params
+        if p == "/rest/api/3/groups/picker":
+            return httpx.Response(200, json={"groups": [
+                {"name": "org-admins", "groupId": "gAdmin"},
+                {"name": "jira-admins-helper", "groupId": "gOther"}]})
+        if p == "/rest/api/3/group/member":
+            rows = [{"accountId": "boss", "active": True}] if q.get("groupId") == "gAdmin" else []
+            return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 50, "total": len(rows)})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+
+    client = _client_for(admin_site)
+    admins = await lic.org_admin_members(client)
+    check("org-admins: only the admin group's members are flagged", admins == {"boss"}, admins)
+    await client.aclose()
     set_client(None)
 
 

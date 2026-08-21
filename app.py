@@ -816,11 +816,12 @@ async def jsm_agent_projects() -> dict[str, object]:
     client = _require_client()
     try:
         mapping = await license_status.agent_project_map(client)
+        admins = await license_status.org_admin_members(client)
     except tasks.TaskInputError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except UpstreamError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
-    return {"map": mapping}
+    return {"map": mapping, "org_admins": sorted(admins)}
 
 
 def _tpl_label(node: dict[str, object]) -> str:
