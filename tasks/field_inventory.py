@@ -14,6 +14,7 @@ module.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from core.client import UpstreamError, WorkboxClient
@@ -72,39 +73,51 @@ def type_label(custom_key: str) -> str:
     return suffix
 
 
-async def fetch_fields(client: WorkboxClient, query: str = "") -> list[dict[str, Any]]:
-    """Every custom field as a display-ready record. Raises UpstreamError; the
-    endpoint maps 401/403 to a clear permission message."""
+def _field_record(f: dict[str, Any]) -> dict[str, Any]:
+    schema = f.get("schema") or {}
+    projects = _int(f.get("projectsCount"))
+    contexts = _int(f.get("contextsCount"))
+    last = f.get("lastUsed") or {}
+    last_val = _sid(last.get("value")) if isinstance(last, dict) else ""
+    return {
+        "id": _sid(f.get("id")), "key": _sid(f.get("key")),
+        "name": _sid(f.get("name")) or _sid(f.get("id")),
+        "type": type_label(_sid(schema.get("custom"))),
+        "type_key": _sid(schema.get("custom")),
+        "value_type": _sid(schema.get("type")),
+        "searcher": (_sid(f.get("searcherKey")).split(":")[-1] or "검색 안 됨"),
+        "searcher_key": _sid(f.get("searcherKey")),
+        "contexts": contexts,
+        "projects": projects,
+        "space_scoped": projects > 0,
+        "screens": _int(f.get("screensCount")),
+        "locked": bool(f.get("isLocked")),
+        "last_used": last_val[:10] if last_val else "",
+    }
+
+
+def _field_search_params(query: str) -> dict[str, Any]:
     params: dict[str, Any] = {
         "type": ["custom"],
         "expand": "searcherKey,projectsCount,contextsCount,screensCount,lastUsed,isLocked,key",
     }
     if query.strip():
         params["query"] = query.strip()
+    return params
 
-    out: list[dict[str, Any]] = []
+
+async def iter_fields(client: WorkboxClient, query: str = "") -> AsyncIterator[dict[str, Any]]:
+    """Stream custom-field records page by page (unsorted — the caller/UI sorts),
+    so the 필드 관리 list can render as it loads."""
     async for f in client.paginate_offset(_P_FIELD_SEARCH, items_key="values",
-                                           params=params, page_size=50):
-        schema = f.get("schema") or {}
-        projects = _int(f.get("projectsCount"))
-        contexts = _int(f.get("contextsCount"))
-        last = f.get("lastUsed") or {}
-        last_val = _sid(last.get("value")) if isinstance(last, dict) else ""
-        out.append({
-            "id": _sid(f.get("id")), "key": _sid(f.get("key")),
-            "name": _sid(f.get("name")) or _sid(f.get("id")),
-            "type": type_label(_sid(schema.get("custom"))),
-            "type_key": _sid(schema.get("custom")),
-            "value_type": _sid(schema.get("type")),
-            "searcher": (_sid(f.get("searcherKey")).split(":")[-1] or "검색 안 됨"),
-            "searcher_key": _sid(f.get("searcherKey")),
-            "contexts": contexts,
-            "projects": projects,
-            "space_scoped": projects > 0,
-            "screens": _int(f.get("screensCount")),
-            "locked": bool(f.get("isLocked")),
-            "last_used": last_val[:10] if last_val else "",
-        })
+                                           params=_field_search_params(query), page_size=50):
+        yield _field_record(f)
+
+
+async def fetch_fields(client: WorkboxClient, query: str = "") -> list[dict[str, Any]]:
+    """Every custom field as a display-ready record, sorted by name. Raises
+    UpstreamError; the endpoint maps 401/403 to a clear permission message."""
+    out = [rec async for rec in iter_fields(client, query)]
     out.sort(key=lambda r: r["name"].lower())
     return out
 

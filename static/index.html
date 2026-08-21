@@ -644,12 +644,17 @@
         </template>
       </div>
     </template>
-    <!-- field management pinned to the bottom of the nav -->
+    <!-- field / group management pinned to the bottom of the nav -->
     <div style="margin-bottom:14px">
       <button @click="openFields()"
               :aria-current="String(!selected && landingView === 'fields')">
         <span class="t">필드 관리</span>
         <span class="d">커스텀 필드 목록·유형·컨텍스트</span>
+      </button>
+      <button @click="openGroups()"
+              :aria-current="String(!selected && landingView === 'groups')">
+        <span class="t">그룹 관리</span>
+        <span class="d">그룹 목록·멤버·생성·삭제</span>
       </button>
     </div>
   </nav>
@@ -1165,6 +1170,132 @@
                 <div class="sub" x-show="!fieldmgr.detailLoading && !fieldmgr.detail.contexts.length" style="padding:12px 2px">컨텍스트가 없습니다.</div>
               </div>
             </template>
+          </div>
+        </div>
+
+        <!-- 그룹 관리 — list (search + pagination + 추가) / detail (members) -->
+        <div class="dash" x-show="landingView === 'groups'">
+          <!-- LIST -->
+          <div x-show="!groupmgr.detail">
+            <div class="dash-h">
+              <h2>그룹 관리</h2>
+              <span class="sub" x-show="!groupmgr.loading && !groupmgr.err" x-text="groupsCountLabel()"></span>
+              <span class="sub" x-show="groupmgr.loading">· 불러오는 중…</span>
+              <span style="flex:1"></span>
+              <input type="text" class="lic-log-search" placeholder="그룹 이름 검색" x-model="groupmgr.q" @input="groupmgr.page = 1">
+              <button class="btn small" x-show="!groupmgr.creating" @click="newGroup()">＋ 그룹 추가</button>
+              <button class="btn small ghost" @click="loadGroups()" :disabled="groupmgr.loading">새로고침</button>
+            </div>
+            <div class="progbar" x-show="groupmgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
+            <div class="notice err" x-show="groupmgr.err" x-text="groupmgr.err" style="margin-bottom:10px"></div>
+            <template x-if="groupmgr.creating">
+              <div class="ctx-card" style="border-color: var(--accent, #2563eb)">
+                <div class="ctx-head"><b>새 그룹</b></div>
+                <div class="ctx-editor">
+                  <label class="field"><span class="name">그룹 이름</span>
+                    <input type="text" x-model="groupmgr.creating.name" placeholder="예: my-team" @keydown.enter="createGroup()"></label>
+                  <div class="notice err" x-show="groupmgr.creating.err" x-text="groupmgr.creating.err" style="margin-top:8px"></div>
+                  <div class="row" style="margin-top:10px; gap:8px">
+                    <button class="btn primary small" @click="createGroup()" :disabled="groupmgr.creating.busy || !groupmgr.creating.name.trim()"
+                            x-text="groupmgr.creating.busy ? '생성 중…' : '그룹 생성'"></button>
+                    <button class="btn ghost small" @click="groupmgr.creating = null" :disabled="groupmgr.creating.busy">취소</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div class="lic-users" x-show="!groupmgr.err">
+              <div class="lic-users-body">
+                <table class="fields-table">
+                  <thead><tr><th>그룹 이름</th></tr></thead>
+                  <tbody>
+                    <template x-for="g in pagedGroups()" :key="g.groupId">
+                      <tr class="clickrow" @click="openGroupDetail(g)" title="클릭하면 멤버를 봅니다">
+                        <td x-text="g.name"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div class="sub" x-show="groupmgr.loading && !groupmgr.list.length" style="padding:14px">그룹을 불러오는 중…</div>
+                <div class="sub" x-show="!groupmgr.loading && !filteredGroups().length" style="padding:12px 14px">그룹이 없습니다.</div>
+              </div>
+              <div class="lic-users-foot" x-show="groupsPages() > 1">
+                <button class="btn small ghost" @click="setGroupsPage(groupmgr.page - 1)" :disabled="groupmgr.page <= 1">이전</button>
+                <span class="sub"><b x-text="groupmgr.page"></b> / <span x-text="groupsPages()"></span> 페이지</span>
+                <button class="btn small ghost" @click="setGroupsPage(groupmgr.page + 1)" :disabled="groupmgr.page >= groupsPages()">다음</button>
+              </div>
+            </div>
+          </div>
+          <!-- DETAIL -->
+          <div x-show="groupmgr.detail">
+            <div class="dash-h">
+              <button class="btn small ghost" @click="closeGroupDetail()">← 목록</button>
+              <h2 x-text="groupmgr.detail && groupmgr.detail.name"></h2>
+              <span class="sub" x-show="!groupmgr.detailLoading" x-text="'멤버 ' + (groupmgr.detail ? groupmgr.detail.members.length : 0) + '명'"></span>
+              <span class="sub" x-show="groupmgr.detailLoading">· 불러오는 중…</span>
+              <span style="flex:1"></span>
+              <template x-if="!groupmgr.delConfirm">
+                <button class="btn small ghost" @click="groupmgr.delConfirm = true">그룹 삭제</button>
+              </template>
+              <template x-if="groupmgr.delConfirm">
+                <span style="display:flex; gap:6px; align-items:center">
+                  <span class="sub bad">삭제하면 멤버의 접근·라이선스가 회수됩니다.</span>
+                  <button class="btn danger small" @click="deleteGroup()" :disabled="groupmgr.delBusy" x-text="groupmgr.delBusy ? '삭제 중…' : '삭제 확정'"></button>
+                  <button class="btn ghost small" @click="groupmgr.delConfirm = false" :disabled="groupmgr.delBusy">취소</button>
+                </span>
+              </template>
+            </div>
+            <div class="progbar" x-show="groupmgr.detailLoading" style="margin-bottom:10px; border-radius:2px"></div>
+            <div class="notice err" x-show="groupmgr.detailErr" x-text="groupmgr.detailErr" style="margin-bottom:10px"></div>
+            <!-- add members -->
+            <div class="iso-names">
+              <div class="name" style="margin-bottom:6px">멤버 추가 (이메일)</div>
+              <div class="opt-bulk">
+                <textarea rows="3" placeholder="이메일 — 한 줄에 하나" x-model="groupmgr.addText"></textarea>
+                <button class="btn small" @click="addGroupMembers()" :disabled="groupmgr.addBusy || !groupmgr.addText.trim()"
+                        x-text="groupmgr.addBusy ? '추가 중…' : '추가'"></button>
+              </div>
+              <template x-if="groupmgr.addResults">
+                <div class="opt-list" style="margin-top:8px">
+                  <template x-for="r in groupmgr.addResults" :key="r.email">
+                    <span class="opt" :class="r.status === 'error' ? 'off' : ''" :title="r.note || ''">
+                      <span x-text="r.email"></span> · <span x-text="{added:'추가됨', skip:'건너뜀', error:'실패'}[r.status] || r.status"></span>
+                    </span>
+                  </template>
+                </div>
+              </template>
+            </div>
+            <!-- member list -->
+            <div class="lic-users">
+              <div class="lic-users-h">
+                <h3>멤버</h3>
+                <input type="text" placeholder="이름·이메일 검색" x-model="groupmgr.memberQ" @input="groupmgr.memberPage = 1">
+              </div>
+              <div class="lic-users-body">
+                <table class="fields-table">
+                  <thead><tr><th style="width:40%">이름</th><th>이메일</th><th style="width:80px"></th></tr></thead>
+                  <tbody>
+                    <template x-for="m in pagedMembers()" :key="m.account_id">
+                      <tr>
+                        <td>
+                          <span x-text="m.name"></span>
+                          <span class="u-tag" x-show="!m.active" style="margin-left:6px">비활성</span>
+                          <span class="opt admin-tag" x-show="isOrgAdmin(m)" style="margin-left:6px">조직 관리자</span>
+                        </td>
+                        <td class="u-off" x-text="m.email || '—'"></td>
+                        <td><button class="btn small ghost" @click="removeGroupMember(m)" :disabled="m._removing">제거</button></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div class="sub" x-show="groupmgr.detailLoading && !groupmgr.detail.members.length" style="padding:14px">멤버를 불러오는 중…</div>
+                <div class="sub" x-show="!groupmgr.detailLoading && !filteredMembers().length" style="padding:12px 14px">멤버가 없습니다.</div>
+              </div>
+              <div class="lic-users-foot" x-show="memberPages() > 1">
+                <button class="btn small ghost" @click="setMemberPage(groupmgr.memberPage - 1)" :disabled="groupmgr.memberPage <= 1">이전</button>
+                <span class="sub"><b x-text="groupmgr.memberPage"></b> / <span x-text="memberPages()"></span> 페이지</span>
+                <button class="btn small ghost" @click="setMemberPage(groupmgr.memberPage + 1)" :disabled="groupmgr.memberPage >= memberPages()">다음</button>
+              </div>
+            </div>
           </div>
         </div>
     </div>
@@ -1827,7 +1958,11 @@ document.addEventListener('alpine:init', () => {
     KEEP_TOKEN: ' keep-token ', KEEP_ORG: ' keep-org ',
     landingView: 'dashboard',
     fieldmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50,
-                detail: null, detailLoading: false, detailErr: '', editing: null },
+                detail: null, detailLoading: false, detailErr: '', editing: null, _ctrl: null },
+    groupmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50, _ctrl: null,
+                detail: null, detailLoading: false, detailErr: '', memberQ: '', memberPage: 1,
+                creating: null, delConfirm: false, delBusy: false,
+                addText: '', addBusy: false, addResults: null, _mctrl: null },
     ctxEdit: null,
     ctxNew: null,
     ctxDelId: null,
@@ -1965,14 +2100,21 @@ document.addEventListener('alpine:init', () => {
       if (!this.fieldmgr.list.length && !this.fieldmgr.loading) this.loadFields();
     },
     async loadFields() {
+      if (this.fieldmgr._ctrl) this.fieldmgr._ctrl.abort();
+      const ctrl = new AbortController(); this.fieldmgr._ctrl = ctrl;
       this.fieldmgr.loading = true; this.fieldmgr.err = ''; this.fieldmgr.page = 1;
+      this.fieldmgr.list = [];
       try {
-        const res = await fetch('/api/fields');
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) { this.fieldmgr.err = this.errText(data) || '필드 조회 실패'; this.fieldmgr.list = []; return; }
-        this.fieldmgr.list = data.fields || [];
-      } catch (e) { this.fieldmgr.err = '필드 조회 실패: ' + e; }
-      finally { this.fieldmgr.loading = false; }
+        const res = await fetch('/api/fields/stream', { signal: ctrl.signal });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.fieldmgr.err = this.errText(d) || '필드 조회 실패'; return; }
+        await this.readNdjson(res, (ev) => {
+          if (ev.type === 'batch') {
+            this.fieldmgr.list.push(...(ev.fields || []));
+            this.fieldmgr.list.sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
+          } else if (ev.type === 'error') { this.fieldmgr.err = ev.message || '필드 조회 실패'; }
+        });
+      } catch (e) { if (e.name !== 'AbortError') this.fieldmgr.err = '필드 조회 실패: ' + e; }
+      finally { if (this.fieldmgr._ctrl === ctrl) { this.fieldmgr.loading = false; this.fieldmgr._ctrl = null; } }
     },
     filteredFields() {
       const q = (this.fieldmgr.q || '').trim().toLowerCase();
@@ -1994,6 +2136,152 @@ document.addEventListener('alpine:init', () => {
     fieldsCountLabel() {
       const n = this.filteredFields().length, total = this.fieldmgr.list.length;
       return (n === total ? ('총 ' + total + '개') : (n + ' / ' + total + '개'));
+    },
+
+    // ---------- 그룹 관리 (custom view, streamed like 필드 관리) ----------
+    openGroups() {
+      this.selected = null; this.landingView = 'groups';
+      this.groupmgr.detail = null; this.groupmgr.q = ''; this.groupmgr.page = 1; this.groupmgr.creating = null;
+      this.ensureOrgAdmins();  // for the 조직 관리자 tag on members
+      if (!this.groupmgr.list.length && !this.groupmgr.loading) this.loadGroups();
+    },
+    async loadGroups() {
+      if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
+      const ctrl = new AbortController(); this.groupmgr._ctrl = ctrl;
+      this.groupmgr.loading = true; this.groupmgr.err = ''; this.groupmgr.page = 1; this.groupmgr.list = [];
+      try {
+        const res = await fetch('/api/groups/manage/stream', { signal: ctrl.signal });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.err = this.errText(d) || '그룹 조회 실패'; return; }
+        await this.readNdjson(res, (ev) => {
+          if (ev.type === 'batch') {
+            this.groupmgr.list.push(...(ev.groups || []));
+            this.groupmgr.list.sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
+          } else if (ev.type === 'error') { this.groupmgr.err = ev.message || '그룹 조회 실패'; }
+        });
+      } catch (e) { if (e.name !== 'AbortError') this.groupmgr.err = '그룹 조회 실패: ' + e; }
+      finally { if (this.groupmgr._ctrl === ctrl) { this.groupmgr.loading = false; this.groupmgr._ctrl = null; } }
+    },
+    filteredGroups() {
+      const q = (this.groupmgr.q || '').trim().toLowerCase();
+      if (!q) return this.groupmgr.list;
+      return this.groupmgr.list.filter(g => (g.name || '').toLowerCase().includes(q));
+    },
+    pagedGroups() {
+      const list = this.filteredGroups(), size = this.groupmgr.pageSize;
+      let page = this.groupmgr.page;
+      const pages = Math.max(1, Math.ceil(list.length / size));
+      if (page > pages) { page = pages; this.groupmgr.page = pages; }
+      return list.slice((page - 1) * size, page * size);
+    },
+    groupsPages() { return Math.max(1, Math.ceil(this.filteredGroups().length / this.groupmgr.pageSize)); },
+    setGroupsPage(p) { this.groupmgr.page = Math.max(1, Math.min(p, this.groupsPages())); },
+    groupsCountLabel() {
+      const n = this.filteredGroups().length, total = this.groupmgr.list.length;
+      return (n === total ? ('총 ' + total + '개') : (n + ' / ' + total + '개'));
+    },
+    newGroup() { this.groupmgr.creating = { name: '', busy: false, err: '' }; },
+    async createGroup() {
+      const c = this.groupmgr.creating; if (!c || !c.name.trim()) return;
+      c.busy = true; c.err = '';
+      try {
+        const res = await fetch('/api/groups/manage', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({ name: c.name.trim() }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { c.err = this.errText(data) || '생성 실패'; return; }
+        // insert the new group into the list (sorted) without a full reload
+        if (data.group) {
+          this.groupmgr.list.push(data.group);
+          this.groupmgr.list.sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
+        }
+        this.groupmgr.creating = null;
+      } catch (e) { c.err = '생성 실패: ' + e; }
+      finally { c.busy = false; }
+    },
+    async openGroupDetail(g) {
+      this.groupmgr.detail = { groupId: g.groupId, name: g.name, members: [] };
+      this.groupmgr.detailErr = ''; this.groupmgr.memberQ = ''; this.groupmgr.memberPage = 1;
+      this.groupmgr.delConfirm = false; this.groupmgr.addText = ''; this.groupmgr.addResults = null;
+      await this.loadGroupMembers();
+    },
+    async loadGroupMembers() {
+      if (this.groupmgr._mctrl) this.groupmgr._mctrl.abort();
+      const ctrl = new AbortController(); this.groupmgr._mctrl = ctrl;
+      const gid = this.groupmgr.detail.groupId;
+      this.groupmgr.detailLoading = true; this.groupmgr.detailErr = ''; this.groupmgr.detail.members = [];
+      try {
+        const res = await fetch('/api/groups/manage/' + encodeURIComponent(gid) + '/members/stream', { signal: ctrl.signal });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.detailErr = this.errText(d) || '멤버 조회 실패'; return; }
+        await this.readNdjson(res, (ev) => {
+          if (ev.type === 'batch') this.groupmgr.detail.members.push(...(ev.members || []));
+          else if (ev.type === 'meta' && ev.name) this.groupmgr.detail.name = ev.name;
+          else if (ev.type === 'error') this.groupmgr.detailErr = ev.message || '멤버 조회 실패';
+        });
+      } catch (e) { if (e.name !== 'AbortError') this.groupmgr.detailErr = '멤버 조회 실패: ' + e; }
+      finally { if (this.groupmgr._mctrl === ctrl) { this.groupmgr.detailLoading = false; this.groupmgr._mctrl = null; } }
+    },
+    closeGroupDetail() {
+      if (this.groupmgr._mctrl) this.groupmgr._mctrl.abort();
+      this.groupmgr.detail = null; this.groupmgr.detailErr = ''; this.groupmgr.delConfirm = false;
+    },
+    filteredMembers() {
+      const d = this.groupmgr.detail; if (!d) return [];
+      const q = (this.groupmgr.memberQ || '').trim().toLowerCase();
+      if (!q) return d.members;
+      return d.members.filter(m => (m.name || '').toLowerCase().includes(q) || (m.email || '').toLowerCase().includes(q));
+    },
+    pagedMembers() {
+      const list = this.filteredMembers(), size = this.dash.userPageSize || 100;
+      let page = this.groupmgr.memberPage;
+      const pages = Math.max(1, Math.ceil(list.length / size));
+      if (page > pages) { page = pages; this.groupmgr.memberPage = pages; }
+      return list.slice((page - 1) * size, page * size);
+    },
+    memberPages() { return Math.max(1, Math.ceil(this.filteredMembers().length / (this.dash.userPageSize || 100))); },
+    setMemberPage(p) { this.groupmgr.memberPage = Math.max(1, Math.min(p, this.memberPages())); },
+    async addGroupMembers() {
+      const emails = (this.groupmgr.addText || '').split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+      if (!emails.length) return;
+      this.groupmgr.addBusy = true; this.groupmgr.addResults = null;
+      try {
+        const gid = this.groupmgr.detail.groupId;
+        const res = await fetch('/api/groups/manage/' + encodeURIComponent(gid) + '/members', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({ emails }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.groupmgr.detailErr = this.errText(data) || '멤버 추가 실패'; return; }
+        this.groupmgr.addResults = data.results || [];
+        if ((this.groupmgr.addResults).some(r => r.status === 'added')) {
+          this.groupmgr.addText = '';
+          await this.loadGroupMembers();  // refresh with the new members
+        }
+      } catch (e) { this.groupmgr.detailErr = '멤버 추가 실패: ' + e; }
+      finally { this.groupmgr.addBusy = false; }
+    },
+    async removeGroupMember(m) {
+      m._removing = true;
+      try {
+        const gid = this.groupmgr.detail.groupId;
+        const res = await fetch('/api/groups/manage/' + encodeURIComponent(gid) + '/members/' + encodeURIComponent(m.account_id),
+                                { method: 'DELETE', headers: { 'X-Workbox-Setup': '1' } });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.detailErr = this.errText(d) || '멤버 제거 실패'; m._removing = false; return; }
+        const i = this.groupmgr.detail.members.findIndex(x => x.account_id === m.account_id);
+        if (i >= 0) this.groupmgr.detail.members.splice(i, 1);  // drop locally, no reload
+      } catch (e) { this.groupmgr.detailErr = '멤버 제거 실패: ' + e; m._removing = false; }
+    },
+    async deleteGroup() {
+      this.groupmgr.delBusy = true;
+      try {
+        const gid = this.groupmgr.detail.groupId;
+        const res = await fetch('/api/groups/manage/' + encodeURIComponent(gid), { method: 'DELETE', headers: { 'X-Workbox-Setup': '1' } });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.detailErr = this.errText(d) || '삭제 실패'; return; }
+        const i = this.groupmgr.list.findIndex(g => g.groupId === gid);
+        if (i >= 0) this.groupmgr.list.splice(i, 1);
+        this.groupmgr.detail = null; this.groupmgr.delConfirm = false;
+      } catch (e) { this.groupmgr.detailErr = '삭제 실패: ' + e; }
+      finally { this.groupmgr.delBusy = false; }
     },
     async openFieldDetail(f) {
       // show a header immediately from the row, then load contexts + options

@@ -451,6 +451,40 @@ async def list_fields(q: str = "") -> dict[str, object]:
     return {"fields": fields}
 
 
+@app.get("/api/fields/stream")
+async def list_fields_stream(q: str = "") -> StreamingResponse:
+    """Custom field inventory, streamed as NDJSON batches so the 필드 관리 list
+    fills as it loads instead of blocking on the whole search. Defined before the
+    /{field_id} route so 'stream' isn't captured as a field id."""
+    from tasks import field_inventory
+    client = _require_client()
+
+    async def lines() -> AsyncIterator[str]:
+        buf: list[dict[str, object]] = []
+        n = 0
+        try:
+            async for f in field_inventory.iter_fields(client, query=q):
+                buf.append(f)
+                n += 1
+                if len(buf) >= 100:
+                    yield json.dumps({"type": "batch", "fields": buf}, ensure_ascii=False) + "\n"
+                    buf = []
+            if buf:
+                yield json.dumps({"type": "batch", "fields": buf}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "done", "count": n}, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            raise
+        except UpstreamError as exc:
+            msg = ("필드 목록을 읽을 권한이 없습니다. Jira 관리자 권한이 필요합니다."
+                   if exc.status_code in (401, 403) else str(exc)[:200])
+            yield json.dumps({"type": "error", "message": msg}, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("field list stream failed")
+            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:200]}, ensure_ascii=False) + "\n"
+
+    return _ndjson(lines)
+
+
 @app.get("/api/fields/{field_id}")
 async def field_detail(field_id: str) -> dict[str, object]:
     """One field's contexts (space + issue-type scope) and, for select fields, its
@@ -587,6 +621,161 @@ async def apply_field_options(
                                 detail="옵션을 변경할 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
         raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
     return {"options": result}
+
+
+# --------------------------------------------------------------------------
+# 그룹 관리 view (custom, like 필드 관리) — list/members stream; mutations guarded
+# --------------------------------------------------------------------------
+
+
+def _ndjson(gen_factory) -> StreamingResponse:
+    return StreamingResponse(gen_factory(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/groups/manage/stream")
+async def groups_manage_stream() -> StreamingResponse:
+    """Every group, streamed as NDJSON batches so the list fills as pages arrive.
+    Events: ``{type:'batch', groups:[…]}`` then ``{type:'done', count}``."""
+    from tasks import group_inventory
+    client = _require_client()
+
+    async def lines() -> AsyncIterator[str]:
+        buf: list[dict[str, object]] = []
+        n = 0
+        try:
+            async for g in group_inventory.iter_groups(client):
+                buf.append(g)
+                n += 1
+                if len(buf) >= 100:
+                    yield json.dumps({"type": "batch", "groups": buf}, ensure_ascii=False) + "\n"
+                    buf = []
+            if buf:
+                yield json.dumps({"type": "batch", "groups": buf}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "done", "count": n}, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            raise
+        except UpstreamError as exc:
+            msg = ("그룹 목록을 읽을 권한이 없습니다. Jira 관리자 권한이 필요합니다."
+                   if exc.status_code in (401, 403) else str(exc)[:200])
+            yield json.dumps({"type": "error", "message": msg}, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("group list stream failed")
+            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:200]}, ensure_ascii=False) + "\n"
+
+    return _ndjson(lines)
+
+
+@app.get("/api/groups/manage/{group_id}/members/stream")
+async def group_members_stream(group_id: str) -> StreamingResponse:
+    """One group's members, streamed. First a ``{type:'meta', name}`` (404-style
+    error if the group is unknown), then ``{type:'batch', members:[…]}`` and
+    ``{type:'done', count}``."""
+    from tasks import group_inventory
+    client = _require_client()
+
+    async def lines() -> AsyncIterator[str]:
+        try:
+            name = await group_inventory.group_name(client, group_id)
+            if name is None:
+                yield json.dumps({"type": "error", "message": "없는 그룹입니다."}, ensure_ascii=False) + "\n"
+                return
+            yield json.dumps({"type": "meta", "name": name, "group_id": group_id}, ensure_ascii=False) + "\n"
+            buf: list[dict[str, object]] = []
+            n = 0
+            async for m in group_inventory.iter_members(client, group_id):
+                buf.append(m)
+                n += 1
+                if len(buf) >= 100:
+                    yield json.dumps({"type": "batch", "members": buf}, ensure_ascii=False) + "\n"
+                    buf = []
+            if buf:
+                yield json.dumps({"type": "batch", "members": buf}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "done", "count": n}, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            raise
+        except UpstreamError as exc:
+            code = "권한 없음" if exc.status_code in (401, 403) else str(exc)[:200]
+            yield json.dumps({"type": "error", "message": code}, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("group member stream failed: %s", group_id)
+            yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"[:200]}, ensure_ascii=False) + "\n"
+
+    return _ndjson(lines)
+
+
+class GroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+@app.post("/api/groups/manage")
+async def create_group_endpoint(body: GroupCreate, request: Request) -> dict[str, object]:
+    """Create a group. Write — same-origin + X-Workbox-Setup guard."""
+    _guard_setup_request(request)
+    from tasks import group_inventory
+    client = _require_client()
+    name = body.name.strip()
+    try:
+        if await group_inventory.group_exists(client, name):
+            raise HTTPException(status_code=409, detail=f"이미 있는 그룹입니다: {name}")
+        group = await group_inventory.create_group(client, name)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403, detail="그룹을 만들 권한이 없습니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return {"group": group}
+
+
+@app.delete("/api/groups/manage/{group_id}")
+async def delete_group_endpoint(group_id: str, request: Request) -> dict[str, object]:
+    """Delete a group — revokes access/licenses for its members. Write — guarded."""
+    _guard_setup_request(request)
+    from tasks import group_inventory
+    client = _require_client()
+    try:
+        await group_inventory.delete_group(client, group_id)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403, detail="그룹을 삭제할 권한이 없습니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return {"ok": True}
+
+
+class GroupMembersAdd(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/groups/manage/{group_id}/members")
+async def add_group_members(group_id: str, body: GroupMembersAdd, request: Request) -> dict[str, object]:
+    """Add members to a group by email (exact match). Write — guarded."""
+    _guard_setup_request(request)
+    from tasks import group_inventory
+    client = _require_client()
+    emails = [e.strip() for e in body.emails if e and e.strip()]
+    if not emails:
+        raise HTTPException(status_code=422, detail="이메일을 최소 하나 입력하세요.")
+    try:
+        results = await group_inventory.add_members(client, group_id, emails)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403, detail="멤버를 추가할 권한이 없습니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return {"results": results}
+
+
+@app.delete("/api/groups/manage/{group_id}/members/{account_id}")
+async def remove_group_member(group_id: str, account_id: str, request: Request) -> dict[str, object]:
+    """Remove one member from a group. Write — guarded."""
+    _guard_setup_request(request)
+    from tasks import group_inventory
+    client = _require_client()
+    try:
+        ok = await group_inventory.remove_member(client, group_id, account_id)
+    except UpstreamError as exc:
+        if exc.status_code in (401, 403):
+            raise HTTPException(status_code=403, detail="멤버를 제거할 권한이 없습니다.") from None
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    return {"ok": ok}
 
 
 @app.get("/api/license/summary")
