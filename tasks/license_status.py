@@ -381,6 +381,58 @@ async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, s
     return {aid: sorted(ps, key=lambda p: p["key"]) for aid, ps in by_acct.items()}
 
 
+async def _group_member_count(client: WorkboxClient, gid: str) -> int:
+    n = 0
+    try:
+        async for m in client.paginate_offset(
+            _P_GROUP_MEMBER, items_key="values",
+            params={"groupId": gid, "includeInactiveUsers": "false"}, page_size=50):
+            if _sid(m.get("accountId")) and m.get("active") is not False:
+                n += 1
+    except UpstreamError:
+        pass
+    return n
+
+
+async def debug_project_agent_roles(client: WorkboxClient, project_key: str) -> dict[str, Any]:
+    """Diagnostic: dump every project role and its actors (users + groups, with
+    group member counts) for one project, so we can see how agents are granted
+    there and whether the agent-role match + group expansion are correct."""
+    proj = await client.get_json(f"/project/{project_key}")
+    pid = _sid(proj.get("id"))
+    agent_ids = set(await _agent_role_ids(client))
+    roles_map = await client.get_json(f"/project/{pid}/role")
+    out_roles: list[dict[str, Any]] = []
+    if isinstance(roles_map, dict):
+        for name, url in roles_map.items():
+            if name == "value":  # get_json wraps bare arrays; project role map is a dict
+                continue
+            rid = _sid(url).rstrip("/").split("/")[-1]
+            try:
+                data = await client.get_json(f"/project/{pid}/role/{rid}")
+            except UpstreamError as exc:
+                out_roles.append({"role": name, "role_id": rid, "error": str(exc)[:120]})
+                continue
+            actors = data.get("actors") or []
+            dump: list[dict[str, Any]] = []
+            for a in actors:
+                ag = a.get("actorGroup") or {}
+                is_group = "group" in _sid(a.get("type")).lower() or bool(ag)
+                row: dict[str, Any] = {"type": _sid(a.get("type")), "display": _sid(a.get("displayName"))}
+                if is_group:
+                    gid = _sid(ag.get("groupId"))
+                    gname = _sid(ag.get("name")) or _sid(a.get("name")) or _sid(a.get("displayName"))
+                    row["group"] = {"name": gname, "groupId": gid or None,
+                                    "members": await _group_member_count(client, gid) if gid else None}
+                else:
+                    row["accountId"] = _sid((a.get("actorUser") or {}).get("accountId")) or None
+                dump.append(row)
+            out_roles.append({"role": name, "role_id": rid, "is_agent_role": rid in agent_ids,
+                              "actor_count": len(actors), "actors": dump})
+    return {"project": project_key, "project_id": pid,
+            "matched_agent_role_ids": sorted(agent_ids), "roles": out_roles}
+
+
 async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
     client = get_client()
     yield ProgressEvent(type="start", message="라이선스 현황 조회")

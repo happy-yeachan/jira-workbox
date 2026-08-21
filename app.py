@@ -707,6 +707,22 @@ async def license_events(days: int = 30, limit: int = 1000) -> dict[str, object]
     return {"events": out, "days": days, "scanned": scanned, "capped": len(out) >= limit}
 
 
+@app.get("/api/debug/jsm-role")
+async def debug_jsm_role(project: str = Query(...)) -> dict[str, object]:
+    """Diagnostic: every project role and its actors (users + groups, with member
+    counts) for one project, so we can see how agents are granted there and why
+    a group-added agent may not surface. Read-only."""
+    from tasks import license_status
+    client = _require_client()
+    if not project.strip():
+        raise HTTPException(status_code=422, detail="프로젝트 키가 필요합니다.")
+    try:
+        return await license_status.debug_project_agent_roles(client, project.strip())
+    except UpstreamError as exc:
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
+
+
 @app.get("/api/debug/org-events")
 async def debug_org_events(days: int = 30, samples: int = 8, action: str = "", q: str = "") -> dict[str, object]:
     """Diagnostic: what the org events API actually returns, so classification can
