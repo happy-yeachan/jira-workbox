@@ -178,6 +178,7 @@ async def stream_plan(
 # it. Tests that need it import `tasks.issue_bulk_label` directly, which
 # self-registers it in that process only.
 from tasks import group_membership_bulk  # noqa: E402,F401
+from tasks import group_admin  # noqa: E402,F401  (그룹 만들기 / 삭제)
 from tasks import space_create  # noqa: E402,F401
 from tasks import project_config_audit  # noqa: E402,F401  (imports screen_share_analysis for reuse)
 from tasks import config_isolate  # noqa: E402,F401

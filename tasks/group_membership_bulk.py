@@ -485,8 +485,8 @@ TASK = register(
         spec=TaskSpec(
             name=TASK_NAME,
             category="사용자·권한",
-            title="그룹 멤버십 일괄 변경",
-            description="이메일 목록을 그룹에 추가하거나 제거합니다. 제품 권한(Jira·Confluence·JSM)도 그룹으로 부여됩니다.",
+            title="그룹 관리 · 멤버 추가/제거",
+            description="그룹을 검색해 이메일 목록을 추가하거나 제거합니다. 제품 권한(Jira·Confluence·JSM)도 그룹으로 부여됩니다.",
             danger="선택한 그룹의 멤버십이 실제로 바뀝니다. 제품 그룹은 라이선스 좌석을 소모할 수 있습니다.",
         ),
         params_model=Params,

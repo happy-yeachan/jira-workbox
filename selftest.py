@@ -1155,6 +1155,71 @@ async def suite_space_create() -> None:
     await client.aclose()
 
 
+async def suite_group_admin() -> None:
+    print("group_admin: create / delete groups")
+    import tasks.group_admin as ga
+    from core.models import Change
+
+    calls = {"post": [], "delete": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        p, m, q = request.url.path, request.method, request.url.params
+        if p == "/rest/api/3/groups/picker":
+            hit = [{"name": "이미있음", "groupId": "gExist"}] if (q.get("query") or "") == "이미있음" else []
+            return httpx.Response(200, json={"groups": hit})
+        if p == "/rest/api/3/group" and m == "POST":
+            body = _json.loads(request.content) if request.content else {}
+            calls["post"].append(body.get("name"))
+            return httpx.Response(201, json={"name": body.get("name"), "groupId": "gNew"})
+        if p == "/rest/api/3/group" and m == "DELETE":
+            calls["delete"].append(q.get("groupId") or ("name:" + (q.get("groupname") or "")))
+            return httpx.Response(200, json={})
+        if p == "/rest/api/3/group/bulk":
+            return httpx.Response(200, json={"values": [{"groupId": "g1", "name": "팀A"}]})
+        if p == "/rest/api/3/group/member":
+            return httpx.Response(200, json={"values": [], "total": 3, "isLast": True, "startAt": 0, "maxResults": 1})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+
+    client = _client_for(handler)
+    set_client(client)
+
+    # create: new name → change; existing name → skipped
+    cplan = await ga.plan_create(ga.CreateParams(names=["새그룹", "이미있음"]))
+    check("create: new group planned, existing skipped",
+          [c.label for c in cplan.changes] == ["새그룹"] and len(cplan.skipped) == 1, cplan.changes)
+    cres = await ga._apply_one(client, cplan.changes[0])
+    check("create: POSTs the name and captures the new id",
+          cres.ok and calls["post"] == ["새그룹"] and cplan.changes[0].after["group_id"] == "gNew", cres)
+    inv = ga._invert([cplan.changes[0]])
+    check("create: rollback inverts to delete by the captured id",
+          inv[0].after["op"] == "delete" and inv[0].after["group_id"] == "gNew", inv[0].after)
+
+    # delete: resolves name + member count; unknown id skipped
+    dplan = await ga.plan_delete(ga.DeleteParams(group_ids=["g1", "gX"]))
+    check("delete: known group planned with member count, unknown skipped",
+          [c.label for c in dplan.changes] == ["팀A"] and dplan.changes[0].before["members"] == 3
+          and len(dplan.skipped) == 1, dplan.changes)
+    dres = await ga._apply_one(client, dplan.changes[0])
+    check("delete: DELETEs by groupId", dres.ok and "g1" in calls["delete"], calls["delete"])
+    dinv = ga._invert([dplan.changes[0]])
+    check("delete: rollback re-creates by name", dinv[0].after["op"] == "create" and dinv[0].after["name"] == "팀A", dinv[0].after)
+
+    # a delete of an already-gone group is a no-op success
+    gone_change = Change(target_id="gZ", label="사라짐", after={"op": "delete", "name": "사라짐", "group_id": "gZ"})
+    def gone_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            return httpx.Response(404, json={"errorMessages": ["not found"]})
+        return httpx.Response(404, json={})
+    c2 = _client_for(gone_handler)
+    r2 = await ga._apply_one(c2, gone_change)
+    check("delete: already-gone group is a no-op success", r2.ok, r2)
+    await c2.aclose()
+
+    await client.aclose()
+    set_client(None)
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -1173,6 +1238,8 @@ async def main() -> None:
     await suite_screen_clone()
     print()
     await suite_space_create()
+    print()
+    await suite_group_admin()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")
