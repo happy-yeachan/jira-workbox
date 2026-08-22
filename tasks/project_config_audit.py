@@ -362,12 +362,18 @@ def _screen_tree_children(
                         if v in _ISOLATABLE else None),
             "note": "",
         })
-        names = ", ".join(sorted(it_names.get(i, i) for i in its if i != "default"))
-        if "default" in its:
-            names = "모든 작업 유형(기본)" + (f" · {names}" if names else "")
-        if names:
-            out.append({"depth": 2, "kind": "note", "label": "사용 작업 유형", "sub": names,
-                        "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": ""})
+        # one row per issue type using this scheme, each with a "화면 지정" action
+        # (give just that issue type a different screen — de-shares safely).
+        for it in sorted(its, key=lambda i: (i != "default", it_names.get(i, i))):
+            it_label = "모든 작업 유형(기본)" if it == "default" else it_names.get(it, it)
+            out.append({
+                "depth": 2, "kind": "issue_type", "label": it_label, "sub": "",
+                "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": "",
+                "assign": {"project": target_key, "scheme_type": "issuetypescreen",
+                           "node_kind": "issue_type_screen", "itss_id": itss_id,
+                           "screen_scheme_id": ss_id, "issue_type_id": it,
+                           "itss_shared": r.verdict != "전용", "screen_scheme_shared": v != "target_only"},
+            })
 
         # one row per distinct screen, listing the operations that use it
         screen_ops: dict[str, list[str]] = {}

@@ -378,6 +378,24 @@ async def search_groups(q: str = "", limit: int = 50) -> list[dict[str, str]]:
     ]
 
 
+@app.get("/api/screens")
+async def search_screens(q: str = "", limit: int = 20) -> list[dict[str, str]]:
+    """Screen typeahead — matches name/description. For the '이슈타입 화면 지정' picker."""
+    client = _require_client()
+    limit = max(1, min(limit, 50))
+    params: dict[str, object] = {"maxResults": limit}
+    if q.strip():
+        params["queryString"] = q.strip()
+    try:
+        payload = await client.get_json("/screens", params=params)
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return [
+        {"id": str(s.get("id")), "name": str(s.get("name") or s.get("id"))}
+        for s in (payload.get("values") or []) if s.get("id")
+    ]
+
+
 @app.get("/api/projects")
 async def search_projects(q: str = "", limit: int = 20) -> list[dict[str, str]]:
     """Project typeahead — matches key or name. For the project picker."""

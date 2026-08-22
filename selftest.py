@@ -1235,6 +1235,69 @@ async def suite_group_inventory() -> None:
     await client.aclose()
 
 
+async def suite_issue_type_screen() -> None:
+    print("config_isolate: per-issue-type screen assignment")
+    import tasks.config_isolate as iso
+
+    def site(mappings, ss_shared_probe=None):
+        def handler(request: httpx.Request) -> httpx.Response:
+            p, q = request.url.path, request.url.params
+            base = "/rest/api/3"
+            if p == f"{base}/issuetypescreenscheme":
+                if q.get("queryString") is not None:
+                    return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
+                return httpx.Response(200, json={"values": [{"id": "700", "name": "공유 ITSS"}]})
+            if p == f"{base}/issuetypescreenscheme/mapping":
+                rows = [{"issueTypeScreenSchemeId": "700", **m} for m in mappings]
+                return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 100, "total": len(rows)})
+            if p == f"{base}/screenscheme":
+                if q.get("queryString") is not None:
+                    return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
+                return httpx.Response(200, json={"values": [{"id": "600", "name": "공유 스킴", "screens": {"default": "S1"}}]})
+            if p == f"{base}/issuetype":
+                return httpx.Response(200, json=[{"id": "10001", "name": "Bug"}, {"id": "10002", "name": "Task"}])
+            return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+        return handler
+
+    async def run(params):
+        client = _client_for(site(params._mappings))
+        plan = None
+        async for ev in iso._plan_issue_type_screen(client, params, "10000", "NZGE"):
+            if ev.type == "plan":
+                plan = ev.plan
+        await client.aclose()
+        return plan.changes[0].after
+
+    # shared scheme serving 2 issue types → clone scheme (default→S9) + clone ITSS remapping only Bug
+    P = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="issue_type_screen",
+                   itss_id="700", screen_scheme_id="600", issue_type_id="10001",
+                   target_screen_id="S9", target_screen_name="새 화면", screen_ops=["default"],
+                   itss_shared=True, screen_scheme_shared=True)
+    P._mappings = [{"issueTypeId": "10001", "screenSchemeId": "600"},
+                   {"issueTypeId": "10002", "screenSchemeId": "600"}]
+    a = await run(P)
+    ss_step = next(s for s in a["steps"] if s["ref"] == "screen_scheme")
+    itss_step = next(s for s in a["steps"] if s["ref"] == "itss")
+    check("ittscreen: cloned scheme points chosen op at target screen",
+          ss_step["body"]["screens"] == {"default": "S9"}, ss_step["body"]["screens"])
+    remap = {m["issueTypeId"]: m["screenSchemeId"] for m in itss_step["body"]["issueTypeMappings"]}
+    check("ittscreen: only the chosen issue type is re-pointed",
+          remap == {"10001": "@screen_scheme", "10002": "600"}, remap)
+    check("ittscreen: project re-pointed to the cloned ITSS", a["repoint"] is not None)
+
+    # dedicated scheme used only by this issue type → edit screens in place, no ITSS change
+    P2 = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="issue_type_screen",
+                    itss_id="700", screen_scheme_id="600", issue_type_id="10001",
+                    target_screen_id="S9", target_screen_name="새 화면", screen_ops=["default", "view"],
+                    itss_shared=False, screen_scheme_shared=False)
+    P2._mappings = [{"issueTypeId": "10001", "screenSchemeId": "600"}]
+    a2 = await run(P2)
+    check("ittscreen(private): edits the scheme in place, no clone/repoint",
+          not a2["steps"] and a2["repoint"] is None and len(a2["inplace"]) == 1, a2)
+    check("ittscreen(private): in-place screens set both chosen ops to target",
+          a2["inplace"][0]["body"]["screens"] == {"default": "S9", "view": "S9"}, a2["inplace"][0]["body"]["screens"])
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -1251,6 +1314,8 @@ async def main() -> None:
     await suite_field_inventory()
     print()
     await suite_screen_clone()
+    print()
+    await suite_issue_type_screen()
     print()
     await suite_space_create()
     print()

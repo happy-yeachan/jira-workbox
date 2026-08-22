@@ -1905,6 +1905,9 @@
                           <span class="sub" x-text="'· 공유: ' + n.shared_with.slice(0,3).join(', ') + (n.shared_with.length > 3 ? ' 외 ' + (n.shared_with.length - 3) + '개' : '')"></span>
                         </template>
                         <span class="spacer"></span>
+                        <template x-if="n.assign">
+                          <button class="btn small ghost" style="flex:none" @click.stop="openAssignScreen(n.assign, n.label)">화면 지정</button>
+                        </template>
                         <template x-if="n.isolate">
                           <button class="btn small" style="flex:none" @click.stop="isolate(n.isolate)">분리하기</button>
                         </template>
@@ -2016,6 +2019,41 @@
   </section>
 </main>
 
+<template x-if="assignScreen">
+  <div class="modal-bg" @click.self="assignScreen = null" @keydown.escape.window="assignScreen = null">
+    <div class="modal">
+      <div class="body">
+        <h3><span x-text="assignScreen.itLabel"></span> — 다른 화면 지정</h3>
+        <p class="sub" style="margin:0 0 12px">이 이슈타입만 고른 화면을 쓰게 합니다. 같은 화면 스킴을 쓰는 다른 이슈타입·다른 프로젝트는 그대로예요.</p>
+        <label class="field"><span class="name">화면 선택</span>
+          <input type="text" placeholder="화면 이름으로 검색" x-model="assignScreen.q" @input.debounce.300ms="assignSearchScreens()">
+        </label>
+        <div class="picker" x-show="assignScreen.results.length" style="max-height:180px">
+          <template x-for="s in assignScreen.results" :key="s.id">
+            <div class="pick-row" @click="assignPickScreen(s)"><span x-text="s.name"></span></div>
+          </template>
+        </div>
+        <div class="sub" x-show="assignScreen.screen" style="margin:8px 0">
+          선택: <b x-text="assignScreen.screen && assignScreen.screen.name"></b>
+        </div>
+        <div style="margin-top:10px">
+          <div class="name" style="margin-bottom:4px">적용 화면(operation)</div>
+          <div style="display:flex; gap:14px; flex-wrap:wrap">
+            <template x-for="o in [['default','기본(모든 화면)'],['create','생성'],['edit','편집'],['view','보기']]" :key="o[0]">
+              <label class="chk"><input type="checkbox" :value="o[0]" x-model="assignScreen.ops"> <span x-text="o[1]"></span></label>
+            </template>
+          </div>
+        </div>
+        <div class="notice err" x-show="assignScreen.err" x-text="assignScreen.err" style="margin-top:10px"></div>
+      </div>
+      <div class="foot">
+        <button class="btn ghost" @click="assignScreen = null">취소</button>
+        <button class="btn primary" @click="assignConfirm()" :disabled="!assignScreen.screen || !assignScreen.ops.length">미리보기</button>
+      </div>
+    </div>
+  </div>
+</template>
+
 <template x-if="confirming">
   <div class="modal-bg" @click.self="confirming = false" @keydown.escape.window="confirming = false">
     <div class="modal">
@@ -2063,7 +2101,7 @@
 <script>
 document.addEventListener('alpine:init', () => {
   Alpine.data('workbox', () => ({
-    dark: false,
+    dark: false, assignScreen: null,
     health: {}, tasks: [], groups: [], selected: null, fields: [], form: {},
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
@@ -3082,6 +3120,29 @@ document.addEventListener('alpine:init', () => {
       return this.plan && this.plan.data ? (this.plan.data.config_tree || null) : null;
     },
 
+    // "화면 지정": pick a screen for ONE issue type, then run the isolate flow
+    // (node_kind=issue_type_screen) with the picked screen merged in.
+    openAssignScreen(params, itLabel) {
+      this.assignScreen = { params, itLabel, q: '', results: [], screen: null, ops: ['default'], err: '' };
+    },
+    async assignSearchScreens() {
+      const q = (this.assignScreen.q || '').trim();
+      if (!q) { this.assignScreen.results = []; return; }
+      try {
+        const res = await fetch('/api/screens?q=' + encodeURIComponent(q) + '&limit=12');
+        const data = await res.json().catch(() => []);
+        this.assignScreen.results = Array.isArray(data) ? data : [];
+      } catch (_) { this.assignScreen.results = []; }
+    },
+    assignPickScreen(s) { this.assignScreen.screen = s; this.assignScreen.results = []; this.assignScreen.q = s.name; },
+    assignConfirm() {
+      const a = this.assignScreen;
+      if (!a.screen || !a.ops.length) return;
+      const p = { ...a.params, target_screen_id: a.screen.id, target_screen_name: a.screen.name,
+                  screen_ops: [...a.ops] };
+      this.assignScreen = null;
+      this.isolate(p);  // selects config_isolate + previews with these params
+    },
     // Run 설정 분리 for one node in the diagnosis tree, prefilled from its params.
     // Opens the isolate task's normal preview→실행 flow (no immediate write).
     isolate(p) {
