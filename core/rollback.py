@@ -112,6 +112,46 @@ def _read_all() -> list[dict[str, Any]]:
     return out
 
 
+_INV_KIND = {
+    "screens": "스크린", "screenscheme": "화면 스킴", "issuetypescreenscheme": "이슈 유형 화면 스킴",
+    "workflowscheme": "워크플로우 스킴", "issuetypescheme": "이슈 타입 스킴",
+    "issuesecurityschemes": "보안 스킴", "workflows": "워크플로우",
+}
+
+
+def _summary_from_inverse(entry: dict[str, Any]) -> list[str]:
+    """Best-effort detail for entries recorded before ``detail`` existed: read the
+    stored inverse (the undo) to describe what the run created/changed. Id-based
+    (names aren't in the inverse), but enough to tell entries apart."""
+    def kind_of(path: str) -> str:
+        return _INV_KIND.get((path or "").strip("/").split("/")[0], "객체")
+
+    lines: list[str] = []
+    for c in entry.get("inverse", []):
+        a = c.get("after", {}) or {}
+        for dele in (a.get("delete") or []):
+            if isinstance(dele, list) and len(dele) >= 2:
+                lines.append(f"복제 생성: {kind_of(dele[0])} #{dele[1]}")
+        if a.get("delete_scheme_id"):
+            lines.append(f"복제 생성: {kind_of(a.get('one_path', ''))} #{a['delete_scheme_id']}")
+        if a.get("new_wf_id"):
+            lines.append(f"복제 생성: 워크플로우 #{a['new_wf_id']}")
+        if a.get("new_ws_id"):
+            lines.append(f"복제 생성: 워크플로우 스킴 #{a['new_ws_id']}")
+        for st in (a.get("steps") or []):
+            if isinstance(st, dict) and st.get("ref"):
+                lines.append(f"복제: {_INV_KIND.get((st.get('create_path') or '').strip('/').split('/')[0], st['ref'])}")
+        if a.get("repoint") or a.get("restore_scheme_id") or a.get("ws_mode"):
+            lines.append("프로젝트/매핑 재지정")
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        if line not in seen:
+            seen.add(line)
+            out.append(line)
+    return out[:60]
+
+
 def history(limit: int = 50) -> list[dict[str, Any]]:
     """Newest-first list for the UI. Omits the inverse change set (bulky)."""
     with _lock:
@@ -130,7 +170,9 @@ def history(limit: int = 50) -> list[dict[str, Any]]:
             "succeeded": e.get("succeeded", 0),
             "failed": e.get("failed", 0),
             "note": e.get("note", ""),
-            "detail": e.get("detail", []),
+            # prefer the recorded detail; fall back to deriving it from the inverse
+            # so entries saved before the feature still expand
+            "detail": e.get("detail") or _summary_from_inverse(e),
             "status": e.get("status", "active"),
             "count": len(e.get("inverse", [])),
             "can_rollback": e.get("status") == "active" and bool(e.get("inverse")),
