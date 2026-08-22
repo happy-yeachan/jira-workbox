@@ -461,6 +461,21 @@ def _leftover_note(items: list[str]) -> str | None:
             + ", ".join(items) + ". 미할당 상태라 안전하며 Jira에서 나중에 삭제할 수 있습니다.")
 
 
+def _plan_detail(plan_result: PlanResult) -> list[str]:
+    """Human-readable 'what this run did' lines (plan notes + preview-table rows)
+    for the 작업 기록 expandable detail — so a row isn't just '설정 분리 · 화면 구성'."""
+    lines: list[str] = []
+    for c in plan_result.changes:
+        if getattr(c, "note", ""):
+            lines.append(str(c.note))
+    for t in plan_result.tables:
+        for row in t.rows:
+            vals = [str(row.get(col.key)) for col in t.columns if str(row.get(col.key, "")).strip()]
+            if vals:
+                lines.append(" · ".join(vals))
+    return lines[:60]
+
+
 def _subst(value: Any, ids: dict[str, str]) -> Any:
     """Replace '@ref' tokens with the id an earlier step created for that ref."""
     if isinstance(value, str) and value.startswith("@"):
@@ -1423,6 +1438,7 @@ async def execute_stream(
                 attempted=len(results),
                 succeeded=sum(1 for r in results if r.ok),
                 failed=sum(1 for r in results if not r.ok),
+                detail=_plan_detail(plan_result),
                 undo=bool(plan_result.params_echo.get("rollback_of")),
             )
 

@@ -55,6 +55,7 @@ def record(
     succeeded: int,
     failed: int,
     note: str = "",
+    detail: list[str] | None = None,
     undo: bool = False,
 ) -> str | None:
     """Append a journal entry. Returns its id, or ``None`` if nothing to undo.
@@ -74,6 +75,8 @@ def record(
         "succeeded": succeeded,
         "failed": failed,
         "note": note,
+        # human-readable "what this run did" lines, shown when the row is expanded
+        "detail": [str(d) for d in (detail or [])][:60],
         "undo": undo,
         "status": "active",
         "rolled_back_by": None,
@@ -127,6 +130,7 @@ def history(limit: int = 50) -> list[dict[str, Any]]:
             "succeeded": e.get("succeeded", 0),
             "failed": e.get("failed", 0),
             "note": e.get("note", ""),
+            "detail": e.get("detail", []),
             "status": e.get("status", "active"),
             "count": len(e.get("inverse", [])),
             "can_rollback": e.get("status") == "active" and bool(e.get("inverse")),

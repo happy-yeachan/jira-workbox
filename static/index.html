@@ -534,12 +534,15 @@
   }
   .drawer > header h2 { margin: 0; font-size: 15px; }
   .drawer-body { padding: 16px; overflow: auto; }
-  .hist-row {
-    display: flex; align-items: center; gap: 10px; padding: 11px 12px;
-    border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px;
-  }
-  .hist-row.rolled_back { opacity: .6; background: var(--surface-2); }
-  .hist-title { font-size: 13.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-item { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .hist-item.rolled_back { opacity: .6; background: var(--surface-2); }
+  .hist-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; }
+  .hist-title { font-size: 13.5px; font-weight: 550; display: flex; align-items: baseline; gap: 6px; }
+  .hist-title > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-title .tg-caret { color: var(--muted); font-size: 11px; flex: none; }
+  .hist-detail { padding: 4px 12px 10px; border-top: 1px solid var(--line-soft); background: var(--surface-2); }
+  .hist-detail-row { font-size: 12.5px; color: var(--ink-2); padding: 4px 0; border-bottom: 1px solid var(--line-soft); word-break: break-word; }
+  .hist-detail-row:last-child { border-bottom: 0; }
 </style>
 </head>
 <body x-data="workbox" x-init="boot()">
@@ -670,22 +673,34 @@
           <div class="empty" style="padding:32px 0">아직 실행한 작업이 없습니다.</div>
         </template>
         <template x-for="h in history" :key="h.id">
-          <div class="hist-row" :class="h.status">
-            <div style="min-width:0">
-              <div class="hist-title" x-text="h.title"></div>
-              <div class="sub">
-                <span x-text="fmtTime(h.ts)"></span>
-                · 성공 <b x-text="h.succeeded"></b><span x-show="h.failed" x-text="' · 실패 ' + h.failed"></span>
-                <span x-show="h.note" x-text="' · ' + h.note"></span>
+          <div class="hist-item" :class="h.status">
+            <div class="hist-row">
+              <div style="min-width:0; flex:1; cursor:pointer" @click="toggleHist(h.id)">
+                <div class="hist-title">
+                  <span class="tg-caret" x-show="h.detail && h.detail.length"
+                        x-text="histOpen.includes(h.id) ? '▾' : '▸'"></span>
+                  <span x-text="h.title"></span>
+                </div>
+                <div class="sub">
+                  <span x-text="fmtTime(h.ts)"></span>
+                  · 성공 <b x-text="h.succeeded"></b><span x-show="h.failed" x-text="' · 실패 ' + h.failed"></span>
+                  <span x-show="h.detail && h.detail.length && !histOpen.includes(h.id)" x-text="' · 변경 ' + h.detail.length + '건'"></span>
+                </div>
               </div>
+              <span class="spacer"></span>
+              <template x-if="h.can_rollback">
+                <button class="btn small" style="flex:none" :disabled="running" @click="rbConfirm = h">↩ 되돌리기</button>
+              </template>
+              <template x-if="h.status === 'rolled_back'">
+                <span class="badge v-unknown">되돌림</span>
+              </template>
             </div>
-            <span class="spacer"></span>
-            <template x-if="h.can_rollback">
-              <button class="btn small" style="flex:none" :disabled="running" @click="rbConfirm = h">↩ 되돌리기</button>
-            </template>
-            <template x-if="h.status === 'rolled_back'">
-              <span class="badge v-unknown">되돌림</span>
-            </template>
+            <div class="hist-detail" x-show="histOpen.includes(h.id) && h.detail && h.detail.length">
+              <template x-for="(d, i) in (h.detail || [])" :key="i">
+                <div class="hist-detail-row" x-text="d"></div>
+              </template>
+              <div class="sub" x-show="h.note" x-text="h.note" style="margin-top:6px"></div>
+            </div>
           </div>
         </template>
       </div>
@@ -2107,7 +2122,7 @@ document.addEventListener('alpine:init', () => {
     batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [],
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
-    history: [], historyOpen: false,
+    history: [], historyOpen: false, histOpen: [],
     gp: { q: '', results: [], loading: false, err: '' }, groupNames: {},
     up: { q: '', results: [], loading: false, err: '' }, userNames: {},
     pp: { q: '', results: [], loading: false, err: '' }, projectNames: {},
@@ -3371,6 +3386,10 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ---- 작업 기록 (rollback history) ----
+    toggleHist(id) {
+      const i = this.histOpen.indexOf(id);
+      if (i >= 0) this.histOpen.splice(i, 1); else this.histOpen.push(id);
+    },
     async loadHistory() {
       try {
         const res = await fetch('/api/history?limit=100');
