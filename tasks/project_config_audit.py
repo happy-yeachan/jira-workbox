@@ -346,6 +346,9 @@ def _screen_tree_children(
         by_ss.setdefault(ss, []).append(it)
         if it == "default":
             default_ss = ss
+    # issue types with their OWN mapping (not riding 'default'); the default row's
+    # "화면 분리" picker must exclude these — they're already separated.
+    explicit_ids = sorted({i for its in by_ss.values() for i in its if i != "default"})
 
     for ss_id, its in by_ss.items():
         scheme = ss_map.get(ss_id) or {}
@@ -372,7 +375,9 @@ def _screen_tree_children(
                 "assign": {"project": target_key, "scheme_type": "issuetypescreen",
                            "node_kind": "issue_type_screen", "itss_id": itss_id,
                            "screen_scheme_id": ss_id, "issue_type_id": it,
-                           "itss_shared": r.verdict != "전용", "screen_scheme_shared": v != "target_only"},
+                           "itss_shared": r.verdict != "전용", "screen_scheme_shared": v != "target_only",
+                           # for the default row: types already separated → exclude from the picker
+                           **({"mapped_ids": explicit_ids} if it == "default" else {})},
             })
 
         # one row per distinct screen, listing the operations that use it

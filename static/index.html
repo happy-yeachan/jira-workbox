@@ -3129,7 +3129,10 @@ document.addEventListener('alpine:init', () => {
         try {
           const res = await fetch('/api/project-issuetypes?project=' + encodeURIComponent(params.project));
           const data = await res.json().catch(() => []);
-          if (res.ok && Array.isArray(data)) this.assignScreen.types = data;
+          // only offer types still riding 'default' — ones already given their own
+          // mapping (params.mapped_ids) are separated already
+          const mapped = new Set(params.mapped_ids || []);
+          if (res.ok && Array.isArray(data)) this.assignScreen.types = data.filter(t => !mapped.has(t.id));
         } catch (_) { /* leave empty; user can still cancel */ }
       }
     },
