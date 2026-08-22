@@ -2197,7 +2197,7 @@ document.addEventListener('alpine:init', () => {
     batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [],
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
-    atl: null, atlDismissedSig: '', atlOpen: false, atlPreview: false,
+    atl: null, atlDismissedSig: '', atlOpen: false,
     history: [], historyOpen: false, histOpen: [],
     gp: { q: '', results: [], loading: false, err: '' }, groupNames: {},
     up: { q: '', results: [], loading: false, err: '' }, userNames: {},
@@ -2250,19 +2250,13 @@ document.addEventListener('alpine:init', () => {
       // the license dashboard is the landing headline — load it as soon as we
       // have working credentials (and again after the operator connects)
       if (this.health.configured) this.loadDashboard();
-      // Atlassian status banner. ?atlpreview=minor|major pins a demo of the
-      // problem banner in the real UI (for reviewing how an outage looks).
-      const pv = new URLSearchParams(location.search).get('atlpreview');
-      if (pv) { this.atlPreview = true; this.atl = this._atlDemo(pv); this.atlOpen = true; }
-      else {
-        this.loadAtlassianStatus();
-        setInterval(() => this.loadAtlassianStatus(), 180000);
-      }
+      // Atlassian status banner: check now, then every 3 minutes
+      this.loadAtlassianStatus();
+      setInterval(() => this.loadAtlassianStatus(), 180000);
       // no auto-select: land on the overview, let the operator choose
     },
     // ---------- Atlassian product status banner ----------
     async loadAtlassianStatus() {
-      if (this.atlPreview) return;  // a preview is pinned; don't overwrite with live data
       try {
         const r = await fetch('/api/atlassian-status');
         if (r.ok) this.atl = await r.json();
@@ -2298,23 +2292,6 @@ document.addEventListener('alpine:init', () => {
       const n = (this.atl.problems || []).length;
       const crit = this.atl.indicator === 'major' || this.atl.indicator === 'critical';
       return `아틀라시안 ${crit ? '서비스 장애' : '성능 저하/점검'} — ${n}개 제품에 영향`;
-    },
-    // Preview the abnormal banner in the real UI: append ?atlpreview=minor|major
-    _atlDemo(kind) {
-      const crit = kind === 'major' || kind === 'critical';
-      const ind = crit ? 'major' : 'minor';
-      return {
-        enabled: true, ok: false, indicator: ind, checked_at: new Date().toISOString(),
-        products: [], problems: [
-          { key: 'jira-software', name: 'Jira', indicator: ind,
-            description: crit ? 'Service disruption' : 'Degraded performance',
-            incidents: [{ name: crit ? '이슈 생성·조회 지연 및 오류' : '첨부파일 업로드 지연',
-                          impact: ind, url: 'https://status.atlassian.com' }] },
-          { key: 'confluence', name: 'Confluence', indicator: 'minor',
-            description: 'Degraded performance',
-            incidents: [{ name: '페이지 로딩 지연', impact: 'minor', url: 'https://status.atlassian.com' }] },
-        ],
-      };
     },
     // ---- theme (light/dark; auto by system, forced by the header toggle) ----
     isDark() {
