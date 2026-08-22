@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 import threading
 from datetime import datetime, timezone
@@ -119,40 +120,61 @@ _INV_KIND = {
 }
 
 
+#: trailing "(Original Name)" that clone descriptions carry, e.g.
+#: "Cloned from screen 10167 (MKWORK: Kanban Default Issue Screen)".
+_CLONED_FROM = re.compile(r"\(([^()]+)\)\s*$")
+
+
 def _summary_from_inverse(entry: dict[str, Any]) -> list[str]:
     """Best-effort detail for entries recorded before ``detail`` existed: read the
-    stored inverse to summarise what the run created/changed. Names aren't in the
-    inverse, so this counts objects by kind (no raw ids/uuids) — enough to tell
-    entries apart. New runs use the nicer name-based detail instead."""
+    stored inverse to describe what the run created/changed — using the object
+    **names** carried in the inverse (workflow / scheme / screen names, and the
+    original name from each clone's description) rather than raw ids/uuids. Falls
+    back to a per-kind count only for objects whose name isn't in the inverse."""
     from collections import Counter
 
     def kind_of(path: str) -> str:
         return _INV_KIND.get((path or "").strip("/").split("/")[0], "객체")
 
-    counts: Counter[str] = Counter()
+    named: list[str] = []
+    unnamed: Counter[str] = Counter()
     repoint = False
     for c in entry.get("inverse", []):
         a = c.get("after", {}) or {}
-        for dele in (a.get("delete") or []):
-            if isinstance(dele, list) and dele:
-                counts[kind_of(dele[0])] += 1
-        if a.get("delete_scheme_id"):
-            counts[kind_of(a.get("one_path", ""))] += 1
-        if a.get("new_wf_id"):
-            counts["워크플로우"] += 1
-        if a.get("new_ws_id"):
-            counts["워크플로우 스킴"] += 1
+        if a.get("wf_new_name"):
+            named.append(f"복제 생성: 워크플로우 '{a['wf_new_name']}'")
+        ws_body = a.get("ws_body")
+        if isinstance(ws_body, dict) and ws_body.get("name"):
+            named.append(f"복제 생성: 워크플로우 스킴 '{ws_body['name']}'")
         for st in (a.get("steps") or []):
-            if isinstance(st, dict) and st.get("create_path"):
-                counts[kind_of(st["create_path"])] += 1
-        if a.get("repoint") or a.get("restore_scheme_id") or a.get("ws_mode"):
+            if not isinstance(st, dict):
+                continue
+            body = st.get("body") or {}
+            name = body.get("name")
+            if name:
+                m = _CLONED_FROM.search((body.get("description") or "").strip())
+                orig = f"  (원본: {m.group(1)})" if m else ""
+                named.append(f"복제 생성: {kind_of(st.get('create_path', ''))} '{name}'{orig}")
+            elif st.get("create_path"):
+                unnamed[kind_of(st["create_path"])] += 1
+        # objects the inverse references only by id (no name available)
+        if a.get("delete_scheme_id"):
+            unnamed[kind_of(a.get("one_path", ""))] += 1
+        for dele in (a.get("delete") or []):
+            if isinstance(dele, list) and dele and not a.get("steps"):
+                unnamed[kind_of(dele[0])] += 1
+        if a.get("repoint") or a.get("restore_scheme_id") or a.get("ws_mode") or a.get("restore_ws_id"):
             repoint = True
-    lines: list[str] = []
-    if counts:
-        lines.append("복제 생성: " + ", ".join(f"{k} {n}개" for k, n in counts.items()))
+
+    lines = list(named)
+    if unnamed:
+        lines.append("복제 생성: " + ", ".join(f"{k} {n}개" for k, n in unnamed.items()))
     if repoint:
         lines.append("프로젝트/매핑 재지정")
-    return lines or ["상세 정보 없음 (이전 형식)"]
+    # dedupe, preserve order
+    seen: set[str] = set()
+    out = [ln for ln in lines if not (ln in seen or seen.add(ln))]
+    return out or ["상세 정보 없음 (이전 형식)"]
 
 
 def history(limit: int = 50) -> list[dict[str, Any]]:
