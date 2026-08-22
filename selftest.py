@@ -1297,6 +1297,21 @@ async def suite_issue_type_screen() -> None:
     check("ittscreen(private): in-place screens set both chosen ops to target",
           a2["inplace"][0]["body"]["screens"] == {"default": "S9", "view": "S9"}, a2["inplace"][0]["body"]["screens"])
 
+    # issue type covered by the 'default' mapping → clone scheme + ADD a new
+    # mapping for that type (default stays for the rest), clone ITSS + repoint
+    P3 = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="issue_type_screen",
+                    itss_id="700", screen_scheme_id="600", issue_type_id="10001",
+                    target_screen_id="S9", target_screen_name="새 화면", screen_ops=["default"],
+                    itss_shared=False, screen_scheme_shared=False)
+    P3._mappings = [{"issueTypeId": "default", "screenSchemeId": "600"}]  # only default; 10001 rides it
+    a3 = await run(P3)
+    itss3 = next(s for s in a3["steps"] if s["ref"] == "itss")
+    remap3 = {m["issueTypeId"]: m["screenSchemeId"] for m in itss3["body"]["issueTypeMappings"]}
+    check("ittscreen(default-split): adds a mapping for the type, keeps default",
+          remap3 == {"default": "600", "10001": "@screen_scheme"}, remap3)
+    check("ittscreen(default-split): clones ITSS + repoints even though dedicated",
+          a3["repoint"] is not None and any(s["ref"] == "screen_scheme" for s in a3["steps"]), a3)
+
 
 async def main() -> None:
     await suite_write_task()

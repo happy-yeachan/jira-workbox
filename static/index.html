@@ -2024,7 +2024,17 @@
     <div class="modal">
       <div class="body">
         <h3><span x-text="assignScreen.itLabel"></span> — 다른 화면 지정</h3>
-        <p class="sub" style="margin:0 0 12px">이 이슈타입만 고른 화면을 쓰게 합니다. 같은 화면 스킴을 쓰는 다른 이슈타입·다른 프로젝트는 그대로예요.</p>
+        <p class="sub" style="margin:0 0 12px">고른 이슈타입만 고른 화면을 쓰게 합니다. 같은 화면 스킴을 쓰는 다른 이슈타입·다른 프로젝트는 그대로예요.</p>
+        <template x-if="assignScreen.pickType">
+          <label class="field"><span class="name">이슈타입 선택</span>
+            <select class="lic-sel" style="width:100%" x-model="assignScreen.issueType">
+              <option value="" disabled>이슈타입을 고르세요</option>
+              <template x-for="t in assignScreen.types" :key="t.id">
+                <option :value="t.id" x-text="t.name"></option>
+              </template>
+            </select>
+          </label>
+        </template>
         <label class="field"><span class="name">화면 선택</span>
           <input type="text" placeholder="화면 이름으로 검색" x-model="assignScreen.q" @input.debounce.300ms="assignSearchScreens()">
         </label>
@@ -2048,7 +2058,8 @@
       </div>
       <div class="foot">
         <button class="btn ghost" @click="assignScreen = null">취소</button>
-        <button class="btn primary" @click="assignConfirm()" :disabled="!assignScreen.screen || !assignScreen.ops.length">미리보기</button>
+        <button class="btn primary" @click="assignConfirm()"
+                :disabled="!assignScreen.screen || !assignScreen.ops.length || (assignScreen.pickType && !assignScreen.issueType)">미리보기</button>
       </div>
     </div>
   </div>
@@ -3122,8 +3133,19 @@ document.addEventListener('alpine:init', () => {
 
     // "화면 지정": pick a screen for ONE issue type, then run the isolate flow
     // (node_kind=issue_type_screen) with the picked screen merged in.
-    openAssignScreen(params, itLabel) {
-      this.assignScreen = { params, itLabel, q: '', results: [], screen: null, ops: ['default'], err: '' };
+    async openAssignScreen(params, itLabel) {
+      // when the scheme is mapped via 'default', let the operator pick which
+      // concrete issue type to split off (fetch the project's types)
+      const pickType = params.issue_type_id === 'default';
+      this.assignScreen = { params, itLabel, q: '', results: [], screen: null, ops: ['default'],
+                            err: '', pickType, types: [], issueType: '' };
+      if (pickType) {
+        try {
+          const res = await fetch('/api/project-issuetypes?project=' + encodeURIComponent(params.project));
+          const data = await res.json().catch(() => []);
+          if (res.ok && Array.isArray(data)) this.assignScreen.types = data;
+        } catch (_) { /* leave empty; user can still cancel */ }
+      }
     },
     async assignSearchScreens() {
       const q = (this.assignScreen.q || '').trim();
@@ -3137,9 +3159,10 @@ document.addEventListener('alpine:init', () => {
     assignPickScreen(s) { this.assignScreen.screen = s; this.assignScreen.results = []; this.assignScreen.q = s.name; },
     assignConfirm() {
       const a = this.assignScreen;
-      if (!a.screen || !a.ops.length) return;
+      if (!a.screen || !a.ops.length || (a.pickType && !a.issueType)) return;
       const p = { ...a.params, target_screen_id: a.screen.id, target_screen_name: a.screen.name,
                   screen_ops: [...a.ops] };
+      if (a.pickType) p.issue_type_id = a.issueType;  // the concrete type split off from default
       this.assignScreen = null;
       this.isolate(p);  // selects config_isolate + previews with these params
     },

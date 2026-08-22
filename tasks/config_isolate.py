@@ -675,11 +675,14 @@ async def _plan_issue_type_screen(
         new_screens[op] = target_screen
     new_screens.setdefault("default", target_screen)
 
-    # how many issue types does this scheme serve here? if it's the only one AND
-    # the scheme is this project's own, edit it in place; otherwise clone so the
-    # other issue types keep the original.
+    # does this issue type have its OWN ITSS mapping, or is it only covered by the
+    # 'default' mapping? (a scheme shown as "모든 작업 유형(기본)" means the picked type
+    # rides the default and needs a NEW mapping, not a rewrite.)
+    has_mapping = any(m["issueTypeId"] == it_id for m in mappings)
+    # if the scheme already serves ONLY this issue type and is this project's own,
+    # edit it in place; otherwise clone so the other issue types keep the original.
     served_here = [m["issueTypeId"] for m in mappings if m["screenSchemeId"] == ss_id]
-    scheme_private = (not params.screen_scheme_shared) and served_here == [it_id]
+    scheme_private = (not params.screen_scheme_shared) and served_here == [it_id] and has_mapping
 
     steps: list[dict[str, Any]] = []
     inplace: list[dict[str, Any]] = []
@@ -702,11 +705,16 @@ async def _plan_issue_type_screen(
         name_fields.append({"param": "screen_scheme_name", "label": "화면 스킴 이름", "value": ss_clone})
         rewritten_ss = "@screen_scheme"
 
-        # re-point ONLY this issue type's ITSS mapping to the new scheme
-        if params.itss_shared:
+        # re-point ONLY this issue type to the new scheme. If it's shared, OR the
+        # type has no explicit mapping yet (covered by default → we must ADD one),
+        # clone the whole ITSS so rollback is a clean delete+repoint. Otherwise
+        # (dedicated ITSS, existing mapping) rewrite that one mapping in place.
+        if params.itss_shared or not has_mapping:
             new_mappings = [{"issueTypeId": m["issueTypeId"],
                              "screenSchemeId": (rewritten_ss if m["issueTypeId"] == it_id else m["screenSchemeId"])}
                             for m in mappings]
+            if not has_mapping:
+                new_mappings.append({"issueTypeId": it_id, "screenSchemeId": rewritten_ss})
             steps.append({"ref": "itss", "create_path": _P_ITSS_ONE, "one_path": _P_ITSS_ONE + "/{id}",
                           "created_id_keys": ["id"],
                           "body": {"name": itss_clone, "issueTypeMappings": new_mappings}})

@@ -378,6 +378,22 @@ async def search_groups(q: str = "", limit: int = 50) -> list[dict[str, str]]:
     ]
 
 
+@app.get("/api/project-issuetypes")
+async def project_issue_types(project: str = Query(...)) -> list[dict[str, str]]:
+    """The issue types of one project — for the '화면 지정' picker when a screen
+    scheme is mapped via 'default' and the operator must choose which type."""
+    client = _require_client()
+    if not project.strip():
+        raise HTTPException(status_code=422, detail="프로젝트 키가 필요합니다.")
+    try:
+        proj = await client.get_json(f"/project/{project.strip()}", params={"expand": "issueTypes"})
+    except UpstreamError as exc:
+        code = 403 if exc.status_code in (401, 403, 404) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
+    return [{"id": str(t.get("id")), "name": str(t.get("name") or t.get("id"))}
+            for t in (proj.get("issueTypes") or []) if t.get("id")]
+
+
 @app.get("/api/screens")
 async def search_screens(q: str = "", limit: int = 20) -> list[dict[str, str]]:
     """Screen typeahead — matches name/description. For the '이슈타입 화면 지정' picker."""
