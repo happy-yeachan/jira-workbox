@@ -492,6 +492,48 @@ def _subst(value: Any, ids: dict[str, str]) -> Any:
     return value
 
 
+_P_ITSS_PROJECTS = "/issuetypescreenscheme/{itss_id}/project"
+
+
+async def _itss_shared_live(client: WorkboxClient, itss_id: str, target_id: str) -> bool:
+    """Live: is this ITSS associated with any project other than the target?
+
+    Re-derived at plan time (from the authoritative per-ITSS project endpoint) so a
+    stale 'dedicated' verdict handed down from the diagnosis can never drive a
+    destructive IN-PLACE edit of a shared ITSS. Conservative — any read failure or
+    an incomplete scan returns True (treat as shared → clone, never edit in place)."""
+    try:
+        rows, integ = await client.scan_all(
+            _P_ITSS_PROJECTS.format(itss_id=itss_id), items_key="values", page_size=100)
+    except UpstreamError:
+        return True
+    if not integ.complete:
+        return True
+    tid = _sid(target_id)
+    return any(_sid(r.get("id")) not in ("", tid) for r in rows)
+
+
+async def _screen_scheme_shared_live(
+    client: WorkboxClient, ss_id: str, itss_id: str, target_id: str
+) -> bool:
+    """Live: would an in-place edit of this screen scheme touch anything beyond the
+    target? True unless it is reached ONLY through the target's dedicated ITSS.
+    Conservative on any read failure/incomplete scan."""
+    # if the ITSS pointing here is itself shared, an in-place edit hits every
+    # project on that ITSS
+    if await _itss_shared_live(client, itss_id, target_id):
+        return True
+    try:
+        rows, integ = await client.scan_all(_P_ITSS_MAPPING, items_key="values", page_size=100)
+    except UpstreamError:
+        return True
+    if not integ.complete:
+        return True
+    sid, iid = _sid(ss_id), _sid(itss_id)
+    return any(_sid(r.get("screenSchemeId")) == sid
+               and _sid(r.get("issueTypeScreenSchemeId")) != iid for r in rows)
+
+
 async def _plan_screen_fork(
     client: WorkboxClient, params: Params, target_id: str, target_key: str
 ) -> AsyncIterator[ProgressEvent]:
@@ -551,7 +593,10 @@ async def _plan_screen_fork(
         plan_rows.append({"kind": "스크린", "from": sc_name, "to": sc_clone})
         name_fields.append({"param": "screen_name", "label": "스크린 이름", "value": sc_clone})
         new_screens = {op: ("@screen" if sid == screen_id else sid) for op, sid in ss_screens.items()}
-        if params.screen_scheme_shared:
+        # re-verify sharedness LIVE — never edit a shared screen scheme in place
+        # on the strength of a possibly-stale flag from the diagnosis
+        ss_shared = await _screen_scheme_shared_live(client, ss_id, itss_id, target_id)
+        if ss_shared:
             steps.append({"ref": "screen_scheme", "create_path": _P_SS_ONE, "one_path": _P_SS_ONE + "/{id}",
                           "created_id_keys": ["id"],
                           "body": {"name": ss_clone, "screens": new_screens}})
@@ -575,7 +620,7 @@ async def _plan_screen_fork(
 
     # ---- ITSS (only when a screen scheme clone needs re-referencing) ----------
     if need_itss:
-        if params.itss_shared:
+        if await _itss_shared_live(client, itss_id, target_id):
             new_mappings = [{"issueTypeId": m["issueTypeId"],
                              "screenSchemeId": (rewritten_ss if m["screenSchemeId"] == ss_id else m["screenSchemeId"])}
                             for m in mappings]
@@ -730,7 +775,9 @@ async def _plan_issue_type_screen(
     #  * dedicated ITSS, type rides 'default' → ADD its mapping in place and
     #    remove it on rollback (reuse the existing ITSS, no needless clone);
     #  * dedicated ITSS, type already mapped → rewrite that one mapping in place.
-    if params.itss_shared:
+    # sharedness re-verified LIVE — a stale 'dedicated' flag must never let an
+    # in-place ITSS edit leak into other projects.
+    if await _itss_shared_live(client, itss_id, target_id):
         new_mappings = [{"issueTypeId": m["issueTypeId"],
                          "screenSchemeId": (rewritten_ss if m["issueTypeId"] == it_id else m["screenSchemeId"])}
                         for m in mappings]
@@ -1455,6 +1502,12 @@ async def execute_stream(
             if item.ok and undo:
                 undos.append(Change(target_id=change.target_id, label=change.label, after=undo))
             yield ProgressEvent(type="item", index=done, total=total, item=item)
+
+        if any(r.ok for r in results):
+            # this run cloned/edited workflows, screens or schemes → the cached
+            # global workflow scan is now stale; drop it so the next audit re-reads
+            from tasks import screen_share_analysis as _ssa
+            _ssa.invalidate_workflow_cache(client)
 
         if undos:
             a0 = plan_result.changes[0].after

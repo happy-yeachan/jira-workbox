@@ -65,6 +65,58 @@ _WORKFLOW_PAGE = 50
 _MAPPING_CHUNK = 50
 
 
+@dataclass(slots=True)
+class _WorkflowScan:
+    """One session's global workflow transition scan."""
+    wf_rows: list[dict[str, Any]]
+    integrity: ScanIntegrity
+    active_ids: set[str] | None
+    max_workflows: int
+
+
+#: Session cache of the global workflow transition scan, keyed by site URL.
+#:
+#: The reverse index "which workflow transitions use screen X" has no server-side
+#: lookup, so building it means reading every workflow's transitions — the slow
+#: step of an audit. It is identical for every project and changes only when a
+#: workflow is edited, so we compute it once and reuse it across audits in the same
+#: session. Dropped by :func:`invalidate_workflow_cache` after any write that can
+#: change workflows/screens. In-memory only — nothing is written to disk, so no
+#: stale snapshot survives a restart and no config data lands in a file.
+_wf_scan_cache: dict[str, _WorkflowScan] = {}
+
+
+def _wf_cache_key(client: WorkboxClient) -> str:
+    return _sid(getattr(client, "site_url", "")) or "default"
+
+
+def _wf_cache_get(client: WorkboxClient, max_workflows: int) -> _WorkflowScan | None:
+    hit = _wf_scan_cache.get(_wf_cache_key(client))
+    # a scan capped lower than this request wants cannot answer it
+    if hit is not None and hit.max_workflows >= max_workflows:
+        return hit
+    return None
+
+
+def _wf_cache_put(
+    client: WorkboxClient, max_workflows: int, wf_rows: list[dict[str, Any]],
+    integrity: ScanIntegrity, active_ids: set[str] | None,
+) -> _WorkflowScan:
+    entry = _WorkflowScan(wf_rows, integrity, active_ids, max_workflows)
+    _wf_scan_cache[_wf_cache_key(client)] = entry
+    return entry
+
+
+def invalidate_workflow_cache(client: WorkboxClient | None = None) -> None:
+    """Drop the cached global workflow scan. Call after any write that can change
+    workflows or their transition screens (config isolate, project create). Pass
+    no client to clear every site (e.g. on a credential change)."""
+    if client is None:
+        _wf_scan_cache.clear()
+    else:
+        _wf_scan_cache.pop(_wf_cache_key(client), None)
+
+
 # --------------------------------------------------------------------------
 # 1. Params
 # --------------------------------------------------------------------------
@@ -445,46 +497,59 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         yield _phase("scan_target_workflows",
                      f"{target.key} 소유 워크플로우 {len(index.target_workflow_ids)}개")
 
-        try:
-            rows, integrity = await client.scan_all(
-                _P_WORKFLOWS, items_key="values",
-                params={"isActive": "true"}, page_size=_WORKFLOW_PAGE,
-            )
-            index.active_workflow_ids = {_sid(r.get("id")) for r in rows}
-            if not integrity.complete:
-                index.active_workflow_ids = None
-                yield report.warn(
-                    "활성 워크플로우 조회가 불완전해서 전역 워크플로우가 다른 곳에서 "
-                    "쓰이는지 증명할 수 없습니다. '공유 의심' 행이 늘어납니다"
+        # The global transition scan (all workflows) is the expensive step and is
+        # identical for every project, so compute it once per session and reuse it
+        # across audits. It is dropped on any write via invalidate_workflow_cache().
+        cached = _wf_cache_get(client, params.max_workflows)
+        if cached is None:
+            active_ids: set[str] | None = None
+            try:
+                rows, integ = await client.scan_all(
+                    _P_WORKFLOWS, items_key="values",
+                    params={"isActive": "true"}, page_size=_WORKFLOW_PAGE,
                 )
-        except UpstreamError as exc:
-            index.active_workflow_ids = None
-            yield report.warn(f"활성 워크플로우 조회 실패({exc}). '공유 의심' 행이 늘어납니다")
-        yield _phase("scan_active_workflow_ids", "활성 워크플로우 목록 확보")
+                active_ids = {_sid(r.get("id")) for r in rows}
+                if not integ.complete:
+                    active_ids = None
+            except UpstreamError:
+                active_ids = None
+            yield _phase("scan_active_workflow_ids", "활성 워크플로우 목록 확보")
 
-        scan = ScanStream(
-            client, _P_WORKFLOWS, items_key="values",
-            params={"expand": "values.transitions"}, page_size=_WORKFLOW_PAGE,
-            limit=params.max_workflows,
-        )
-        async for collected, expected in scan:
-            yield _phase("scan_workflows", f"워크플로우 전환 검사 {collected}/{expected or '?'}",
-                         index=collected, total=expected)
-        wf_rows, integrity = scan.result()
-        index.scans.append(integrity)
-        index.workflow_scan_complete = integrity.complete
-        if not integrity.complete:
+            scan = ScanStream(
+                client, _P_WORKFLOWS, items_key="values",
+                params={"expand": "values.transitions"}, page_size=_WORKFLOW_PAGE,
+                limit=params.max_workflows,
+            )
+            async for collected, expected in scan:
+                yield _phase("scan_workflows", f"워크플로우 전환 검사 {collected}/{expected or '?'}",
+                             index=collected, total=expected)
+            wf_rows, wf_integrity = scan.result()
+            cached = _wf_cache_put(client, params.max_workflows, wf_rows, wf_integrity, active_ids)
+        else:
+            yield _phase("scan_workflows",
+                         f"워크플로우 {len(cached.wf_rows)}개 (세션 캐시 재사용)")
+
+        # derive into this index — identical whether the scan was fresh or reused
+        index.active_workflow_ids = cached.active_ids
+        if index.active_workflow_ids is None:
             yield report.warn(
-                f"워크플로우 조회가 불완전합니다({integrity.detail}). 모든 '전용' 판정이 "
+                "활성 워크플로우 목록을 확정하지 못해 전역 워크플로우가 다른 곳에서 "
+                "쓰이는지 증명할 수 없습니다. '공유 의심' 행이 늘어납니다"
+            )
+        index.scans.append(cached.integrity)
+        index.workflow_scan_complete = cached.integrity.complete
+        if not cached.integrity.complete:
+            yield report.warn(
+                f"워크플로우 조회가 불완전합니다({cached.integrity.detail}). 모든 '전용' 판정이 "
                 "'확인 불가'로 내려갑니다"
             )
-        if len(wf_rows) >= params.max_workflows:
+        if len(cached.wf_rows) >= params.max_workflows:
             index.workflow_scan_complete = False
             yield report.warn(
                 f"워크플로우 조회가 상한({params.max_workflows})에서 멈췄습니다. 한도를 "
                 "올려 다시 실행한 뒤 결과를 신뢰하세요"
             )
-        unparsed = _ingest_workflows(index, wf_rows)
+        unparsed = _ingest_workflows(index, cached.wf_rows)
         if unparsed:
             index.workflow_scan_complete = False
             yield report.warn(
@@ -492,7 +557,7 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
                 "워크플로우 정보가 불완전합니다"
             )
         yield _phase("scan_workflows",
-                     f"워크플로우 {len(wf_rows)}개 · 화면 참조 "
+                     f"워크플로우 {len(cached.wf_rows)}개 · 화면 참조 "
                      f"{sum(len(v) for v in index.workflow_refs_by_screen.values())}건")
     else:
         yield report.warn(

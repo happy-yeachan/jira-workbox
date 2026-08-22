@@ -1088,7 +1088,8 @@ async def suite_screen_clone() -> None:
 
     # screen fork naming: each clone's name is overridable and echoed for the UI.
     # The mock also answers the name-collision checks: "이미 있는 스킴" already exists.
-    def fork_site(request: httpx.Request) -> httpx.Response:
+    def make_fork_site(itss_projects):
+      def fork_site(request: httpx.Request) -> httpx.Response:
         p, q = request.url.path, request.url.params
         base = "/rest/api/3"
         qs = q.get("queryString")
@@ -1096,6 +1097,10 @@ async def suite_screen_clone() -> None:
             if qs is not None:  # name-existence check
                 return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
             return httpx.Response(200, json={"values": [{"id": "700", "name": "원본 ITSS"}]})
+        # live sharedness re-verify: which projects use ITSS 700
+        if p == f"{base}/issuetypescreenscheme/700/project":
+            rows = [{"id": pid, "key": pid, "name": pid} for pid in itss_projects]
+            return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 100, "total": len(rows)})
         if p == f"{base}/issuetypescreenscheme/mapping":
             rows = [{"issueTypeScreenSchemeId": "700", "issueTypeId": "default", "screenSchemeId": "600"}]
             return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 100, "total": 1})
@@ -1112,8 +1117,14 @@ async def suite_screen_clone() -> None:
                 return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
             return httpx.Response(200, json={"values": [{"id": "500", "name": "원본 스크린"}]})
         return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+      return fork_site
 
-    client = _client_for(fork_site)
+    # ITSS 700 shared with another project → live re-verify says "clone"
+    shared_fork_site = make_fork_site(["10000", "20000"])
+    # ITSS 700 used only by the target → live re-verify says "dedicated / in place"
+    dedicated_fork_site = make_fork_site(["10000"])
+
+    client = _client_for(shared_fork_site)
     P = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="screen",
                    node_id="500", itss_id="700", screen_scheme_id="600",
                    itss_shared=True, screen_scheme_shared=True,
@@ -1134,7 +1145,7 @@ async def suite_screen_clone() -> None:
     await client.aclose()
 
     # a name that already exists is flagged before execution
-    client = _client_for(fork_site)
+    client = _client_for(shared_fork_site)
     Pc = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="screen",
                     node_id="500", itss_id="700", screen_scheme_id="600",
                     itss_shared=True, screen_scheme_shared=True,
@@ -1149,7 +1160,7 @@ async def suite_screen_clone() -> None:
     await client.aclose()
 
     # defaults when no override is given (and a dedicated screen scheme → only the screen is cloned)
-    client = _client_for(fork_site)
+    client = _client_for(dedicated_fork_site)
     P2 = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="screen",
                     node_id="500", itss_id="700", screen_scheme_id="600",
                     itss_shared=False, screen_scheme_shared=False)
@@ -1282,7 +1293,7 @@ async def suite_issue_type_screen() -> None:
     print("config_isolate: per-issue-type screen split (duplicate)")
     import tasks.config_isolate as iso
 
-    def site(mappings):
+    def site(mappings, itss_projects):
         def handler(request: httpx.Request) -> httpx.Response:
             p, q = request.url.path, request.url.params
             base = "/rest/api/3"
@@ -1290,6 +1301,10 @@ async def suite_issue_type_screen() -> None:
                 if q.get("queryString") is not None:
                     return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
                 return httpx.Response(200, json={"values": [{"id": "700", "name": "공유 ITSS"}]})
+            # live sharedness re-verify: which projects use ITSS 700
+            if p == f"{base}/issuetypescreenscheme/700/project":
+                rows = [{"id": pid, "key": pid, "name": pid} for pid in itss_projects]
+                return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 100, "total": len(rows)})
             if p == f"{base}/issuetypescreenscheme/mapping":
                 rows = [{"issueTypeScreenSchemeId": "700", **m} for m in mappings]
                 return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 100, "total": len(rows)})
@@ -1305,7 +1320,10 @@ async def suite_issue_type_screen() -> None:
         return handler
 
     async def run(params):
-        client = _client_for(site(params._mappings))
+        # ITSS 700's projects for the live sharedness re-verify: shared cases add a
+        # second project, dedicated cases keep only the target
+        itss_projects = ["10000", "20000"] if params.itss_shared else ["10000"]
+        client = _client_for(site(params._mappings, itss_projects))
         plan = None
         async for ev in iso._plan_issue_type_screen(client, params, "10000", "NZGE"):
             if ev.type == "plan":
@@ -1368,6 +1386,48 @@ async def suite_issue_type_screen() -> None:
     remap4 = {m["issueTypeId"]: m["screenSchemeId"] for m in itss4["body"]["issueTypeMappings"]}
     check("ittscreen(default-split, shared ITSS): clones ITSS, adds mapping, keeps default",
           remap4 == {"default": "600", "10001": "@screen_scheme"} and a4["repoint"] is not None, remap4)
+
+    # SAFETY: the diagnosis handed down 'dedicated' (itss_shared=False), but the
+    # ITSS is actually shared with another project now. The live re-verify must
+    # override the stale flag and CLONE, never edit the shared ITSS in place.
+    P5 = mk(itss_shared=False, screen_scheme_shared=False)
+    P5._mappings = [{"issueTypeId": "10001", "screenSchemeId": "600"}]
+    client = _client_for(site(P5._mappings, ["10000", "20000"]))  # ITSS shared live
+    plan5 = None
+    async for ev in iso._plan_issue_type_screen(client, P5, "10000", "NZGE"):
+        if ev.type == "plan":
+            plan5 = ev.plan
+    await client.aclose()
+    a5 = plan5.changes[0].after
+    check("ittscreen(SAFETY): stale 'dedicated' flag but live-shared ITSS → clone, not in-place",
+          any(s["ref"] == "itss" for s in a5["steps"]) and a5["repoint"] is not None
+          and not a5["inplace"], a5)
+
+
+async def suite_workflow_cache() -> None:
+    print("screen_share_analysis: session workflow-scan cache")
+    import tasks.screen_share_analysis as ssa
+    from core.client import ScanIntegrity
+
+    class _C:
+        site_url = "https://a.example.net"
+
+    class _C2:
+        site_url = "https://b.example.net"
+
+    c = _C()
+    ssa.invalidate_workflow_cache()
+    integ = ScanIntegrity(path="/workflows/search", expected_total=1, collected=1)
+    check("wf-cache: empty before the first scan", ssa._wf_cache_get(c, 2000) is None)
+    ssa._wf_cache_put(c, 2000, [{"id": "w1"}], integ, {"w1"})
+    hit = ssa._wf_cache_get(c, 2000)
+    check("wf-cache: reused after the first scan (no re-scan)",
+          hit is not None and hit.wf_rows == [{"id": "w1"}] and hit.active_ids == {"w1"}, hit)
+    check("wf-cache: a request needing a higher cap than cached misses (re-scans)",
+          ssa._wf_cache_get(c, 5000) is None)
+    check("wf-cache: keyed by site (other site is a miss)", ssa._wf_cache_get(_C2(), 2000) is None)
+    ssa.invalidate_workflow_cache(c)
+    check("wf-cache: dropped after a write (invalidate)", ssa._wf_cache_get(c, 2000) is None)
 
 
 async def suite_rollback_safety() -> None:
@@ -1487,6 +1547,8 @@ async def main() -> None:
     await suite_screen_clone()
     print()
     await suite_issue_type_screen()
+    print()
+    await suite_workflow_cache()
     print()
     await suite_space_create()
     print()

@@ -317,6 +317,9 @@ async def setup_credentials(body: SetupRequest, request: Request) -> dict[str, o
     _install_client(creds)
     if old is not None:
         await old.aclose()
+    # a new site/token means the session's cached workflow scan may not apply
+    from tasks import screen_share_analysis
+    screen_share_analysis.invalidate_workflow_cache()
 
     log.info("credentials stored via web setup: site=%s account=%s",
              site_url, mask_email(email))

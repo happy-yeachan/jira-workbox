@@ -316,6 +316,11 @@ async def execute_stream(
             yield ProgressEvent(type="item", index=done, total=total, item=item)
 
         succeeded = [by_id[r.target_id] for r in results if r.ok and r.target_id in by_id]
+        if succeeded:
+            # a new/removed project brings its own workflows → the cached global
+            # workflow scan is stale
+            from tasks import screen_share_analysis as _ssa
+            _ssa.invalidate_workflow_cache(client)
         inverse = _invert(succeeded)
         if inverse:
             did = succeeded[0].after.get("op", "create")
