@@ -187,6 +187,16 @@ class BaseApiClient:
                 f"{self.short_error(response)}",
                 status_code=response.status_code,
             )
+        if 300 <= response.status_code < 400:
+            # redirects are disabled (follow_redirects=False, an SSRF guard), so a
+            # 3xx would otherwise fall through as an empty {} and read as "no data".
+            # Surface it instead — a wrong base/site URL is the usual cause.
+            loc = response.headers.get("location", "")
+            raise UpstreamError(
+                f"{method} {path} -> {response.status_code} 리다이렉트"
+                + (f" → {loc[:80]}" if loc else "") + " (엔드포인트/사이트 URL 확인 필요)",
+                status_code=502,
+            )
         if not response.content:
             return {}
         try:

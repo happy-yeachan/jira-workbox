@@ -349,12 +349,35 @@ async def setup_org(body: OrgSetupRequest, request: Request) -> dict[str, object
     try:
         org_id = await client.org_id()
     except UpstreamError as exc:
-        code = 403 if exc.status_code in (401, 403) else 502
-        raise HTTPException(status_code=code,
-                            detail=f"조직 API 키를 확인하지 못했습니다: {exc}"[:200]) from None
+        if exc.status_code in (401, 403):
+            # by far the most common first-time mistake: pasting the wrong key.
+            raise HTTPException(status_code=403, detail=(
+                "조직 API 키 인증에 실패했습니다. admin.atlassian.com → 설정 → API 키에서 만든 "
+                "'조직 admin API 키'가 맞는지 확인하세요. 개인 API 토큰(id.atlassian.com)이나 "
+                "사이트 API 토큰은 여기서 쓸 수 없습니다.")) from None
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=(
+                "이 키로 접근할 수 있는 조직이 없습니다. 올바른 조직의 admin 키인지 확인하세요."
+            )) from None
+        raise HTTPException(status_code=502,
+                            detail=f"조직 API 키 확인 중 오류: {exc}"[:200]) from None
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — never surface an opaque 500 during setup
+        log.error("org key verification failed unexpectedly: %s", exc)
+        raise HTTPException(status_code=502, detail=(
+            f"조직 API 키 확인 중 예기치 못한 오류({type(exc).__name__}). "
+            "네트워크와 키를 확인하세요.")) from None
     finally:
         await client.aclose()
-    store_org_credentials(creds.api_key.get_secret_value(), org_id)
+
+    try:
+        store_org_credentials(creds.api_key.get_secret_value(), org_id)
+    except Exception as exc:  # noqa: BLE001 — the keychain write can fail or be denied
+        log.error("org key keychain write failed: %s", exc)
+        raise HTTPException(status_code=500, detail=(
+            f"키는 확인했지만 OS 키체인 저장에 실패했습니다({type(exc).__name__}). "
+            "키체인 접근 권한을 확인하세요.")) from None
     log.info("org admin key stored via web setup: org_id=%s", org_id)
     return {"ok": True, "org_id": org_id}
 
