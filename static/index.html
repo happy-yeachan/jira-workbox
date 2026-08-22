@@ -536,10 +536,12 @@
   .drawer-body { padding: 16px; overflow: auto; }
   .hist-item { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   .hist-item.rolled_back { opacity: .6; background: var(--surface-2); }
-  .hist-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; }
-  .hist-title { font-size: 13.5px; font-weight: 550; display: flex; align-items: flex-start; gap: 6px; }
-  .hist-title > span:last-child { word-break: break-word; }
+  .hist-head { display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; }
+  .hist-title { font-size: 13.5px; font-weight: 550; display: flex; align-items: flex-start; gap: 6px; cursor: pointer; }
+  .hist-title > span:last-child { word-break: keep-all; overflow-wrap: anywhere; }
   .hist-title .tg-caret { color: var(--muted); font-size: 11px; flex: none; margin-top: 2px; }
+  .hist-foot { display: flex; align-items: center; gap: 8px; }
+  .hist-foot .sub { min-width: 0; flex: 1; word-break: keep-all; }
   .hist-detail { padding: 4px 12px 10px; border-top: 1px solid var(--line-soft); background: var(--surface-2); }
   .hist-detail-row { font-size: 12.5px; color: var(--ink-2); padding: 4px 0; border-bottom: 1px solid var(--line-soft); word-break: break-word; }
   .hist-detail-row:last-child { border-bottom: 0; }
@@ -674,26 +676,25 @@
         </template>
         <template x-for="h in history" :key="h.id">
           <div class="hist-item" :class="h.status">
-            <div class="hist-row">
-              <div style="min-width:0; flex:1; cursor:pointer" @click="toggleHist(h.id)">
-                <div class="hist-title">
-                  <span class="tg-caret" x-show="h.detail && h.detail.length"
-                        x-text="histOpen.includes(h.id) ? '▾' : '▸'"></span>
-                  <span x-text="h.title"></span>
-                </div>
-                <div class="sub">
+            <div class="hist-head">
+              <div class="hist-title" @click="toggleHist(h.id)">
+                <span class="tg-caret" x-show="h.detail && h.detail.length"
+                      x-text="histOpen.includes(h.id) ? '▾' : '▸'"></span>
+                <span x-text="h.title"></span>
+              </div>
+              <div class="hist-foot">
+                <div class="sub" @click="toggleHist(h.id)" style="cursor:pointer">
                   <span x-text="fmtTime(h.ts)"></span>
                   · 성공 <b x-text="h.succeeded"></b><span x-show="h.failed" x-text="' · 실패 ' + h.failed"></span>
                   <span x-show="h.detail && h.detail.length && !histOpen.includes(h.id)" x-text="' · 변경 ' + h.detail.length + '건'"></span>
                 </div>
+                <template x-if="h.can_rollback">
+                  <button class="btn small" style="flex:none" :disabled="running" @click.stop="rbConfirm = h">↩ 되돌리기</button>
+                </template>
+                <template x-if="h.status === 'rolled_back'">
+                  <span class="badge v-unknown" style="flex:none">되돌림</span>
+                </template>
               </div>
-              <span class="spacer"></span>
-              <template x-if="h.can_rollback">
-                <button class="btn small" style="flex:none" :disabled="running" @click="rbConfirm = h">↩ 되돌리기</button>
-              </template>
-              <template x-if="h.status === 'rolled_back'">
-                <span class="badge v-unknown">되돌림</span>
-              </template>
             </div>
             <div class="hist-detail" x-show="histOpen.includes(h.id) && h.detail && h.detail.length">
               <template x-for="(d, i) in (h.detail || [])" :key="i">
