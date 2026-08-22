@@ -121,35 +121,38 @@ _INV_KIND = {
 
 def _summary_from_inverse(entry: dict[str, Any]) -> list[str]:
     """Best-effort detail for entries recorded before ``detail`` existed: read the
-    stored inverse (the undo) to describe what the run created/changed. Id-based
-    (names aren't in the inverse), but enough to tell entries apart."""
+    stored inverse to summarise what the run created/changed. Names aren't in the
+    inverse, so this counts objects by kind (no raw ids/uuids) — enough to tell
+    entries apart. New runs use the nicer name-based detail instead."""
+    from collections import Counter
+
     def kind_of(path: str) -> str:
         return _INV_KIND.get((path or "").strip("/").split("/")[0], "객체")
 
-    lines: list[str] = []
+    counts: Counter[str] = Counter()
+    repoint = False
     for c in entry.get("inverse", []):
         a = c.get("after", {}) or {}
         for dele in (a.get("delete") or []):
-            if isinstance(dele, list) and len(dele) >= 2:
-                lines.append(f"복제 생성: {kind_of(dele[0])} #{dele[1]}")
+            if isinstance(dele, list) and dele:
+                counts[kind_of(dele[0])] += 1
         if a.get("delete_scheme_id"):
-            lines.append(f"복제 생성: {kind_of(a.get('one_path', ''))} #{a['delete_scheme_id']}")
+            counts[kind_of(a.get("one_path", ""))] += 1
         if a.get("new_wf_id"):
-            lines.append(f"복제 생성: 워크플로우 #{a['new_wf_id']}")
+            counts["워크플로우"] += 1
         if a.get("new_ws_id"):
-            lines.append(f"복제 생성: 워크플로우 스킴 #{a['new_ws_id']}")
+            counts["워크플로우 스킴"] += 1
         for st in (a.get("steps") or []):
-            if isinstance(st, dict) and st.get("ref"):
-                lines.append(f"복제: {_INV_KIND.get((st.get('create_path') or '').strip('/').split('/')[0], st['ref'])}")
+            if isinstance(st, dict) and st.get("create_path"):
+                counts[kind_of(st["create_path"])] += 1
         if a.get("repoint") or a.get("restore_scheme_id") or a.get("ws_mode"):
-            lines.append("프로젝트/매핑 재지정")
-    seen: set[str] = set()
-    out: list[str] = []
-    for line in lines:
-        if line not in seen:
-            seen.add(line)
-            out.append(line)
-    return out[:60]
+            repoint = True
+    lines: list[str] = []
+    if counts:
+        lines.append("복제 생성: " + ", ".join(f"{k} {n}개" for k, n in counts.items()))
+    if repoint:
+        lines.append("프로젝트/매핑 재지정")
+    return lines or ["상세 정보 없음 (이전 형식)"]
 
 
 def history(limit: int = 50) -> list[dict[str, Any]]:

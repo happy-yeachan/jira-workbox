@@ -462,17 +462,22 @@ def _leftover_note(items: list[str]) -> str | None:
 
 
 def _plan_detail(plan_result: PlanResult) -> list[str]:
-    """Human-readable 'what this run did' lines (plan notes + preview-table rows)
-    for the 작업 기록 expandable detail — so a row isn't just '설정 분리 · 화면 구성'."""
+    """Human-readable, name-based 'what this run did' lines for the 작업 기록
+    expandable detail — the plan's summary note followed by one clean line per
+    created/re-pointed object (names, not ids)."""
     lines: list[str] = []
     for c in plan_result.changes:
         if getattr(c, "note", ""):
             lines.append(str(c.note))
     for t in plan_result.tables:
         for row in t.rows:
-            vals = [str(row.get(col.key)) for col in t.columns if str(row.get(col.key, "")).strip()]
-            if vals:
-                lines.append(" · ".join(vals))
+            kind, to, frm = (str(row.get(k, "")).strip() for k in ("kind", "to", "from"))
+            if kind and to:
+                lines.append(f"{kind}: {to}" + (f"  (원본: {frm})" if frm and frm != to else ""))
+            else:  # non-isolate table shape → join the row's non-empty cells
+                vals = [str(row.get(col.key)) for col in t.columns if str(row.get(col.key, "")).strip()]
+                if vals:
+                    lines.append(" · ".join(vals))
     return lines[:60]
 
 

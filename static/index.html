@@ -537,9 +537,9 @@
   .hist-item { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   .hist-item.rolled_back { opacity: .6; background: var(--surface-2); }
   .hist-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; }
-  .hist-title { font-size: 13.5px; font-weight: 550; display: flex; align-items: baseline; gap: 6px; }
-  .hist-title > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hist-title .tg-caret { color: var(--muted); font-size: 11px; flex: none; }
+  .hist-title { font-size: 13.5px; font-weight: 550; display: flex; align-items: flex-start; gap: 6px; }
+  .hist-title > span:last-child { word-break: break-word; }
+  .hist-title .tg-caret { color: var(--muted); font-size: 11px; flex: none; margin-top: 2px; }
   .hist-detail { padding: 4px 12px 10px; border-top: 1px solid var(--line-soft); background: var(--surface-2); }
   .hist-detail-row { font-size: 12.5px; color: var(--ink-2); padding: 4px 0; border-bottom: 1px solid var(--line-soft); word-break: break-word; }
   .hist-detail-row:last-child { border-bottom: 0; }
