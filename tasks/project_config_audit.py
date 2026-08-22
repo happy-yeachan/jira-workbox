@@ -144,15 +144,19 @@ _TYPES = [
 
 async def _scheme_to_projects(
     client: WorkboxClient, st: SchemeType, project_ids: list[str]
-) -> tuple[dict[str, set[str]], dict[str, str], bool]:
-    """Return (schemeId -> set(projectId), schemeId -> name, ok).
+) -> tuple[dict[str, set[str]], dict[str, str], bool, bool]:
+    """Return (schemeId -> set(projectId), schemeId -> name, ok, complete).
 
     Passes all project ids to the association endpoint in chunks; each row maps
-    one scheme to the projects (among those asked) that use it.
+    one scheme to the projects (among those asked) that use it. ``complete`` is
+    False if any paginated read was clamped/short — the caller must NOT conclude
+    "전용" (private) from an incomplete scan, only "공유됨" (which is monotonic:
+    more scanning can only find more sharing, never less).
     """
     scheme_projects: dict[str, set[str]] = {}
     names: dict[str, str] = {}
     ok = True
+    complete = True
 
     async def ingest(rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -173,16 +177,18 @@ async def _scheme_to_projects(
         params = {"projectId": chunk}
         try:
             if st.paginated:
-                rows = [r async for r in client.paginate_offset(
-                    st.path, items_key=st.items_key, params=params, page_size=50)]
+                rows, integ = await client.scan_all(
+                    st.path, items_key=st.items_key, params=params, page_size=50)
                 await ingest(rows)
+                if not integ.complete:
+                    complete = False
             else:
                 payload = await client.get_json(st.path, params=params)
                 await ingest(payload.get(st.items_key) or [])
         except UpstreamError as exc:
             ok = False
             log.warning("%s association read failed: %s", st.kind, exc)
-    return scheme_projects, names, ok
+    return scheme_projects, names, ok, complete
 
 
 # --------------------------------------------------------------------------
@@ -438,18 +444,24 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
     # every project (id -> "KEY (name)") so shared lists read nicely
     yield ProgressEvent(type="phase", phase="projects", message="전체 프로젝트 목록")
     projects: dict[str, str] = {}
-    async for p in client.paginate_offset(_P_PROJECT_SEARCH, items_key="values", page_size=50):
+    proj_rows, proj_integ = await client.scan_all(_P_PROJECT_SEARCH, items_key="values", page_size=50)
+    for p in proj_rows:
         pid = _sid(p.get("id"))
         projects[pid] = f"{p.get('key')} ({p.get('name')})"
     all_ids = list(projects)
     projects.setdefault(target_id, f"{target_key} ({target_name})")
+    # A short/clamped project list means we may not have asked every project
+    # whether it shares the target's scheme → we must not conclude "전용".
+    if not proj_integ.complete:
+        warnings.append("전체 프로젝트 목록을 끝까지 읽지 못해 공유 판정을 '확인 불가'로 둡니다.")
 
     selected = [st for st in _TYPES if st.check in params.checks]
     rows: list[SchemeRow] = []
     for n, st in enumerate(selected, 1):
         yield ProgressEvent(type="phase", phase="schemes", index=n, total=len(selected),
                             message=st.kind)
-        scheme_projects, names, ok = await _scheme_to_projects(client, st, all_ids)
+        scheme_projects, names, ok, assoc_complete = await _scheme_to_projects(client, st, all_ids)
+        scan_whole = ok and assoc_complete and proj_integ.complete
         # which scheme does the target use?
         target_scheme = next((sid for sid, ps in scheme_projects.items() if target_id in ps), None)
         if target_scheme is None:
@@ -461,13 +473,22 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
             continue
         other_ids = sorted(p for p in scheme_projects[target_scheme] if p != target_id)
         others = [projects.get(p, p) for p in other_ids]
-        verdict = "확인 불가" if not ok else ("공유됨" if other_ids else "전용")
+        # "공유됨" is monotonic-safe (finding one other project is proof); "전용"
+        # is a strong claim that permits an in-place edit, so require a whole scan.
+        if other_ids:
+            verdict = "공유됨"
+        elif scan_whole:
+            verdict = "전용"
+        else:
+            verdict = "확인 불가"
         rows.append(SchemeRow(
             st.kind, target_scheme, names.get(target_scheme, f"#{target_scheme}"),
             others, other_ids, verdict, note=st.detail, isolate_key=st.isolate_key,
         ))
         if not ok:
             warnings.append(f"{st.kind}: 일부 연결을 읽지 못해 '확인 불가'로 둡니다.")
+        elif not assoc_complete and not other_ids:
+            warnings.append(f"{st.kind}: 연결 목록이 잘려 '전용' 여부를 확정하지 못했습니다 ('확인 불가').")
 
     # --- permission scheme -----------------------------------------------
     # Unlike the others, permission schemes have no bulk association endpoint,

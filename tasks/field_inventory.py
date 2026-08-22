@@ -157,14 +157,19 @@ async def fetch_field_detail(client: WorkboxClient, field_id: str) -> dict[str, 
     it_by_ctx: dict[str, list[str]] = {}
     any_by_ctx: dict[str, bool] = {}
     for chunk in chunked(ctx_ids, 50):
-        pm = await client.get_json(f"/field/{field_id}/context/projectmapping", params={"contextId": chunk})
-        for row in (pm.get("values") or []):
+        # these mappings are offset-paginated — one page holds ~100 rows, and a
+        # chunk of 50 contexts can exceed that, so paginate or we undercount which
+        # spaces / issue types a context covers (the very signal this view surfaces)
+        async for row in client.paginate_offset(
+                f"/field/{field_id}/context/projectmapping",
+                items_key="values", params={"contextId": chunk}, page_size=50):
             cid, pid = _sid(row.get("contextId")), _sid(row.get("projectId"))
             if pid:
                 proj_by_ctx.setdefault(cid, []).append(pid)
                 proj_ids.add(pid)
-        im = await client.get_json(f"/field/{field_id}/context/issuetypemapping", params={"contextId": chunk})
-        for row in (im.get("values") or []):
+        async for row in client.paginate_offset(
+                f"/field/{field_id}/context/issuetypemapping",
+                items_key="values", params={"contextId": chunk}, page_size=50):
             cid = _sid(row.get("contextId"))
             if row.get("isAnyIssueType"):
                 any_by_ctx[cid] = True
@@ -256,9 +261,9 @@ async def apply_context(
 
     if not is_global:
         cur: set[str] = set()
-        pm = await client.get_json(f"/field/{field_id}/context/projectmapping",
-                                   params={"contextId": [ctx_id]})
-        for row in (pm.get("values") or []):
+        async for row in client.paginate_offset(
+                f"/field/{field_id}/context/projectmapping",
+                items_key="values", params={"contextId": [ctx_id]}, page_size=50):
             if _sid(row.get("contextId")) == ctx_id and row.get("projectId"):
                 cur.add(_sid(row.get("projectId")))
         desired = {_sid(p) for p in project_ids if _sid(p)}

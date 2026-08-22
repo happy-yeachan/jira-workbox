@@ -134,7 +134,9 @@ async def delete_group(client: WorkboxClient, group_id: str) -> None:
 async def remove_member(client: WorkboxClient, group_id: str, account_id: str) -> bool:
     resp = await client.request("DELETE", _P_GROUP_USER,
                                 params={"groupId": group_id, "accountId": account_id})
-    return resp.status_code < 400 or resp.status_code in (400, 404)  # gone counts as done
+    # 2xx = removed, 404 = already gone (both "done"); a 400 is a real error and
+    # must NOT be reported as a successful removal
+    return resp.status_code < 400 or resp.status_code == 404
 
 
 async def add_members(client: WorkboxClient, group_id: str, emails: list[str]) -> list[dict[str, Any]]:

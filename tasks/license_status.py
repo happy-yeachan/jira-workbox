@@ -40,6 +40,7 @@ _P_ROLES = "/applicationrole"
 _P_LICENSE = "/instance/license"
 _P_GROUP_MEMBER = "/group/member"
 _P_GROUPS_PICKER = "/groups/picker"
+_P_GROUP_BULK = "/group/bulk"
 
 #: what one seat is called, per application (JSM bills agents, not users)
 _SEAT_NOUN = {"jira-servicedesk": "에이전트"}
@@ -268,15 +269,27 @@ async def org_admin_members(client: WorkboxClient) -> set[str]:
     """Account ids of users in the org-/site-admin groups. Their JSM seat comes
     from being an admin, not from a service-desk assignment, so the UI marks them
     apart. Best-effort → empty set if the groups aren't visible."""
-    gids: list[str] = []
+    gids: set[str] = set()
+    # authoritative: resolve the canonical admin group ids straight from
+    # /group/bulk by exact name — the picker can omit admin groups (or their
+    # groupId) on some tenants, which would silently drop the admin tag.
+    try:
+        meta = await client.get_json(
+            _P_GROUP_BULK, params={"groupName": list(_ADMIN_GROUP_NAMES), "maxResults": 50})
+        for g in (meta.get("values") or []):
+            if g.get("groupId"):
+                gids.add(_sid(g["groupId"]))
+    except UpstreamError:
+        pass
+    # supplement: catch org-admin*/site-admin* naming variants via the picker
     try:
         picked = await client.get_json(_P_GROUPS_PICKER, params={"query": "admin", "maxResults": 50})
+        for g in (picked.get("groups") or []):
+            nm = _sid(g.get("name")).strip().lower()
+            if (nm in _ADMIN_GROUP_NAMES or nm.startswith("org-admin") or nm.startswith("site-admin")) and g.get("groupId"):
+                gids.add(_sid(g["groupId"]))
     except UpstreamError:
-        return set()
-    for g in (picked.get("groups") or []):
-        nm = _sid(g.get("name")).strip().lower()
-        if (nm in _ADMIN_GROUP_NAMES or nm.startswith("org-admin") or nm.startswith("site-admin")) and g.get("groupId"):
-            gids.append(_sid(g["groupId"]))
+        pass
     out: set[str] = set()
     for gid in gids:
         try:

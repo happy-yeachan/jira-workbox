@@ -370,7 +370,8 @@ async def search_groups(q: str = "", limit: int = 50) -> list[dict[str, str]]:
             "/groups/picker", params={"query": q, "maxResults": limit}
         )
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     return [
         {"id": str(g.get("groupId")), "name": g.get("name") or str(g.get("groupId"))}
         for g in (payload.get("groups") or [])
@@ -405,7 +406,8 @@ async def search_screens(q: str = "", limit: int = 20) -> list[dict[str, str]]:
     try:
         payload = await client.get_json("/screens", params=params)
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     return [
         {"id": str(s.get("id")), "name": str(s.get("name") or s.get("id"))}
         for s in (payload.get("values") or []) if s.get("id")
@@ -422,7 +424,8 @@ async def search_projects(q: str = "", limit: int = 20) -> list[dict[str, str]]:
             "/project/search", params={"query": q, "maxResults": limit,
                                        "orderBy": "key"})
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     return [
         {"id": str(p.get("id")), "key": str(p.get("key")), "name": str(p.get("name") or "")}
         for p in (payload.get("values") or [])
@@ -440,7 +443,8 @@ async def search_users(q: str = "", limit: int = 20) -> list[dict[str, str | Non
     try:
         rows = await client.get_json("/user/search", params={"query": q, "maxResults": limit})
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     rows = rows if isinstance(rows, list) else rows.get("value", [])
     out = []
     for u in rows:
@@ -460,7 +464,8 @@ async def list_permission_schemes(q: str = "", limit: int = 100) -> list[dict[st
     try:
         payload = await client.get_json("/permissionscheme")
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     rows = payload.get("permissionSchemes") or []
     ql = q.strip().lower()
     out = [{"id": str(s.get("id")), "name": str(s.get("name") or "")}
@@ -841,7 +846,8 @@ async def license_summary() -> dict[str, object]:
     except tasks.TaskInputError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     return {"applications": apps}
 
 
@@ -1117,7 +1123,8 @@ async def license_users(
     except tasks.TaskInputError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     if result is None:
         raise HTTPException(status_code=404, detail=f"없는 애플리케이션입니다: {app_key}")
     return result
@@ -1162,7 +1169,8 @@ async def jsm_agent_projects() -> dict[str, object]:
     except tasks.TaskInputError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
     return {"map": mapping, "org_admins": sorted(admins)}
 
 
@@ -1235,7 +1243,11 @@ async def list_space_templates(raw: bool = False) -> dict[str, object]:
         data = await client.json("GET", url)
     except (UpstreamError, ValueError) as exc:
         log.info("space templates unavailable: %s", str(exc)[:120])
-        return {"available": False, "templates": []}
+        # tell "you lack permission" apart from "no custom templates" so the picker
+        # can hint at the cause instead of silently showing only the presets
+        reason = ("권한 없음" if isinstance(exc, UpstreamError)
+                  and exc.status_code in (401, 403) else "")
+        return {"available": False, "templates": [], "reason": reason}
     if raw:
         return {"available": True, "raw": data}
     return {"available": True, "templates": _extract_templates(data)}
@@ -1297,7 +1309,8 @@ async def plan_task(name: str, payload: dict) -> PlanResult:
     except tasks.TaskInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except UpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
 
 
 @app.post("/api/tasks/{name}/plan/stream")

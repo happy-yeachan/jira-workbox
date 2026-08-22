@@ -269,14 +269,20 @@ async def _apply_one(client: WorkboxClient, change: Change) -> ItemResult:
 
 
 def _invert(succeeded: list[Change]) -> list[Change]:
-    """create ↔ delete, carrying create_body so a redo can re-create."""
+    """create ↔ delete, carrying only what undo/redo needs.
+
+    The journal must hold NO PII (see core/rollback.py): the lead's display name
+    and the human-readable labels from the plan-time ``after`` are dropped here.
+    We keep ``key`` (undo deletes by key) and ``create_body`` (redo re-creates) —
+    ``create_body`` carries the lead ACCOUNT ID, an opaque id, not a person's name.
+    """
     out: list[Change] = []
     for c in succeeded:
         op = c.after.get("op", "create")
         flip = "delete" if op == "create" else "create"
-        after = dict(c.after)
-        after["op"] = flip
-        out.append(Change(target_id=c.target_id, label=c.label, after=after))
+        after = {"op": flip, "key": c.after.get("key") or c.target_id,
+                 "create_body": c.after.get("create_body", {})}
+        out.append(Change(target_id=c.target_id, label=after["key"], after=after))
     return out
 
 

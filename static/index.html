@@ -2116,7 +2116,7 @@
 document.addEventListener('alpine:init', () => {
   Alpine.data('workbox', () => ({
     dark: false, assignScreen: null,
-    health: {}, tasks: [], groups: [], selected: null, fields: [], form: {},
+    health: {}, tasks: [], selected: null, fields: [], form: {},
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
     isoNames: {},  // config_isolate: editable name per clone that will be created
@@ -2237,17 +2237,6 @@ document.addEventListener('alpine:init', () => {
       };
       return svg(I[key] || '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>');
     },
-    // sidebar task order (menu-visible launcher tasks only). Names not listed
-    // fall to the end in their registration order.
-    orderedTasks() {
-      const ORDER = ['space_create', 'project_config_audit'];
-      const rank = (n) => { const i = ORDER.indexOf(n); return i < 0 ? ORDER.length : i; };
-      return this.tasks
-        .filter(t => t.spec.launcher !== false)
-        .slice()
-        .sort((a, b) => rank(a.spec.name) - rank(b.spec.name));
-    },
-
     async refreshHealth() {
       try {
         const h = await (await fetch('/api/health')).json();
@@ -3442,10 +3431,6 @@ document.addEventListener('alpine:init', () => {
         this.running = false; this.controller = null;
         this.loadHistory();  // a run (or undo) changed the record
       }
-    },
-
-    fmtTime(iso) {
-      try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
     },
 
     // Minimal SSE reader: split on blank lines, keep the `data:` payloads.

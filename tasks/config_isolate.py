@@ -1092,11 +1092,19 @@ async def _apply_fork_isolate(
     applied: list[list[Any]] = []            # [path, concrete restore_body], apply order
 
     async def _cleanup() -> None:
+        revert_ok = True
         for method, path, restore_body in reversed(applied):
             try:
-                await client.request(method, path, json=restore_body)
+                resp = await client.request(method, path, json=restore_body)
+                if not (200 <= resp.status_code < 300):
+                    revert_ok = False
             except Exception:  # noqa: BLE001
-                pass
+                revert_ok = False
+        # only delete the clones once every in-place edit that referenced them has
+        # been reverted — otherwise a dedicated scheme would be left pointing at a
+        # deleted object (same hazard as the restore path)
+        if not revert_ok:
+            return
         for one_path, nid in reversed(created):
             try:
                 await client.request("DELETE", one_path.format(id=nid))
@@ -1164,19 +1172,22 @@ async def _apply_fork_restore(
         if not ok:
             return ItemResult(target_id=change.target_id, ok=False, status_code=code,
                               error=f"원복 재지정 실패({code}). {err}"[:200]), {}
+    undo = {"op": "isolate", "scheme_type": a["scheme_type"], "label": a["label"],
+            "project_id": a["project_id"], "project_key": a["project_key"],
+            "steps": a["steps"], "inplace": a.get("inplace", []),
+            "repoint": rp, "restore_scheme_id": a["restore_scheme_id"]}
+    # If an essential in-place revert failed, the dedicated scheme still points at
+    # the clones — deleting them now would strand that scheme on a deleted object.
+    # Leave the clones intact and report failure so the revert can be retried.
+    if essential_err:
+        return ItemResult(target_id=change.target_id, ok=False,
+                          error="; ".join(essential_err)[:200]), undo
     # essential restore done — deleting the orphaned clones is cleanup only
     leftovers: list[str] = []
     for one_path, nid in a.get("delete", []):
         resp = await client.request("DELETE", one_path.format(id=nid))
         if not (resp.status_code < 400 or resp.status_code == 404):
             leftovers.append(_leftover_label(one_path, nid))
-    undo = {"op": "isolate", "scheme_type": a["scheme_type"], "label": a["label"],
-            "project_id": a["project_id"], "project_key": a["project_key"],
-            "steps": a["steps"], "inplace": a.get("inplace", []),
-            "repoint": rp, "restore_scheme_id": a["restore_scheme_id"]}
-    if essential_err:
-        return ItemResult(target_id=change.target_id, ok=False,
-                          error="; ".join(essential_err)[:200]), undo
     return ItemResult(target_id=change.target_id, ok=True, error=_leftover_note(leftovers)), undo
 
 
@@ -1186,8 +1197,12 @@ async def _publish_draft_if_any(client: WorkboxClient, ws_id: str) -> tuple[bool
     ids), so no issue migration is needed → empty status mappings. An inactive
     scheme has no draft (the PUT applied directly) → nothing to do."""
     draft = await client.request("GET", _P_WFS_DRAFT.format(id=ws_id))
-    if draft.status_code == 404 or not (200 <= draft.status_code < 300):
-        return True, ""  # no draft to publish
+    if draft.status_code == 404:
+        return True, ""  # no draft — the PUT applied directly (inactive scheme)
+    if not (200 <= draft.status_code < 300):
+        # a real error (403/500/…) is NOT "nothing to publish"; surfacing it
+        # prevents reporting success while an active scheme's change never took effect
+        return False, f"드래프트 확인 실패({draft.status_code}). {WorkboxClient.short_error(draft)}"
     resp = await client.request("POST", _P_WFS_PUBLISH.format(id=ws_id), json={"statusMappings": []})
     if resp.status_code < 400 or resp.status_code == 303:  # 303 = accepted (async)
         return True, ""
@@ -1371,6 +1386,16 @@ async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult,
 
         else:  # restore (rollback): re-point to the original, then delete the clone
             body = {a["id_body_key"]: a["restore_scheme_id"], "projectId": a["project_id"]}
+            if a.get("remap") == "security_levels":
+                # issues sit on the CLONE's level ids; map them back to the original
+                # by name before the clone is deleted, or they'd point at a gone level
+                orig_detail = await client.get_json(a["one_path"].format(id=a["restore_scheme_id"]))
+                orig_by_name = {_sid(lv.get("name")): _sid(lv.get("id"))
+                                for lv in (orig_detail.get("levels") or [])}
+                clone_detail = await client.get_json(a["one_path"].format(id=a["delete_scheme_id"]))
+                mapping = {_sid(lv.get("id")): orig_by_name.get(_sid(lv.get("name")), "")
+                           for lv in (clone_detail.get("levels") or [])}
+                body["oldToNewSecurityLevelMappings"] = {k: v for k, v in mapping.items() if v}
             ok, code, err = await _repoint(client, a["project_path"], body)
             if not ok:
                 return ItemResult(target_id=change.target_id, ok=False, status_code=code,

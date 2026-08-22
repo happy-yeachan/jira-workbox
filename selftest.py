@@ -1327,8 +1327,107 @@ async def suite_issue_type_screen() -> None:
           remap4 == {"default": "600", "10001": "@screen_scheme"} and a4["repoint"] is not None, remap4)
 
 
+async def suite_rollback_safety() -> None:
+    print("config_isolate: rollback safety gates")
+    import tasks.config_isolate as iso
+    from core.models import Change
+
+    a = {"op": "restore_fork", "scheme_type": "issuetypescreen", "label": "화면 구성",
+         "project_id": "1", "project_key": "NZGE", "repoint": None,
+         "restore_scheme_id": "700",
+         "inplace_restore": [["PUT", "/issuetypescreenscheme/700/mapping", {"x": 1}]],
+         "delete": [["/screenscheme/{id}", "600"], ["/screens/{id}", "S9"]],
+         "steps": [], "inplace": []}
+    change = Change(target_id="NZGE", label="x", after=a)
+
+    # a failed in-place revert must NOT proceed to delete the clones — the
+    # dedicated scheme still references them (the CRITICAL regression)
+    calls: list[tuple[str, str]] = []
+
+    def site_fail_revert(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "PUT":
+            return httpx.Response(400, json={"errorMessages": ["nope"]})
+        return httpx.Response(204)
+
+    client = _client_for(site_fail_revert)
+    res, _ = await iso._apply_fork_restore(client, change, a)
+    await client.aclose()
+    check("fork-restore: failed in-place revert → clones are NOT deleted",
+          not any(m == "DELETE" for m, _ in calls), calls)
+    check("fork-restore: failed revert reported as failure", res.ok is False, res)
+
+    # when every revert succeeds, the orphan clones ARE cleaned up
+    calls2: list[tuple[str, str]] = []
+
+    def site_ok(request: httpx.Request) -> httpx.Response:
+        calls2.append((request.method, request.url.path))
+        return httpx.Response(200 if request.method == "PUT" else 204)
+
+    client2 = _client_for(site_ok)
+    res2, _ = await iso._apply_fork_restore(client2, change, a)
+    await client2.aclose()
+    check("fork-restore: successful revert → both clones deleted",
+          res2.ok and sum(1 for m, _ in calls2 if m == "DELETE") == 2, calls2)
+
+    # a non-404 error on the draft-existence check is a real failure, not "done"
+    def site_draft_500(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/draft"):
+            return httpx.Response(500, json={"errorMessages": ["boom"]})
+        return httpx.Response(200, json={})
+
+    c3 = _client_for(site_draft_500)
+    ok, err = await iso._publish_draft_if_any(c3, "15994")
+    await c3.aclose()
+    check("publish-draft: 500 on draft check → failure (not silently 'done')",
+          ok is False and bool(err), (ok, err))
+
+
+async def suite_audit_completeness() -> None:
+    print("project_config_audit: an incomplete scan is never reported '전용'")
+    import tasks.project_config_audit as pca
+
+    st = next(s for s in pca._TYPES if s.paginated)  # a paginated association read
+
+    def row(pid):
+        return {st.scheme_field: {st.id_field: "700", st.name_field: "S"}, "projectIds": [pid]}
+
+    def clamped(request: httpx.Request) -> httpx.Response:
+        if not request.url.path.endswith(st.path):
+            return httpx.Response(404, json={})
+        start = int(request.url.params.get("startAt", "0"))
+        rows = [row("1"), row("9")] if start == 0 else []
+        # claims total=3 but only ever yields 2 rows → a clamped/short scan
+        return httpx.Response(200, json={"values": rows, "startAt": start,
+                                         "maxResults": 2, "total": 3})
+
+    c = _client_for(clamped)
+    _sp, _names, ok, complete = await pca._scheme_to_projects(c, st, ["1"])
+    await c.aclose()
+    check("audit: clamped association read → complete=False (verdict falls back to '확인 불가')",
+          ok and complete is False, (ok, complete))
+
+    def whole(request: httpx.Request) -> httpx.Response:
+        if not request.url.path.endswith(st.path):
+            return httpx.Response(404, json={})
+        start = int(request.url.params.get("startAt", "0"))
+        rows = [row("1")] if start == 0 else []
+        return httpx.Response(200, json={"values": rows, "startAt": start,
+                                         "maxResults": 50, "total": 1})
+
+    c2 = _client_for(whole)
+    _sp2, _n2, ok2, complete2 = await pca._scheme_to_projects(c2, st, ["1"])
+    await c2.aclose()
+    check("audit: whole association read → complete=True ('전용' allowed)",
+          ok2 and complete2 is True, (ok2, complete2))
+
+
 async def main() -> None:
     await suite_write_task()
+    print()
+    await suite_rollback_safety()
+    print()
+    await suite_audit_completeness()
     print()
     await suite_analysis()
     print()
