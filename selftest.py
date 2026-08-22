@@ -1303,17 +1303,28 @@ async def suite_issue_type_screen() -> None:
           and not any(s["ref"] == "itss" for s in a2["steps"]) and a2["repoint"] is None
           and len(a2["inplace"]) == 1, a2)
 
-    # issue type covered by 'default' → duplicate, ADD a mapping (default kept),
-    # clone ITSS + repoint (an add can't be rolled back in place)
+    # issue type covered by 'default' on a DEDICATED ITSS → duplicate the screen+
+    # scheme, and ADD the mapping IN PLACE (reuse the ITSS, remove on rollback)
     P3 = mk(itss_shared=False, screen_scheme_shared=False)
     P3._mappings = [{"issueTypeId": "default", "screenSchemeId": "600"}]
     a3 = await run(P3)
-    itss3 = next(s for s in a3["steps"] if s["ref"] == "itss")
-    remap3 = {m["issueTypeId"]: m["screenSchemeId"] for m in itss3["body"]["issueTypeMappings"]}
-    check("ittscreen(default-split): adds a mapping for the type, keeps default",
-          remap3 == {"default": "600", "10001": "@screen_scheme"}, remap3)
-    check("ittscreen(default-split): clones ITSS + repoints even though dedicated",
-          a3["repoint"] is not None and any(s["ref"] == "screen0" for s in a3["steps"]), a3)
+    check("ittscreen(default-split, dedicated ITSS): reuses ITSS — no clone/repoint",
+          not any(s["ref"] == "itss" for s in a3["steps"]) and a3["repoint"] is None
+          and any(s["ref"] == "screen0" for s in a3["steps"]), a3)
+    add = a3["inplace"][-1]
+    check("ittscreen(default-split): adds the mapping in place, removes on restore",
+          add["body"]["issueTypeMappings"] == [{"issueTypeId": "10001", "screenSchemeId": "@screen_scheme"}]
+          and add["restore_method"] == "POST" and add["restore_path"].endswith("/mapping/remove")
+          and add["restore_body"] == {"issueTypeIds": ["10001"]}, add)
+
+    # SHARED ITSS + default-split → clone ITSS adding the mapping (default kept)
+    P4 = mk(itss_shared=True, screen_scheme_shared=True)
+    P4._mappings = [{"issueTypeId": "default", "screenSchemeId": "600"}]
+    a4 = await run(P4)
+    itss4 = next(s for s in a4["steps"] if s["ref"] == "itss")
+    remap4 = {m["issueTypeId"]: m["screenSchemeId"] for m in itss4["body"]["issueTypeMappings"]}
+    check("ittscreen(default-split, shared ITSS): clones ITSS, adds mapping, keeps default",
+          remap4 == {"default": "600", "10001": "@screen_scheme"} and a4["repoint"] is not None, remap4)
 
 
 async def main() -> None:

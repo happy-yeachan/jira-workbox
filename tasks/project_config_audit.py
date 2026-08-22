@@ -369,15 +369,20 @@ def _screen_tree_children(
         # (give just that issue type a different screen — de-shares safely).
         for it in sorted(its, key=lambda i: (i != "default", it_names.get(i, i))):
             it_label = "모든 작업 유형(기본)" if it == "default" else it_names.get(it, it)
+            # already separated: an explicit type that alone owns a dedicated
+            # scheme has nothing to split off → no 화면 분리 button.
+            already_own = it != "default" and v == "target_only" and its == [it]
+            assign = None if already_own else {
+                "project": target_key, "scheme_type": "issuetypescreen",
+                "node_kind": "issue_type_screen", "itss_id": itss_id,
+                "screen_scheme_id": ss_id, "issue_type_id": it,
+                "itss_shared": r.verdict != "전용", "screen_scheme_shared": v != "target_only",
+                # for the default row: types already separated → exclude from the picker
+                **({"mapped_ids": explicit_ids} if it == "default" else {})}
             out.append({
                 "depth": 2, "kind": "issue_type", "label": it_label, "sub": "",
                 "badge": "", "tag": "", "shared_with": [], "isolate": None, "note": "",
-                "assign": {"project": target_key, "scheme_type": "issuetypescreen",
-                           "node_kind": "issue_type_screen", "itss_id": itss_id,
-                           "screen_scheme_id": ss_id, "issue_type_id": it,
-                           "itss_shared": r.verdict != "전용", "screen_scheme_shared": v != "target_only",
-                           # for the default row: types already separated → exclude from the picker
-                           **({"mapped_ids": explicit_ids} if it == "default" else {})},
+                "assign": assign,
             })
 
         # one row per distinct screen, listing the operations that use it

@@ -705,11 +705,12 @@ async def _plan_issue_type_screen(
     name_fields.append({"param": "screen_scheme_name", "label": "화면 스킴 이름", "value": ss_clone})
     rewritten_ss = "@screen_scheme"
 
-    # re-point ONLY this issue type to the new scheme. If the ITSS is shared, OR
-    # the type has no explicit mapping yet (covered by default → we must ADD one),
-    # clone the whole ITSS so rollback is a clean delete+repoint. Otherwise
-    # (dedicated ITSS, existing mapping) rewrite that one mapping in place.
-    if params.itss_shared or not has_mapping:
+    # re-point ONLY this issue type to the new scheme.
+    #  * shared ITSS  → clone the whole ITSS (rollback = delete+repoint);
+    #  * dedicated ITSS, type rides 'default' → ADD its mapping in place and
+    #    remove it on rollback (reuse the existing ITSS, no needless clone);
+    #  * dedicated ITSS, type already mapped → rewrite that one mapping in place.
+    if params.itss_shared:
         new_mappings = [{"issueTypeId": m["issueTypeId"],
                          "screenSchemeId": (rewritten_ss if m["issueTypeId"] == it_id else m["screenSchemeId"])}
                         for m in mappings]
@@ -721,6 +722,12 @@ async def _plan_issue_type_screen(
         plan_rows.append({"kind": "이슈 유형 화면 스킴", "from": itss_name, "to": itss_clone})
         name_fields.append({"param": "itss_name", "label": "이슈 유형 화면 스킴 이름", "value": itss_clone})
         repoint = {"project_path": _P_ITSS_PROJECT, "id_body_key": "issueTypeScreenSchemeId", "ref": "itss"}
+    elif not has_mapping:
+        inplace.append({"path": _P_ITSS_ONE + f"/{itss_id}/mapping",
+                        "body": {"issueTypeMappings": [{"issueTypeId": it_id, "screenSchemeId": rewritten_ss}]},
+                        "restore_method": "POST", "restore_path": _P_ITSS_ONE + f"/{itss_id}/mapping/remove",
+                        "restore_body": {"issueTypeIds": [it_id]}})
+        plan_rows.append({"kind": "이슈 유형 화면 스킴 (매핑 추가)", "from": itss_name, "to": itss_name})
     elif it_id == "default":
         inplace.append({"path": _P_ITSS_ONE + f"/{itss_id}/mapping/default",
                         "body": {"screenSchemeId": rewritten_ss},
@@ -1065,9 +1072,9 @@ async def _apply_fork_isolate(
     applied: list[list[Any]] = []            # [path, concrete restore_body], apply order
 
     async def _cleanup() -> None:
-        for path, restore_body in reversed(applied):
+        for method, path, restore_body in reversed(applied):
             try:
-                await client.request("PUT", path, json=restore_body)
+                await client.request(method, path, json=restore_body)
             except Exception:  # noqa: BLE001
                 pass
         for one_path, nid in reversed(created):
@@ -1092,7 +1099,9 @@ async def _apply_fork_isolate(
             if not (200 <= resp.status_code < 300):
                 raise UpstreamError(
                     f"제자리 재지정 실패({resp.status_code}). {WorkboxClient.short_error(resp)}")
-            applied.append([edit["path"], _subst(edit["restore_body"], ids)])
+            applied.append([edit.get("restore_method", "PUT"),
+                            _subst(edit.get("restore_path", edit["path"]), ids),
+                            _subst(edit["restore_body"], ids)])
         code = 201
         rp = a.get("repoint")
         if rp:
@@ -1106,7 +1115,7 @@ async def _apply_fork_isolate(
                 "project_id": a["project_id"], "project_key": a["project_key"],
                 "repoint": rp, "restore_scheme_id": a["restore_scheme_id"],
                 "delete": [[p, i] for p, i in reversed(created)],
-                "inplace_restore": [[p, rb] for p, rb in reversed(applied)],
+                "inplace_restore": [[m, p, rb] for m, p, rb in reversed(applied)],
                 "steps": a["steps"], "inplace": a.get("inplace", [])}
         return ItemResult(target_id=change.target_id, ok=True, status_code=code or 201), undo
     except asyncio.CancelledError:
@@ -1124,8 +1133,8 @@ async def _apply_fork_restore(
     the clones), re-point to the original ITSS if the project was moved, then
     delete the clones (already in dependents-first order)."""
     essential_err: list[str] = []
-    for path, restore_body in a.get("inplace_restore", []):
-        resp = await client.request("PUT", path, json=restore_body)
+    for method, path, restore_body in a.get("inplace_restore", []):
+        resp = await client.request(method, path, json=restore_body)
         if not (200 <= resp.status_code < 300):
             essential_err.append(f"제자리 재지정 원복 실패({resp.status_code})")
     rp = a.get("repoint")
