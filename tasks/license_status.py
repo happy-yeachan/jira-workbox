@@ -22,6 +22,7 @@ dashboard endpoints in ``app.py`` — the task's plan just renders them as a tab
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -29,6 +30,7 @@ from pydantic import BaseModel
 
 from core import audit, planstore
 from core.client import UpstreamError, WorkboxClient, get_client
+from core.config import load_settings
 from core.concurrency import map_bounded
 from core.models import Column, PlanResult, ProgressEvent, ResultTable
 from tasks import TaskInputError, TaskModule, TaskSpec, register
@@ -324,25 +326,71 @@ def _role_id(r: dict[str, Any]) -> str:
     return _sid(r.get("self")).rstrip("/").split("/")[-1]  # id sits at the end of the self URL
 
 
+def _norm_role(s: Any) -> str:
+    """Lowercase and collapse whitespace so 'Service  Desk Team' == 'service desk team'."""
+    return re.sub(r"\s+", " ", _sid(s).strip().lower())
+
+
+#: Canonical JSM "Service Desk Team" role name across the UI languages Atlassian
+#: ships, matched by EXACT (normalized) equality — the reliable signal.
+_SDT_ROLE_NAMES = {
+    "service desk team", "service-desk-team", "servicedesk-team", "servicedeskteam",
+    "team service desk", "team du service desk",
+    "서비스 데스크 팀", "서비스데스크 팀", "서비스데스크팀",
+    "サービスデスク チーム", "サービスデスクチーム",
+    "服务台团队", "服務台團隊",
+    "equipo de service desk", "equipe da central de serviços",
+    "team des service desks", "группа service desk",
+}
+#: Multi-word phrases specific enough that a SUBSTRING match is still safe (each
+#: contains the 'team' word), covering suffixed names like 'Service Desk Team (JSM)'.
+_SDT_ROLE_PHRASES = (
+    "service desk team", "서비스 데스크 팀", "서비스데스크 팀",
+    "サービスデスク チーム", "サービスデスクチーム",
+)
+#: Last-resort single-token role names — matched by EXACT equality only, never as
+#: a substring (so an unrelated 'Change Agent' role is not mistaken for agents).
+_AGENT_ROLE_EXACT = {"agents", "agent", "에이전트", "エージェント", "agentes", "agenten"}
+
+
 async def _agent_role_ids(client: WorkboxClient) -> list[str]:
-    """Instance-wide project-role ids whose members are JSM agents — the
-    'Service Desk Team' role (name can be localised)."""
+    """Instance-wide project-role ids whose members are JSM agents — normally the
+    'Service Desk Team' role (name is localised). Identification is tiered so an
+    unrelated role that merely contains the word 'agent' is never mis-tagged:
+
+    1. ``jsm_agent_role_names`` setting — exact names the operator specified.
+    2. Canonical 'Service Desk Team' name, exact match across known languages.
+    3. The same, as a safe full-phrase substring (handles suffixed names).
+    4. A role named exactly 'Agents' (exact only, never a substring).
+
+    Returns ``[]`` (and logs a warning) when none is identified, so the caller
+    degrades to 'no agent projects' rather than guessing wrong."""
     try:
         roles = await client.get_json(_P_ROLE)
     except UpstreamError:
         return []
     roles = roles if isinstance(roles, list) else (roles.get("value") or [])
-    def match(words: tuple[str, ...]) -> list[str]:
-        ids = []
-        for r in roles:
-            nm = _sid(r.get("name")).lower()
-            if any(w in nm for w in words):
-                rid = _role_id(r)
-                if rid:
-                    ids.append(rid)
-        return ids
-    exact = match(("service desk team", "서비스 데스크 팀", "서비스데스크 팀"))
-    return exact or match(("service desk", "서비스 데스크", "서비스데스크", "agent", "에이전트"))
+
+    def ids_where(pred) -> list[str]:
+        return [rid for r in roles if pred(_norm_role(r.get("name"))) and (rid := _role_id(r))]
+
+    override = {_norm_role(x) for x in load_settings().jsm_agent_role_names.split(",") if x.strip()}
+    if override:
+        ids = ids_where(lambda nm: nm in override)
+        if ids:
+            return ids
+        log.warning("jsm_agent_role_names set but matched no role: %s", sorted(override))
+
+    ids = ids_where(lambda nm: nm in _SDT_ROLE_NAMES)
+    if not ids:
+        ids = ids_where(lambda nm: any(p in nm for p in _SDT_ROLE_PHRASES))
+    if not ids:
+        ids = ids_where(lambda nm: nm in _AGENT_ROLE_EXACT)
+    if not ids:
+        log.warning(
+            "could not identify a JSM agent role among %d project roles; "
+            "set jsm_agent_role_names to name it explicitly", len(roles))
+    return ids
 
 
 async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, str]]]:
@@ -377,6 +425,17 @@ async def agent_project_map(client: WorkboxClient) -> dict[str, list[dict[str, s
                 gid = _sid(groups[0]["groupId"])
         except UpstreamError:
             pass
+        if not gid:
+            # the picker can omit a group's id (or the group itself); resolve by
+            # exact name via /group/bulk so agents added through it aren't dropped
+            try:
+                meta = await client.get_json(_P_GROUP_BULK, params={"groupName": [key], "maxResults": 5})
+                g = next((x for x in (meta.get("values") or [])
+                          if _sid(x.get("name")).strip().lower() == key.lower() and x.get("groupId")), None)
+                if g:
+                    gid = _sid(g["groupId"])
+            except UpstreamError:
+                pass
         name_to_gid[key] = gid
         return gid
 

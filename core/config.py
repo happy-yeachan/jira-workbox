@@ -105,6 +105,13 @@ class Settings(BaseModel):
     #: the "인스턴스 템플릿" group and the picker falls back to presets + manual key.
     space_templates_path: str = "/rest/simplified/2.0/project-templates?recommendations=true"
 
+    #: Comma-separated project-role names whose members are JSM agents. Empty =
+    #: auto-detect the "Service Desk Team" role across the known UI languages.
+    #: Set this (authoritative, exact name match) only if your tenant renamed the
+    #: agent role or runs a UI language the auto-detect list doesn't cover — the
+    #: license view logs a warning when it can't identify the agent role.
+    jsm_agent_role_names: str = ""
+
     def security_notes(self) -> list[str]:
         """Weakened settings, for the startup log, /api/health and the UI."""
         notes: list[str] = []

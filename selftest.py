@@ -581,6 +581,49 @@ async def suite_license_users() -> None:
     admins = await lic.org_admin_members(client)
     check("org-admins: only the admin group's members are flagged", admins == {"boss"}, admins)
     await client.aclose()
+
+    # agent-role identification: precise, not a loose "agent" substring
+    def roles_site(role_rows):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/rest/api/3/role":
+                return httpx.Response(200, json=role_rows)
+            return httpx.Response(404, json={})
+        return handler
+
+    async def role_ids(role_rows):
+        c = _client_for(roles_site(role_rows))
+        ids = await lic._agent_role_ids(c)
+        await c.aclose()
+        return ids
+
+    # an unrelated role that merely contains "agent" must NOT be picked
+    ids = await role_ids([{"id": "1", "name": "Change Agent"},
+                          {"id": "2", "name": "Administrators"}])
+    check("agent-role: 'Change Agent' is not mistaken for the JSM agent role", ids == [], ids)
+    # the real role wins even alongside an 'agent'-substring decoy
+    ids = await role_ids([{"id": "9", "name": "Service Desk Team"},
+                          {"id": "1", "name": "Change Agent"}])
+    check("agent-role: matches the canonical 'Service Desk Team' only", ids == ["9"], ids)
+    # a localised role name is matched (Korean)
+    ids = await role_ids([{"id": "7", "name": "서비스 데스크 팀"}])
+    check("agent-role: localised 'Service Desk Team' (ko) is matched", ids == ["7"], ids)
+    # exact single-token 'Agents' is fine; 'Agent Smith' (substring) is not
+    ids = await role_ids([{"id": "5", "name": "Agents"}, {"id": "6", "name": "Agent Smith"}])
+    check("agent-role: exact 'Agents' matches, 'Agent Smith' does not", ids == ["5"], ids)
+
+    # operator override wins for a renamed role
+    import core.config as cfg
+    cfg.load_settings.cache_clear()
+    os.environ["WORKBOX_JSM_AGENT_ROLE_NAMES"] = "Helpdesk Crew"
+    try:
+        cfg.load_settings.cache_clear()
+        ids = await role_ids([{"id": "3", "name": "Helpdesk Crew"},
+                              {"id": "9", "name": "Service Desk Team"}])
+        check("agent-role: jsm_agent_role_names override is authoritative", ids == ["3"], ids)
+    finally:
+        del os.environ["WORKBOX_JSM_AGENT_ROLE_NAMES"]
+        cfg.load_settings.cache_clear()
+    await client.aclose()
     set_client(None)
 
 
