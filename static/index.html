@@ -933,7 +933,7 @@
                     <option value="30">최근 30일</option>
                     <option value="90">최근 90일</option>
                   </select>
-                  <input type="text" class="lic-log-search" placeholder="사용자·제품 검색" x-model="liclog.q" @input="liclog.page = 1">
+                  <input type="text" class="lic-log-search" placeholder="사용자·수행자 검색" x-model="liclog.q" @input="liclog.page = 1">
                   <button class="btn small ghost" @click="loadEvents()" :disabled="liclog.loading">새로고침</button>
                 </span>
               </template>
@@ -2894,10 +2894,12 @@ document.addEventListener('alpine:init', () => {
         if (f !== 'all' && e.kind !== f) return false;
         if (pk && this.productKey(e.product) !== pk) return false;
         if (e.time) { const t = Date.parse(e.time); if (!isNaN(t) && t < cutoff) return false; }
+        // search only the person columns — user and performer. Product has its
+        // own chip filter, so matching it here just floods results ("ji" → Jira).
         if (q && !((e.user_name || '').toLowerCase().includes(q)
                 || (e.user_email || '').toLowerCase().includes(q)
-                || (e.product || '').toLowerCase().includes(q)
-                || (e.group || '').toLowerCase().includes(q))) return false;
+                || (e.actor_name || '').toLowerCase().includes(q)
+                || (e.actor_email || '').toLowerCase().includes(q))) return false;
         return true;
       });
     },
