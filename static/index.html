@@ -1906,7 +1906,7 @@
                         </template>
                         <span class="spacer"></span>
                         <template x-if="n.assign">
-                          <button class="btn small ghost" style="flex:none" @click.stop="openAssignScreen(n.assign, n.label)">화면 지정</button>
+                          <button class="btn small ghost" style="flex:none" @click.stop="openAssignScreen(n.assign, n.label)">화면 분리</button>
                         </template>
                         <template x-if="n.isolate">
                           <button class="btn small" style="flex:none" @click.stop="isolate(n.isolate)">분리하기</button>
@@ -2023,10 +2023,13 @@
   <div class="modal-bg" @click.self="assignScreen = null" @keydown.escape.window="assignScreen = null">
     <div class="modal">
       <div class="body">
-        <h3><span x-text="assignScreen.itLabel"></span> — 다른 화면 지정</h3>
-        <p class="sub" style="margin:0 0 12px">고른 이슈타입만 고른 화면을 쓰게 합니다. 같은 화면 스킴을 쓰는 다른 이슈타입·다른 프로젝트는 그대로예요.</p>
+        <h3>이슈타입 화면 분리</h3>
+        <p class="sub" style="margin:0 0 12px">
+          고른 이슈타입이 지금 쓰는 <b>화면과 화면 스킴을 통째로 복제</b>해 그 이슈타입 전용으로 분리합니다.
+          시작은 원본과 동일하고, 이후 Jira에서 독립 편집할 수 있어요. 같은 스킴을 쓰던 다른 이슈타입·다른 프로젝트는 그대로입니다.
+        </p>
         <template x-if="assignScreen.pickType">
-          <label class="field"><span class="name">이슈타입 선택</span>
+          <label class="field"><span class="name">분리할 이슈타입</span>
             <select class="lic-sel" style="width:100%" x-model="assignScreen.issueType">
               <option value="" disabled>이슈타입을 고르세요</option>
               <template x-for="t in assignScreen.types" :key="t.id">
@@ -2035,31 +2038,15 @@
             </select>
           </label>
         </template>
-        <label class="field"><span class="name">화면 선택</span>
-          <input type="text" placeholder="화면 이름으로 검색" x-model="assignScreen.q" @input.debounce.300ms="assignSearchScreens()">
-        </label>
-        <div class="picker" x-show="assignScreen.results.length" style="max-height:180px">
-          <template x-for="s in assignScreen.results" :key="s.id">
-            <div class="pick-row" @click="assignPickScreen(s)"><span x-text="s.name"></span></div>
-          </template>
-        </div>
-        <div class="sub" x-show="assignScreen.screen" style="margin:8px 0">
-          선택: <b x-text="assignScreen.screen && assignScreen.screen.name"></b>
-        </div>
-        <div style="margin-top:10px">
-          <div class="name" style="margin-bottom:4px">적용 화면(operation)</div>
-          <div style="display:flex; gap:14px; flex-wrap:wrap">
-            <template x-for="o in [['default','기본(모든 화면)'],['create','생성'],['edit','편집'],['view','보기']]" :key="o[0]">
-              <label class="chk"><input type="checkbox" :value="o[0]" x-model="assignScreen.ops"> <span x-text="o[1]"></span></label>
-            </template>
-          </div>
-        </div>
+        <template x-if="!assignScreen.pickType">
+          <p class="sub" style="margin:0">대상 이슈타입: <b x-text="assignScreen.itLabel"></b></p>
+        </template>
         <div class="notice err" x-show="assignScreen.err" x-text="assignScreen.err" style="margin-top:10px"></div>
       </div>
       <div class="foot">
         <button class="btn ghost" @click="assignScreen = null">취소</button>
         <button class="btn primary" @click="assignConfirm()"
-                :disabled="!assignScreen.screen || !assignScreen.ops.length || (assignScreen.pickType && !assignScreen.issueType)">미리보기</button>
+                :disabled="assignScreen.pickType && !assignScreen.issueType">미리보기</button>
       </div>
     </div>
   </div>
@@ -3131,14 +3118,13 @@ document.addEventListener('alpine:init', () => {
       return this.plan && this.plan.data ? (this.plan.data.config_tree || null) : null;
     },
 
-    // "화면 지정": pick a screen for ONE issue type, then run the isolate flow
-    // (node_kind=issue_type_screen) with the picked screen merged in.
+    // "화면 분리": duplicate ONE issue type's screens + screen scheme so only it
+    // uses the copies, then run the isolate flow (node_kind=issue_type_screen).
     async openAssignScreen(params, itLabel) {
       // when the scheme is mapped via 'default', let the operator pick which
       // concrete issue type to split off (fetch the project's types)
       const pickType = params.issue_type_id === 'default';
-      this.assignScreen = { params, itLabel, q: '', results: [], screen: null, ops: ['default'],
-                            err: '', pickType, types: [], issueType: '' };
+      this.assignScreen = { params, itLabel, err: '', pickType, types: [], issueType: '' };
       if (pickType) {
         try {
           const res = await fetch('/api/project-issuetypes?project=' + encodeURIComponent(params.project));
@@ -3147,21 +3133,10 @@ document.addEventListener('alpine:init', () => {
         } catch (_) { /* leave empty; user can still cancel */ }
       }
     },
-    async assignSearchScreens() {
-      const q = (this.assignScreen.q || '').trim();
-      if (!q) { this.assignScreen.results = []; return; }
-      try {
-        const res = await fetch('/api/screens?q=' + encodeURIComponent(q) + '&limit=12');
-        const data = await res.json().catch(() => []);
-        this.assignScreen.results = Array.isArray(data) ? data : [];
-      } catch (_) { this.assignScreen.results = []; }
-    },
-    assignPickScreen(s) { this.assignScreen.screen = s; this.assignScreen.results = []; this.assignScreen.q = s.name; },
     assignConfirm() {
       const a = this.assignScreen;
-      if (!a.screen || !a.ops.length || (a.pickType && !a.issueType)) return;
-      const p = { ...a.params, target_screen_id: a.screen.id, target_screen_name: a.screen.name,
-                  screen_ops: [...a.ops] };
+      if (a.pickType && !a.issueType) return;
+      const p = { ...a.params };
       if (a.pickType) p.issue_type_id = a.issueType;  // the concrete type split off from default
       this.assignScreen = null;
       this.isolate(p);  // selects config_isolate + previews with these params

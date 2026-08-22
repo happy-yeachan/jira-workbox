@@ -239,13 +239,9 @@ class Params(BaseModel):
     itss_id: str = Field(default="", json_schema_extra={"hidden": True})
     screen_scheme_id: str = Field(default="", json_schema_extra={"hidden": True})
     workflow_scheme_id: str = Field(default="", json_schema_extra={"hidden": True})
-    # per-issue-type screen override (node_kind=issue_type_screen): give ONE issue
-    # type its own screen — clone its screen scheme (leaving the others untouched)
-    # and point the chosen operations at target_screen_id.
+    # per-issue-type screen split (node_kind=issue_type_screen): duplicate ONE
+    # issue type's screens + screen scheme so only that type uses the copies.
     issue_type_id: str = Field(default="", json_schema_extra={"hidden": True})
-    target_screen_id: str = Field(default="", json_schema_extra={"hidden": True})
-    target_screen_name: str = Field(default="", json_schema_extra={"hidden": True})
-    screen_ops: list[str] = Field(default_factory=list, json_schema_extra={"hidden": True})
     # ancestor sharedness (from the audit): only SHARED ancestors are cloned; a
     # dedicated ancestor is edited in place (no clone → no name collision).
     itss_shared: bool = Field(default=True, json_schema_extra={"hidden": True})
@@ -626,26 +622,24 @@ async def _plan_screen_fork(
     yield ProgressEvent(type="plan", total=1, plan=result)
 
 
-_OP_ALL = ("default", "create", "edit", "view")
 _OP_KO = {"default": "기본", "create": "생성", "edit": "편집", "view": "보기"}
 
 
 async def _plan_issue_type_screen(
     client: WorkboxClient, params: Params, target_id: str, target_key: str
 ) -> AsyncIterator[ProgressEvent]:
-    """Give ONE issue type its own screen without touching the others sharing the
-    same screen scheme. The issue type's screen scheme is cloned (its chosen
-    operations pointed at ``target_screen_id``) and only that issue type's ITSS
-    mapping is re-pointed to the clone; shared ITSS/scheme are de-shared exactly
-    like the isolate flow. Produces the standard ``after`` shape so the generic
-    apply/rollback engine runs it unchanged."""
+    """Split ONE issue type off a shared/default screen scheme by DUPLICATING it:
+    every screen the scheme references is cloned (tabs + fields copied), the
+    screen scheme is cloned to point at those copies, and only that issue type's
+    ITSS mapping is (re)pointed to the clone — so the type starts identical and
+    can then diverge, while the other issue types and other projects are
+    untouched. Shared ITSS/scheme are de-shared exactly like the isolate flow.
+    Produces the standard ``after`` shape so the generic apply/rollback runs it."""
     itss_id = _sid(params.itss_id)
     ss_id = _sid(params.screen_scheme_id)
     it_id = _sid(params.issue_type_id)
-    target_screen = _sid(params.target_screen_id)
-    ops = [o for o in (params.screen_ops or []) if o in _OP_ALL] or ["default"]
-    if not (itss_id and ss_id and it_id and target_screen):
-        raise TaskInputError("이슈타입 화면 지정에 필요한 정보가 부족합니다. 진단을 다시 실행해 주세요.")
+    if not (itss_id and ss_id and it_id):
+        raise TaskInputError("이슈타입 화면 분리에 필요한 정보가 부족합니다. 진단을 다시 실행해 주세요.")
 
     yield ProgressEvent(type="phase", phase="chain", message="화면 구성 경로 확인")
     meta = await client.get_json(_P_ITSS_ONE, params={"id": [itss_id]})
@@ -668,90 +662,96 @@ async def _plan_issue_type_screen(
     ss_clone = params.screen_scheme_name.strip() or f"{kp}: {it_lab} 화면 스킴"
     itss_clone = params.itss_name.strip() or f"{kp}: 전체 이슈 유형 화면 스킴"
 
-    # the clone's screens: keep the original op→screen map, then point the chosen
-    # operations at the target screen (default must exist for a screen scheme)
-    new_screens = dict(ss_screens)
-    for op in ops:
-        new_screens[op] = target_screen
-    new_screens.setdefault("default", target_screen)
-
-    # does this issue type have its OWN ITSS mapping, or is it only covered by the
-    # 'default' mapping? (a scheme shown as "모든 작업 유형(기본)" means the picked type
-    # rides the default and needs a NEW mapping, not a rewrite.)
     has_mapping = any(m["issueTypeId"] == it_id for m in mappings)
-    # if the scheme already serves ONLY this issue type and is this project's own,
-    # edit it in place; otherwise clone so the other issue types keep the original.
-    served_here = [m["issueTypeId"] for m in mappings if m["screenSchemeId"] == ss_id]
-    scheme_private = (not params.screen_scheme_shared) and served_here == [it_id] and has_mapping
 
     steps: list[dict[str, Any]] = []
     inplace: list[dict[str, Any]] = []
     plan_rows: list[dict[str, Any]] = []
     name_fields: list[dict[str, str]] = []
     repoint: dict[str, Any] | None = None
-    op_lab = ", ".join(_OP_KO.get(o, o) for o in ops)
 
-    if scheme_private:
-        # the issue type already owns this scheme → just repoint its screens
-        inplace.append({"path": _P_SS_ONE + f"/{ss_id}",
-                        "body": {"name": ss_name, "screens": new_screens},
-                        "restore_body": {"name": ss_name, "screens": ss_screens}})
-        plan_rows.append({"kind": f"화면 스킴 (제자리 · {op_lab})", "from": ss_name, "to": params.target_screen_name or target_screen})
-    else:
-        steps.append({"ref": "screen_scheme", "create_path": _P_SS_ONE, "one_path": _P_SS_ONE + "/{id}",
-                      "created_id_keys": ["id"],
-                      "body": {"name": ss_clone, "screens": new_screens}})
-        plan_rows.append({"kind": f"화면 스킴 (신규 · {op_lab})", "from": ss_name, "to": ss_clone})
-        name_fields.append({"param": "screen_scheme_name", "label": "화면 스킴 이름", "value": ss_clone})
-        rewritten_ss = "@screen_scheme"
-
-        # re-point ONLY this issue type to the new scheme. If it's shared, OR the
-        # type has no explicit mapping yet (covered by default → we must ADD one),
-        # clone the whole ITSS so rollback is a clean delete+repoint. Otherwise
-        # (dedicated ITSS, existing mapping) rewrite that one mapping in place.
-        if params.itss_shared or not has_mapping:
-            new_mappings = [{"issueTypeId": m["issueTypeId"],
-                             "screenSchemeId": (rewritten_ss if m["issueTypeId"] == it_id else m["screenSchemeId"])}
-                            for m in mappings]
-            if not has_mapping:
-                new_mappings.append({"issueTypeId": it_id, "screenSchemeId": rewritten_ss})
-            steps.append({"ref": "itss", "create_path": _P_ITSS_ONE, "one_path": _P_ITSS_ONE + "/{id}",
-                          "created_id_keys": ["id"],
-                          "body": {"name": itss_clone, "issueTypeMappings": new_mappings}})
-            plan_rows.append({"kind": "이슈 유형 화면 스킴", "from": itss_name, "to": itss_clone})
-            name_fields.append({"param": "itss_name", "label": "이슈 유형 화면 스킴 이름", "value": itss_clone})
-            repoint = {"project_path": _P_ITSS_PROJECT, "id_body_key": "issueTypeScreenSchemeId", "ref": "itss"}
-        elif it_id == "default":
-            inplace.append({"path": _P_ITSS_ONE + f"/{itss_id}/mapping/default",
-                            "body": {"screenSchemeId": rewritten_ss},
-                            "restore_body": {"screenSchemeId": ss_id}})
-            plan_rows.append({"kind": "이슈 유형 화면 스킴 (제자리 재지정)", "from": itss_name, "to": itss_name})
+    # ---- isolate = duplicate: clone EVERY screen the scheme references (tabs +
+    # fields copied), then clone the screen scheme pointing at those copies, so the
+    # issue type starts identical and can then diverge independently. -----------
+    distinct: dict[str, list[str]] = {}
+    for op, sid in ss_screens.items():
+        if sid:
+            distinct.setdefault(sid, []).append(op)
+    screen_names: dict[str, str] = {}
+    if distinct:
+        sc_meta = await client.get_json(_P_SCREEN_ONE, params={"id": list(distinct)})
+        for x in (sc_meta.get("values") or []):
+            screen_names[_sid(x.get("id"))] = _sid(x.get("name"))
+    single = len(distinct) == 1
+    ref_by_screen: dict[str, str] = {}
+    for i, (sid, sops) in enumerate(distinct.items()):
+        ref = f"screen{i}"
+        ref_by_screen[sid] = "@" + ref
+        if single:
+            sc_clone = params.screen_name.strip() or f"{kp}: {it_lab} 스크린"
         else:
-            inplace.append({"path": _P_ITSS_ONE + f"/{itss_id}/mapping",
-                            "body": {"issueTypeMappings": [{"issueTypeId": it_id, "screenSchemeId": rewritten_ss}]},
-                            "restore_body": {"issueTypeMappings": [{"issueTypeId": it_id, "screenSchemeId": ss_id}]}})
-            plan_rows.append({"kind": "이슈 유형 화면 스킴 (제자리 재지정)", "from": itss_name, "to": itss_name})
+            sc_clone = f"{kp}: {it_lab} {'·'.join(_OP_KO.get(o, o) for o in sops)} 스크린"
+        steps.append({"ref": ref, "create_path": _P_SCREEN_ONE, "one_path": _P_SCREEN_ONE + "/{id}",
+                      "created_id_keys": ["id"], "copy_from": sid, "body": {"name": sc_clone}})
+        plan_rows.append({"kind": "스크린 (복제)", "from": screen_names.get(sid, f"#{sid}"), "to": sc_clone})
+        if single:
+            name_fields.append({"param": "screen_name", "label": "스크린 이름", "value": sc_clone})
+    new_screens = {op: ref_by_screen.get(sid, sid) for op, sid in ss_screens.items()}
+
+    # clone the screen scheme pointing at the cloned screens
+    steps.append({"ref": "screen_scheme", "create_path": _P_SS_ONE, "one_path": _P_SS_ONE + "/{id}",
+                  "created_id_keys": ["id"], "body": {"name": ss_clone, "screens": new_screens}})
+    plan_rows.append({"kind": "화면 스킴 (복제)", "from": ss_name, "to": ss_clone})
+    name_fields.append({"param": "screen_scheme_name", "label": "화면 스킴 이름", "value": ss_clone})
+    rewritten_ss = "@screen_scheme"
+
+    # re-point ONLY this issue type to the new scheme. If the ITSS is shared, OR
+    # the type has no explicit mapping yet (covered by default → we must ADD one),
+    # clone the whole ITSS so rollback is a clean delete+repoint. Otherwise
+    # (dedicated ITSS, existing mapping) rewrite that one mapping in place.
+    if params.itss_shared or not has_mapping:
+        new_mappings = [{"issueTypeId": m["issueTypeId"],
+                         "screenSchemeId": (rewritten_ss if m["issueTypeId"] == it_id else m["screenSchemeId"])}
+                        for m in mappings]
+        if not has_mapping:
+            new_mappings.append({"issueTypeId": it_id, "screenSchemeId": rewritten_ss})
+        steps.append({"ref": "itss", "create_path": _P_ITSS_ONE, "one_path": _P_ITSS_ONE + "/{id}",
+                      "created_id_keys": ["id"],
+                      "body": {"name": itss_clone, "issueTypeMappings": new_mappings}})
+        plan_rows.append({"kind": "이슈 유형 화면 스킴", "from": itss_name, "to": itss_clone})
+        name_fields.append({"param": "itss_name", "label": "이슈 유형 화면 스킴 이름", "value": itss_clone})
+        repoint = {"project_path": _P_ITSS_PROJECT, "id_body_key": "issueTypeScreenSchemeId", "ref": "itss"}
+    elif it_id == "default":
+        inplace.append({"path": _P_ITSS_ONE + f"/{itss_id}/mapping/default",
+                        "body": {"screenSchemeId": rewritten_ss},
+                        "restore_body": {"screenSchemeId": ss_id}})
+        plan_rows.append({"kind": "이슈 유형 화면 스킴 (제자리 재지정)", "from": itss_name, "to": itss_name})
+    else:
+        inplace.append({"path": _P_ITSS_ONE + f"/{itss_id}/mapping",
+                        "body": {"issueTypeMappings": [{"issueTypeId": it_id, "screenSchemeId": rewritten_ss}]},
+                        "restore_body": {"issueTypeMappings": [{"issueTypeId": it_id, "screenSchemeId": ss_id}]}})
+        plan_rows.append({"kind": "이슈 유형 화면 스킴 (제자리 재지정)", "from": itss_name, "to": itss_name})
 
     change = Change(
         target_id=f"ittscreen:{target_id}:{it_id}",
-        label=f"{target_key} · {it_lab} 화면 지정",
+        label=f"{target_key} · {it_lab} 화면 분리",
         before={"itss_id": itss_id, "itss_name": itss_name, "issue_type": it_lab},
         after={
             "op": "isolate", "scheme_type": "issuetypescreen",
-            "label": "이슈타입 화면 지정", "project_id": target_id, "project_key": target_key,
+            "label": "이슈타입 화면 분리", "project_id": target_id, "project_key": target_key,
             "steps": steps, "inplace": inplace, "repoint": repoint,
             "restore_scheme_id": itss_id,
         },
-        note=f"'{it_lab}' 이슈타입의 {op_lab} 화면을 '{params.target_screen_name or target_screen}'(으)로 지정합니다. "
-             "같은 화면 스킴을 쓰는 다른 이슈타입·다른 프로젝트는 그대로입니다.",
+        note=f"'{it_lab}' 이슈타입만 현재 화면(과 화면 스킴)을 복제해 전용으로 분리합니다. 시작은 원본과 동일하며, "
+             "이후 Jira에서 독립 편집할 수 있습니다. 같은 스킴을 쓰던 다른 이슈타입·다른 프로젝트는 그대로입니다.",
     )
     table = ResultTable(
-        key="isolate", title=f"이슈타입 화면 지정 · {it_lab}",
+        key="isolate", title=f"이슈타입 화면 분리 · {it_lab}",
         columns=[Column(key="kind", title="대상"), Column(key="from", title="원본"),
-                 Column(key="to", title="변경")],
+                 Column(key="to", title="새 전용(복제)")],
         rows=plan_rows,
-        note="선택한 이슈타입에만 전용 화면 스킴을 만들어 지정합니다. 공유 중인 ITSS·화면 스킴은 안전하게 복제하고, "
-             "다른 이슈타입·다른 프로젝트는 건드리지 않습니다.",
+        note="선택한 이슈타입이 쓰는 스크린과 화면 스킴을 통째로 복제해 그 이슈타입만 쓰게 합니다. "
+             "공유 중인 ITSS는 안전하게 복제하고, 다른 이슈타입·다른 프로젝트는 건드리지 않습니다.",
     )
     await _mark_name_conflicts(client, name_fields)
     result = planstore.register(

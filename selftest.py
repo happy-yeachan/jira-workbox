@@ -1236,10 +1236,10 @@ async def suite_group_inventory() -> None:
 
 
 async def suite_issue_type_screen() -> None:
-    print("config_isolate: per-issue-type screen assignment")
+    print("config_isolate: per-issue-type screen split (duplicate)")
     import tasks.config_isolate as iso
 
-    def site(mappings, ss_shared_probe=None):
+    def site(mappings):
         def handler(request: httpx.Request) -> httpx.Response:
             p, q = request.url.path, request.url.params
             base = "/rest/api/3"
@@ -1254,6 +1254,8 @@ async def suite_issue_type_screen() -> None:
                 if q.get("queryString") is not None:
                     return httpx.Response(200, json={"values": [], "isLast": True, "startAt": 0, "maxResults": 100, "total": 0})
                 return httpx.Response(200, json={"values": [{"id": "600", "name": "공유 스킴", "screens": {"default": "S1"}}]})
+            if p == f"{base}/screens":  # names for the screens being cloned
+                return httpx.Response(200, json={"values": [{"id": "S1", "name": "공유 스크린"}]})
             if p == f"{base}/issuetype":
                 return httpx.Response(200, json=[{"id": "10001", "name": "Bug"}, {"id": "10002", "name": "Task"}])
             return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
@@ -1268,49 +1270,50 @@ async def suite_issue_type_screen() -> None:
         await client.aclose()
         return plan.changes[0].after
 
-    # shared scheme serving 2 issue types → clone scheme (default→S9) + clone ITSS remapping only Bug
-    P = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="issue_type_screen",
-                   itss_id="700", screen_scheme_id="600", issue_type_id="10001",
-                   target_screen_id="S9", target_screen_name="새 화면", screen_ops=["default"],
-                   itss_shared=True, screen_scheme_shared=True)
+    def mk(**kw):
+        p = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="issue_type_screen",
+                       itss_id="700", screen_scheme_id="600", issue_type_id="10001", **kw)
+        return p
+
+    # shared scheme serving 2 issue types → clone the screen (copy tabs/fields) +
+    # clone the scheme pointing at the copy + clone ITSS remapping only Bug
+    P = mk(itss_shared=True, screen_scheme_shared=True)
     P._mappings = [{"issueTypeId": "10001", "screenSchemeId": "600"},
                    {"issueTypeId": "10002", "screenSchemeId": "600"}]
     a = await run(P)
+    scr_step = next(s for s in a["steps"] if s["ref"] == "screen0")
     ss_step = next(s for s in a["steps"] if s["ref"] == "screen_scheme")
     itss_step = next(s for s in a["steps"] if s["ref"] == "itss")
-    check("ittscreen: cloned scheme points chosen op at target screen",
-          ss_step["body"]["screens"] == {"default": "S9"}, ss_step["body"]["screens"])
+    check("ittscreen: clones the screen (copies tabs+fields from the original)",
+          scr_step.get("copy_from") == "S1", scr_step)
+    check("ittscreen: cloned scheme points at the cloned screen",
+          ss_step["body"]["screens"] == {"default": "@screen0"}, ss_step["body"]["screens"])
     remap = {m["issueTypeId"]: m["screenSchemeId"] for m in itss_step["body"]["issueTypeMappings"]}
     check("ittscreen: only the chosen issue type is re-pointed",
           remap == {"10001": "@screen_scheme", "10002": "600"}, remap)
     check("ittscreen: project re-pointed to the cloned ITSS", a["repoint"] is not None)
 
-    # dedicated scheme used only by this issue type → edit screens in place, no ITSS change
-    P2 = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="issue_type_screen",
-                    itss_id="700", screen_scheme_id="600", issue_type_id="10001",
-                    target_screen_id="S9", target_screen_name="새 화면", screen_ops=["default", "view"],
-                    itss_shared=False, screen_scheme_shared=False)
+    # dedicated ITSS, the type already has its own mapping → still duplicate the
+    # screen + scheme, but rewrite that one ITSS mapping in place (no ITSS clone)
+    P2 = mk(itss_shared=False, screen_scheme_shared=False)
     P2._mappings = [{"issueTypeId": "10001", "screenSchemeId": "600"}]
     a2 = await run(P2)
-    check("ittscreen(private): edits the scheme in place, no clone/repoint",
-          not a2["steps"] and a2["repoint"] is None and len(a2["inplace"]) == 1, a2)
-    check("ittscreen(private): in-place screens set both chosen ops to target",
-          a2["inplace"][0]["body"]["screens"] == {"default": "S9", "view": "S9"}, a2["inplace"][0]["body"]["screens"])
+    check("ittscreen(dedicated): duplicates screen+scheme, ITSS mapping in place",
+          any(s["ref"] == "screen0" for s in a2["steps"]) and any(s["ref"] == "screen_scheme" for s in a2["steps"])
+          and not any(s["ref"] == "itss" for s in a2["steps"]) and a2["repoint"] is None
+          and len(a2["inplace"]) == 1, a2)
 
-    # issue type covered by the 'default' mapping → clone scheme + ADD a new
-    # mapping for that type (default stays for the rest), clone ITSS + repoint
-    P3 = iso.Params(project="NZGE", scheme_type="issuetypescreen", node_kind="issue_type_screen",
-                    itss_id="700", screen_scheme_id="600", issue_type_id="10001",
-                    target_screen_id="S9", target_screen_name="새 화면", screen_ops=["default"],
-                    itss_shared=False, screen_scheme_shared=False)
-    P3._mappings = [{"issueTypeId": "default", "screenSchemeId": "600"}]  # only default; 10001 rides it
+    # issue type covered by 'default' → duplicate, ADD a mapping (default kept),
+    # clone ITSS + repoint (an add can't be rolled back in place)
+    P3 = mk(itss_shared=False, screen_scheme_shared=False)
+    P3._mappings = [{"issueTypeId": "default", "screenSchemeId": "600"}]
     a3 = await run(P3)
     itss3 = next(s for s in a3["steps"] if s["ref"] == "itss")
     remap3 = {m["issueTypeId"]: m["screenSchemeId"] for m in itss3["body"]["issueTypeMappings"]}
     check("ittscreen(default-split): adds a mapping for the type, keeps default",
           remap3 == {"default": "600", "10001": "@screen_scheme"}, remap3)
     check("ittscreen(default-split): clones ITSS + repoints even though dedicated",
-          a3["repoint"] is not None and any(s["ref"] == "screen_scheme" for s in a3["steps"]), a3)
+          a3["repoint"] is not None and any(s["ref"] == "screen0" for s in a3["steps"]), a3)
 
 
 async def main() -> None:
