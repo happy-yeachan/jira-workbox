@@ -105,6 +105,13 @@ class Settings(BaseModel):
     #: the "인스턴스 템플릿" group and the picker falls back to presets + manual key.
     space_templates_path: str = "/rest/simplified/2.0/project-templates?recommendations=true"
 
+    #: How long (seconds) the session cache of the global workflow scan may be
+    #: reused before a re-scan. It bounds how stale the 설정 공유 진단 VIEW can be
+    #: when other admins change workflows out-of-band (the destructive isolate path
+    #: re-verifies sharedness live regardless). A cheap workflow-count probe also
+    #: forces a re-scan the moment a workflow is added/removed. 0 disables the cache.
+    wf_scan_ttl_seconds: int = 300
+
     #: Comma-separated project-role names whose members are JSM agents. Empty =
     #: auto-detect the "Service Desk Team" role across the known UI languages.
     #: Set this (authoritative, exact name match) only if your tenant renamed the

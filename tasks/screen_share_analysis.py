@@ -30,6 +30,7 @@ part 2 is ``plan_stream``. Build indexes with ``client.scan_all`` /
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core import audit, planstore
+from core.config import load_settings
 from core.client import ScanIntegrity, ScanStream, UpstreamError, WorkboxClient, get_client
 from core.concurrency import chunked, map_bounded
 from core.models import Column, PlanResult, ProgressEvent, ResultTable
@@ -72,6 +74,8 @@ class _WorkflowScan:
     integrity: ScanIntegrity
     active_ids: set[str] | None
     max_workflows: int
+    at: float               # time.monotonic() when scanned — for the TTL backstop
+    total: int | None       # workflow count when scanned — for the freshness probe
 
 
 #: Session cache of the global workflow transition scan, keyed by site URL.
@@ -91,20 +95,40 @@ def _wf_cache_key(client: WorkboxClient) -> str:
 
 
 def _wf_cache_get(client: WorkboxClient, max_workflows: int) -> _WorkflowScan | None:
+    ttl = load_settings().wf_scan_ttl_seconds
+    if ttl <= 0:  # caching disabled
+        return None
     hit = _wf_scan_cache.get(_wf_cache_key(client))
-    # a scan capped lower than this request wants cannot answer it
-    if hit is not None and hit.max_workflows >= max_workflows:
-        return hit
-    return None
+    if hit is None or hit.max_workflows < max_workflows:  # missing / capped too low
+        return None
+    if (time.monotonic() - hit.at) > ttl:  # TTL backstop for out-of-band edits
+        return None
+    return hit
 
 
 def _wf_cache_put(
     client: WorkboxClient, max_workflows: int, wf_rows: list[dict[str, Any]],
     integrity: ScanIntegrity, active_ids: set[str] | None,
 ) -> _WorkflowScan:
-    entry = _WorkflowScan(wf_rows, integrity, active_ids, max_workflows)
+    entry = _WorkflowScan(wf_rows, integrity, active_ids, max_workflows,
+                          at=time.monotonic(), total=integrity.expected_total)
     _wf_scan_cache[_wf_cache_key(client)] = entry
     return entry
+
+
+async def _wf_cache_is_fresh(client: WorkboxClient, hit: _WorkflowScan) -> bool:
+    """Cheap freshness probe for multi-admin tenants: if the workflow COUNT changed
+    since the cached scan, someone added/removed one out-of-band → not fresh. One
+    request (maxResults=1) vs the whole scan. Unknown/failed probe → treat as
+    stale so we re-scan rather than trust a possibly-out-of-date view."""
+    if hit.total is None:
+        return False
+    try:
+        probe = await client.get_json(_P_WORKFLOWS, params={"maxResults": 1})
+    except UpstreamError:
+        return False
+    live_total = probe.get("total")
+    return isinstance(live_total, int) and live_total == hit.total
 
 
 def invalidate_workflow_cache(client: WorkboxClient | None = None) -> None:
@@ -501,6 +525,8 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         # identical for every project, so compute it once per session and reuse it
         # across audits. It is dropped on any write via invalidate_workflow_cache().
         cached = _wf_cache_get(client, params.max_workflows)
+        if cached is not None and not await _wf_cache_is_fresh(client, cached):
+            cached = None  # another admin changed the workflow set → re-scan
         if cached is None:
             active_ids: set[str] | None = None
             try:
@@ -526,8 +552,9 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
             wf_rows, wf_integrity = scan.result()
             cached = _wf_cache_put(client, params.max_workflows, wf_rows, wf_integrity, active_ids)
         else:
+            age = int(time.monotonic() - cached.at)
             yield _phase("scan_workflows",
-                         f"워크플로우 {len(cached.wf_rows)}개 (세션 캐시 재사용)")
+                         f"워크플로우 {len(cached.wf_rows)}개 (세션 캐시 재사용 · {age}초 전)")
 
         # derive into this index — identical whether the scan was fresh or reused
         index.active_workflow_ids = cached.active_ids

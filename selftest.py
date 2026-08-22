@@ -1426,6 +1426,32 @@ async def suite_workflow_cache() -> None:
     check("wf-cache: a request needing a higher cap than cached misses (re-scans)",
           ssa._wf_cache_get(c, 5000) is None)
     check("wf-cache: keyed by site (other site is a miss)", ssa._wf_cache_get(_C2(), 2000) is None)
+
+    # TTL backstop: an entry older than the TTL is not reused (bounds staleness
+    # from another admin's out-of-band edit that doesn't change the count)
+    ssa._wf_scan_cache[ssa._wf_cache_key(c)].at -= 10_000
+    check("wf-cache: expired past the TTL is a miss", ssa._wf_cache_get(c, 2000) is None)
+
+    # freshness probe: reuse only if the live workflow COUNT still matches
+    def wf_count_site(total):
+        def h(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/rest/api/3/workflows/search":
+                return httpx.Response(200, json={"values": [], "total": total,
+                                                 "startAt": 0, "maxResults": 1, "isLast": True})
+            return httpx.Response(404, json={})
+        return h
+
+    integ3 = ScanIntegrity(path="/workflows/search", expected_total=3, collected=3)
+    entry = ssa._wf_cache_put(c, 2000, [{"id": "a"}], integ3, None)  # total=3
+    fresh = _client_for(wf_count_site(3))
+    check("wf-cache: same live workflow count → fresh (reuse)",
+          await ssa._wf_cache_is_fresh(fresh, entry) is True)
+    await fresh.aclose()
+    stale = _client_for(wf_count_site(4))
+    check("wf-cache: changed live workflow count → stale (re-scan)",
+          await ssa._wf_cache_is_fresh(stale, entry) is False)
+    await stale.aclose()
+
     ssa.invalidate_workflow_cache(c)
     check("wf-cache: dropped after a write (invalidate)", ssa._wf_cache_get(c, 2000) is None)
 
