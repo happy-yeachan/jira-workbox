@@ -105,6 +105,22 @@ class Settings(BaseModel):
     #: the "인스턴스 템플릿" group and the picker falls back to presets + manual key.
     space_templates_path: str = "/rest/simplified/2.0/project-templates?recommendations=true"
 
+    #: Atlassian product status banner. Polls the PER-PRODUCT Statuspage v2 pages
+    #: (the unified status.atlassian.com under-reported during the May 2026 outage),
+    #: and the UI shows a banner only when a product reports a problem.
+    atlassian_status_enabled: bool = True
+    #: Comma-separated Statuspage keys or hostnames to monitor. A bare key (no dot)
+    #: maps to ``https://{key}.status.atlassian.com``; a value containing a dot is
+    #: used as a full host (Bitbucket/Trello/Opsgenie live off .atlassian.com).
+    #: Defaults to every Atlassian product status page. Trim it to narrow the scope.
+    atlassian_status_products: str = (
+        "jira-software,jira-service-management,jira-work-management,"
+        "jira-product-discovery,jira-align,confluence,status.bitbucket.org,"
+        "www.trellostatus.com,status.opsgenie.com,guard,compass,atlas,analytics,"
+        "rovo,rovodev,migrations,focus,loom,talent,customer-service-management,"
+        "support,partners,admin"
+    )
+
     #: How long (seconds) the session cache of the global workflow scan may be
     #: reused before a re-scan. It bounds how stale the 설정 공유 진단 VIEW can be
     #: when other admins change workflows out-of-band (the destructive isolate path

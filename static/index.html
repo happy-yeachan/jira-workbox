@@ -111,6 +111,23 @@
     background: var(--bad-bg); border-bottom: 1px solid var(--bad-line);
     color: var(--bad); padding: 9px 20px; font-size: 13px; font-weight: 500;
   }
+  .atl-banner {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+    padding: 10px 20px; font-size: 13px; border-bottom: 1px solid var(--warn-line);
+    background: var(--warn-bg); color: var(--ink);
+  }
+  .atl-banner.crit { background: var(--bad-bg); border-bottom-color: var(--bad-line); }
+  .atl-main { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
+  .atl-ico { flex: none; font-size: 15px; line-height: 1.3; }
+  .atl-head { font-weight: 600; margin-bottom: 3px; }
+  .atl-head .atl-when { font-weight: 400; color: var(--muted); font-size: 11.5px; margin-left: 6px; }
+  .atl-prod { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 2px 0; color: var(--ink-2); }
+  .atl-badge { flex: none; font-weight: 600; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+    background: var(--warn-line); color: var(--ink); }
+  .atl-banner.crit .atl-badge, .atl-badge.ind-major, .atl-badge.ind-critical { background: var(--bad-line); }
+  .atl-inc { color: var(--accent); text-decoration: underline; }
+  .atl-x { flex: none; background: none; border: 0; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; }
+  .atl-x:hover { color: var(--ink); }
 
   /* ---------- layout ---------- */
   main { display: flex; align-items: stretch; }
@@ -573,6 +590,31 @@
 
 <template x-for="w in (health.security_warnings || [])">
   <div class="alarm" x-text="'⚠  ' + w"></div>
+</template>
+
+<!-- ---------- Atlassian product status (only when something is wrong) ---------- -->
+<template x-if="atl && atl.enabled && !atl.ok && !atlIsDismissed()">
+  <div class="atl-banner" :class="{ crit: atl.indicator === 'major' || atl.indicator === 'critical' }">
+    <div class="atl-main">
+      <span class="atl-ico" x-text="(atl.indicator === 'major' || atl.indicator === 'critical') ? '⛔' : '⚠'"></span>
+      <div style="min-width:0">
+        <div class="atl-head">
+          <span x-text="atlHeadline()"></span>
+          <span class="atl-when" x-text="atl.checked_at ? fmtTime(atl.checked_at) + ' 확인' : ''"></span>
+        </div>
+        <template x-for="p in atl.problems" :key="p.key">
+          <div class="atl-prod">
+            <span class="atl-badge" :class="'ind-' + p.indicator" x-text="p.name"></span>
+            <span x-text="p.description"></span>
+            <template x-for="(inc, i) in (p.incidents || [])" :key="i">
+              <a class="atl-inc" :href="inc.url" target="_blank" rel="noopener" x-text="inc.name"></a>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+    <button class="atl-x" @click="dismissAtl()" title="닫기">✕</button>
+  </div>
 </template>
 
 <!-- ---------- setup ---------- -->
@@ -2123,6 +2165,7 @@ document.addEventListener('alpine:init', () => {
     batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [],
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
+    atl: null, atlDismissedSig: '',
     history: [], historyOpen: false, histOpen: [],
     gp: { q: '', results: [], loading: false, err: '' }, groupNames: {},
     up: { q: '', results: [], loading: false, err: '' }, userNames: {},
@@ -2175,7 +2218,28 @@ document.addEventListener('alpine:init', () => {
       // the license dashboard is the landing headline — load it as soon as we
       // have working credentials (and again after the operator connects)
       if (this.health.configured) this.loadDashboard();
+      // Atlassian status banner: check now, then every 3 minutes
+      this.loadAtlassianStatus();
+      setInterval(() => this.loadAtlassianStatus(), 180000);
       // no auto-select: land on the overview, let the operator choose
+    },
+    // ---------- Atlassian product status banner ----------
+    async loadAtlassianStatus() {
+      try {
+        const r = await fetch('/api/atlassian-status');
+        if (r.ok) this.atl = await r.json();
+      } catch (e) { /* keep last known; our own fetch failing must not raise an alarm */ }
+    },
+    atlSig() {
+      if (!this.atl) return '';
+      return this.atl.indicator + '|' + (this.atl.problems || []).map(p => p.key).join(',');
+    },
+    atlIsDismissed() { return this.atlSig() !== '' && this.atlDismissedSig === this.atlSig(); },
+    dismissAtl() { this.atlDismissedSig = this.atlSig(); },
+    atlHeadline() {
+      const n = (this.atl.problems || []).length;
+      const crit = this.atl.indicator === 'major' || this.atl.indicator === 'critical';
+      return `아틀라시안 ${crit ? '서비스 장애' : '성능 저하/점검'} — ${n}개 제품에 영향`;
     },
     // ---- theme (light/dark; auto by system, forced by the header toggle) ----
     isDark() {

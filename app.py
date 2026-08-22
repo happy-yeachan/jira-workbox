@@ -214,6 +214,14 @@ async def favicon() -> Response:
 # --------------------------------------------------------------------------
 
 
+@app.get("/api/atlassian-status")
+async def atlassian_status() -> dict[str, object]:
+    """Atlassian product status for the health banner. Public Statuspage read —
+    independent of the Jira credentials, so it works even before setup."""
+    from core import atlassian_status as status
+    return await status.fetch_status()
+
+
 @app.get("/api/health")
 async def health() -> dict[str, object]:
     """Config and connectivity. Returns no token and no setup code, ever."""

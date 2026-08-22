@@ -1551,6 +1551,66 @@ async def suite_audit_completeness() -> None:
           ok2 and complete2 is True, (ok2, complete2))
 
 
+async def suite_atlassian_status() -> None:
+    print("atlassian_status: product status banner")
+    import core.atlassian_status as ast
+    import core.config as cfg
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if host == "jira-software.status.atlassian.com":
+            return httpx.Response(200, json={"page": {"name": "Jira"},
+                "status": {"indicator": "none", "description": "All Systems Operational"},
+                "incidents": [], "scheduled_maintenances": []})
+        if host == "confluence.status.atlassian.com":
+            return httpx.Response(200, json={"page": {"name": "Confluence"},
+                "status": {"indicator": "major", "description": "Partial outage"},
+                "incidents": [{"name": "Delays loading pages", "impact": "major",
+                               "status": "investigating", "shortlink": "https://stspg.io/x"}],
+                "scheduled_maintenances": []})
+        if host == "status.bitbucket.org":
+            return httpx.Response(500, json={"error": "boom"})  # unreachable → unknown
+        return httpx.Response(404, json={})
+
+    async def run_status():
+        os.environ["WORKBOX_ATLASSIAN_STATUS_PRODUCTS"] = "jira-software,confluence,status.bitbucket.org"
+        cfg.load_settings.cache_clear()
+        try:
+            return await ast.fetch_status(transport=httpx.MockTransport(handler))
+        finally:
+            del os.environ["WORKBOX_ATLASSIAN_STATUS_PRODUCTS"]
+            cfg.load_settings.cache_clear()
+
+    res = await run_status()
+    by = {p["key"]: p for p in res["products"]}
+    check("atl: operational product is ok",
+          by["jira-software"]["ok"] is True and by["jira-software"]["indicator"] == "none", by.get("jira-software"))
+    check("atl: degraded product flagged with its incident",
+          by["confluence"]["ok"] is False and by["confluence"]["indicator"] == "major"
+          and by["confluence"]["incidents"][0]["name"] == "Delays loading pages", by.get("confluence"))
+    check("atl: unreachable page is 'unknown', never a false alarm",
+          by["status.bitbucket.org"]["indicator"] == "unknown" and by["status.bitbucket.org"]["ok"] is None,
+          by.get("status.bitbucket.org"))
+    check("atl: overall NOT ok + worst indicator when a product is down",
+          res["ok"] is False and res["indicator"] == "major", res.get("indicator"))
+    check("atl: only real problems listed (unknown excluded)",
+          [p["key"] for p in res["problems"]] == ["confluence"], res["problems"])
+
+    check("atl: bare key → status.atlassian.com subdomain",
+          ast._summary_url("rovo") == "https://rovo.status.atlassian.com/api/v2/summary.json")
+    check("atl: dotted value → used as a full host",
+          ast._summary_url("status.bitbucket.org") == "https://status.bitbucket.org/api/v2/summary.json")
+
+    os.environ["WORKBOX_ATLASSIAN_STATUS_ENABLED"] = "false"
+    cfg.load_settings.cache_clear()
+    try:
+        off = await ast.fetch_status(transport=httpx.MockTransport(handler))
+    finally:
+        del os.environ["WORKBOX_ATLASSIAN_STATUS_ENABLED"]
+        cfg.load_settings.cache_clear()
+    check("atl: disabled → ok, no banner", off["enabled"] is False and off["ok"] is True, off)
+
+
 async def main() -> None:
     await suite_write_task()
     print()
@@ -1575,6 +1635,8 @@ async def main() -> None:
     await suite_issue_type_screen()
     print()
     await suite_workflow_cache()
+    print()
+    await suite_atlassian_status()
     print()
     await suite_space_create()
     print()
