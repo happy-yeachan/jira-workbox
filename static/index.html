@@ -609,14 +609,16 @@
   @media (max-width: 860px) {
     header { flex-wrap: wrap; height: auto; row-gap: 8px; padding: 8px 12px; }
     header .nav-toggle { display: inline-flex; }
+    /* full-height slide-over so it doesn't depend on the (wrapping) header height */
     nav {
-      position: fixed; top: 54px; left: 0; bottom: 0; z-index: 45;
+      position: fixed; top: 0; left: 0; bottom: 0; height: 100vh; z-index: 60;
+      width: 260px; padding-top: 14px;
       transform: translateX(-100%); transition: transform .18s ease;
       box-shadow: 2px 0 16px rgba(0,0,0,.18);
     }
     nav.open { transform: translateX(0); }
-    .nav-backdrop { display: block; position: fixed; inset: 54px 0 0 0; z-index: 44;
-      background: rgba(0,0,0,.32); }
+    .nav-backdrop { display: block; position: fixed; inset: 0; z-index: 59;
+      background: rgba(0,0,0,.38); }
     section.work { padding-left: 14px; padding-right: 14px; }
     /* let dense tables scroll horizontally instead of crushing columns */
     .lic-users table { width: max-content; min-width: 100%; }
