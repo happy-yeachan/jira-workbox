@@ -88,7 +88,7 @@
     background: var(--surface); border-bottom: 1px solid var(--line);
     position: sticky; top: 0; z-index: 50;
   }
-  .nav-toggle { display: none; }  /* hamburger: only on narrow screens */
+  header .nav-toggle { display: none; }  /* hamburger: only on narrow screens (beats .btn) */
   .nav-backdrop { display: none; }
   .logo {
     width: 26px; height: 26px; flex: none; border-radius: 8px; display: inline-flex;
@@ -608,7 +608,7 @@
   /* ---------- responsive: collapse the sidebar on narrow / split windows ---------- */
   @media (max-width: 860px) {
     header { flex-wrap: wrap; height: auto; row-gap: 8px; padding: 8px 12px; }
-    .nav-toggle { display: inline-flex; }
+    header .nav-toggle { display: inline-flex; }
     nav {
       position: fixed; top: 54px; left: 0; bottom: 0; z-index: 45;
       transform: translateX(-100%); transition: transform .18s ease;
@@ -626,8 +626,10 @@
 <body x-data="workbox" x-init="boot()">
 
 <header>
-  <button class="btn small ghost icon-btn nav-toggle" x-show="health.configured"
-          @click="navOpen = !navOpen" aria-label="메뉴 열기/닫기" title="메뉴">☰</button>
+  <template x-if="health.configured">
+    <button class="btn small ghost icon-btn nav-toggle"
+            @click="navOpen = !navOpen" aria-label="메뉴 열기/닫기" title="메뉴">☰</button>
+  </template>
   <span class="brand" @click="landingView = 'dashboard'" title="홈으로"
         style="cursor:pointer; display:inline-flex; align-items:center; gap:9px">
     <span class="logo">W</span><span>jira<span class="dim">-workbox</span></span>
