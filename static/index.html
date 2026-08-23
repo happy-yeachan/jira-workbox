@@ -164,7 +164,8 @@
   .nav-ico { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--muted); }
   .nav-ico svg { width: 18px; height: 18px; display: block; }
   .nav-body { min-width: 0; flex: 1; }
-  .nav-x { flex: none; color: var(--muted); font-size: 12px; padding: 0 2px; border-radius: 4px; }
+  .nav-x { flex: none; color: var(--muted); font-size: 12px; padding: 0 3px; border-radius: 4px;
+    background: none; border: 0; cursor: pointer; line-height: 1.3; }
   .nav-x:hover { color: var(--bad); background: var(--hover); }
   /* the running/active task, set apart from the navigation tabs below it */
   .nav-current { margin: 0 -10px 10px; padding: 2px 10px 12px; border-bottom: 1px solid var(--line); }
@@ -204,6 +205,10 @@
   .report-row b.ok { color: var(--ok); }
   .report-row b.bad { color: var(--bad); }
   .report-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .danger-note { display: flex; gap: 9px; align-items: flex-start; margin: 4px 0 2px;
+    background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--ink);
+    border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5; }
+  .danger-note-ico { flex: none; color: var(--warn); font-size: 15px; line-height: 1.3; }
   .report-link { flex: none; font-size: 12.5px; font-weight: 550; color: var(--accent); text-decoration: none;
     padding: 2px 9px; border: 1px solid var(--accent-soft); border-radius: 999px; }
   .report-link:hover { background: var(--accent-soft); }
@@ -237,6 +242,12 @@
   input:focus, textarea:focus, select:focus {
     outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring);
   }
+  /* keyboard focus must be visible on every interactive control, not just inputs */
+  button:focus-visible, a:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  /* pointer clicks shouldn't leave a lingering ring */
+  button:focus:not(:focus-visible) { outline: none; }
   textarea { resize: vertical; min-height: 56px; }
   .check { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 14px; }
   .check input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
@@ -591,9 +602,10 @@
     <span class="logo">W</span><span>jira<span class="dim">-workbox</span></span>
   </span>
   <template x-if="health.configured">
-    <span class="status">
-      <span class="dot" :class="health.connected ? 'on' : 'off'"></span>
+    <span class="status" :aria-label="health.connected ? 'Jira 연결됨' : 'Jira 연결 끊김'">
+      <span class="dot" :class="health.connected ? 'on' : 'off'" aria-hidden="true"></span>
       <span x-text="(health.site_url || '').replace('https://', '')"></span>
+      <span class="sub" x-show="!health.connected" style="color:var(--bad); font-weight:600">· 연결 끊김</span>
       <span class="sub" x-text="health.account_name ? '· ' + health.account_name : (health.account_email ? '· ' + health.account_email : '')"></span>
     </span>
   </template>
@@ -604,7 +616,7 @@
     <span class="atl-dot"></span><span x-text="atlChipLabel()"></span>
   </button>
   <button class="btn small ghost icon-btn" @click="toggleTheme()" :title="dark ? '라이트 모드' : '다크 모드'"
-          x-text="dark ? '☀' : '☾'"></button>
+          :aria-label="dark ? '라이트 모드로 전환' : '다크 모드로 전환'" x-text="dark ? '☀' : '☾'"></button>
   <button class="btn small ghost" @click="toggleHistory()" x-show="health.configured">
     작업 기록<span x-show="history.length" x-text="' (' + history.length + ')'"></span>
   </button>
@@ -702,7 +714,7 @@
         </div>
 
         <!-- optional: organisation admin API key → license change log -->
-        <details class="advanced" style="margin-top:20px" x-show="health.configured">
+        <details class="advanced" style="margin-top:20px">
           <summary>
             조직 API 키 (라이선스 변경 로그 · 선택)
             <span class="pill" x-show="health.org_configured" style="margin-left:6px">연결됨</span>
@@ -748,7 +760,8 @@
         <p class="sub" style="margin:0 0 12px">
           이 워크박스에서 실행한 변경 작업입니다. 각 항목을 되돌릴 수 있습니다.
         </p>
-        <template x-if="!history.length">
+        <div class="notice err" x-show="historyErr" x-text="historyErr" style="margin-bottom:12px"></div>
+        <template x-if="!history.length && !historyErr">
           <div class="empty" style="padding:32px 0">아직 실행한 작업이 없습니다.</div>
         </template>
         <template x-for="h in history" :key="h.id">
@@ -770,6 +783,11 @@
                 </template>
                 <template x-if="h.status === 'rolled_back'">
                   <span class="badge v-unknown" style="flex:none">되돌림</span>
+                </template>
+                <!-- neither undoable nor already undone → say why, don't just show blank -->
+                <template x-if="!h.can_rollback && h.status !== 'rolled_back'">
+                  <span class="sub" style="flex:none; color:var(--muted)"
+                        :title="'이 작업은 되돌리기 정보가 없어 자동 복구할 수 없습니다'">되돌릴 수 없음</span>
                 </template>
               </div>
             </div>
@@ -797,7 +815,7 @@
           <span class="nav-body">
             <span class="t" style="display:flex; align-items:center; gap:6px">
               <span x-text="selected.spec.title" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis"></span>
-              <span class="nav-x" @click.stop="closeTask()" title="작업 닫기">✕</span>
+              <button class="nav-x" @click.stop="closeTask()" title="작업 닫기" aria-label="현재 작업 닫기">✕</button>
             </span>
             <span class="d" x-text="planning ? '분석 중…' : (running ? '실행 중…' : (plan ? '미리보기 준비됨' : (log.length ? '완료' : '작성 중')))"></span>
           </span>
@@ -1021,7 +1039,10 @@
                       </template>
                     </tbody>
                   </table>
-                  <div class="sub" x-show="!liclog.loading && !filteredEvents().length" style="padding:12px 14px">표시할 로그가 없습니다.</div>
+                  <div class="sub" x-show="!liclog.loading && !filteredEvents().length" style="padding:12px 14px">
+                    표시할 로그가 없습니다.
+                    <span x-show="liclog.q.trim()" style="color:var(--muted)"> · 검색은 사용자·수행자만 대상입니다(제품은 위 칩으로 거르세요).</span>
+                  </div>
                 </div>
                 <div class="lic-users-foot" x-show="!liclog.err && logPages() > 1">
                   <button class="btn small ghost" @click="setLogPage(liclog.page - 1)" :disabled="liclog.page <= 1">이전</button>
@@ -1061,6 +1082,9 @@
               <div class="sub" x-show="spacemgr.loading && !spacemgr.list.length" style="padding:14px">검색 중…</div>
               <div class="sub" x-show="!spacemgr.loading && !spacemgr.list.length" style="padding:12px 14px"
                    x-text="spacemgr.q.trim() ? '검색 결과가 없습니다.' : '스페이스 키·이름으로 검색하거나, ＋ 스페이스 추가로 새로 만드세요.'"></div>
+              <div class="sub" x-show="!spacemgr.loading && spacemgr.list.length >= 50" style="padding:8px 14px; color:var(--muted)">
+                상위 50개만 표시합니다 — 더 있으면 검색어를 좁혀 보세요.
+              </div>
             </div>
           </div>
         </div>
@@ -1849,9 +1873,11 @@
           </div>
           <div class="bar" x-show="running" style="margin:10px 0 2px"><i :style="'width:' + pct() + '%'"></i></div>
 
-          <!-- per-item report (rollback shows the summary only — its ids aren't human) -->
-          <template x-if="runItems.length && runMode !== 'undo'">
+          <!-- per-item report — shown for runs AND rollbacks so a partial failure
+               is legible either way (undo labels are internal ids, so hint that) -->
+          <template x-if="runItems.length">
             <div class="report-items">
+              <div class="sub" x-show="runMode === 'undo'" style="padding:4px 2px">되돌리기 항목별 결과 (식별자 기준):</div>
               <template x-for="(r, i) in runItems" :key="i">
                 <div class="report-row">
                   <b :class="r.ok ? 'ok' : 'bad'" x-text="r.ok ? '✓' : '✕'"></b>
@@ -1867,6 +1893,11 @@
               </template>
             </div>
           </template>
+
+          <!-- the preview is single-use: once executed it's gone, so say so -->
+          <div class="sub" x-show="planConsumed && !running" style="margin-top:10px; color:var(--muted)">
+            미리보기는 소모되었습니다. 다시 실행하려면 <b>[미리보기]</b>를 눌러 새로 만드세요.
+          </div>
 
           <!-- raw log, collapsed by default (for debugging) -->
           <pre class="log" x-ref="log" x-show="logOpen" style="margin-top:10px"><template x-for="line in log"><span><b :class="line.cls" x-text="line.tag"></b><span x-text="' ' + line.text + '\n'"></span></span></template></pre>
@@ -1986,7 +2017,8 @@
                     </template>
                     <span class="spacer"></span>
                     <template x-if="sec.nodes[0] && sec.nodes[0].isolate">
-                      <button class="btn small" style="flex:none" @click.stop="isolate(sec.nodes[0].isolate)">분리하기</button>
+                      <button class="btn small" style="flex:none" @click.stop="isolate(sec.nodes[0].isolate)"
+                              title="이 스킴을 복제해 이 프로젝트 전용으로 갈아끼웁니다">전용으로 분리</button>
                     </template>
                   </div>
                   <div class="tgroup-body" x-show="open && sec.nodes.length > 1">
@@ -2003,10 +2035,12 @@
                         </template>
                         <span class="spacer"></span>
                         <template x-if="n.assign">
-                          <button class="btn small ghost" style="flex:none" @click.stop="openAssignScreen(n.assign, n.label)">화면 분리</button>
+                          <button class="btn small ghost" style="flex:none" @click.stop="openAssignScreen(n.assign, n.label)"
+                                  title="이 이슈타입만 화면·화면 스킴을 복제해 전용으로 분리합니다">이 이슈타입만 분리</button>
                         </template>
                         <template x-if="n.isolate">
-                          <button class="btn small" style="flex:none" @click.stop="isolate(n.isolate)">분리하기</button>
+                          <button class="btn small" style="flex:none" @click.stop="isolate(n.isolate)"
+                                  title="이 노드를 복제해 이 프로젝트 전용으로 갈아끼웁니다">전용으로 분리</button>
                         </template>
                       </div>
                     </template>
@@ -2103,7 +2137,7 @@
 
           <template x-if="!plan.readonly">
             <div class="row" style="margin-top:4px; align-items:center; gap:10px">
-              <button class="btn danger" @click="confirming = true"
+              <button class="btn danger" @click="confirming = true; dangerAck = false"
                       :disabled="running || !plan.changes.length || isoHasConflict()">
                 <span x-text="plan.changes.length"></span>건 실행
               </button>
@@ -2154,7 +2188,10 @@
     <div class="modal">
       <div class="body">
         <h3>정말 실행할까요?</h3>
-        <p class="sub" style="margin:0" x-text="selected.spec.danger"></p>
+        <div class="danger-note" x-show="selected.spec.danger">
+          <span class="danger-note-ico" aria-hidden="true">⚠</span>
+          <span x-text="selected.spec.danger"></span>
+        </div>
         <dl class="kv">
           <dt>대상</dt><dd x-text="plan.changes.length + '건'"></dd>
           <dt>사이트</dt><dd x-text="(health.site_url || '').replace('https://','')"></dd>
@@ -2162,10 +2199,17 @@
         <p class="sub" style="margin:0">
           미리보기는 실행과 함께 소모됩니다. 다시 하려면 미리보기부터 새로 해야 합니다.
         </p>
+        <!-- extra friction for the one task that changes/clones SHARED config -->
+        <label class="check" x-show="selected.spec.name === 'config_isolate'" style="margin:14px 0 0">
+          <input type="checkbox" x-model="dangerAck">
+          <span class="name">공유 설정을 복제·재지정하는 작업임을 확인했습니다.</span>
+        </label>
       </div>
       <div class="foot">
         <button class="btn ghost" @click="confirming = false">취소</button>
-        <button class="btn danger" @click="confirming = false; doExecute()">실행</button>
+        <button class="btn danger"
+                :disabled="selected.spec.name === 'config_isolate' && !dangerAck"
+                @click="confirming = false; doExecute()">실행</button>
       </div>
     </div>
   </div>
@@ -2201,11 +2245,11 @@ document.addEventListener('alpine:init', () => {
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
     isoNames: {},  // config_isolate: editable name per clone that will be created
-    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [],
+    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [], planConsumed: false, dangerAck: false,
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
     atl: null, atlDismissedSig: '', atlOpen: false,
-    history: [], historyOpen: false, histOpen: [],
+    history: [], historyErr: '', historyOpen: false, histOpen: [],
     gp: { q: '', results: [], loading: false, err: '' }, groupNames: {},
     up: { q: '', results: [], loading: false, err: '' }, userNames: {},
     pp: { q: '', results: [], loading: false, err: '' }, projectNames: {},
@@ -2468,10 +2512,12 @@ document.addEventListener('alpine:init', () => {
         if (!res.ok) { const d = await res.json().catch(() => ({})); this.fieldmgr.err = this.errText(d) || '필드 조회 실패'; return; }
         await this.readNdjson(res, (ev) => {
           if (ev.type === 'batch') {
+            // append in arrival order while streaming — re-ranking every batch made
+            // rows reshuffle under the cursor. Rank once when the stream finishes.
             this.fieldmgr.list.push(...(ev.fields || []));
-            this.fieldmgr.list = this.rankByQuery(this.fieldmgr.list, q);  // prefix matches first
           } else if (ev.type === 'error') { this.fieldmgr.err = ev.message || '필드 조회 실패'; }
         });
+        this.fieldmgr.list = this.rankByQuery(this.fieldmgr.list, q);  // prefix matches first
       } catch (e) { if (e.name !== 'AbortError') this.fieldmgr.err = '필드 조회 실패: ' + e; }
       finally { if (this.fieldmgr._ctrl === ctrl) { this.fieldmgr.loading = false; this.fieldmgr._ctrl = null; } }
     },
@@ -2924,14 +2970,15 @@ document.addEventListener('alpine:init', () => {
         await this.readNdjson(res, (ev) => {
           if (ev.type === 'batch') {
             this.liclog.events.push(...(ev.events || []));
-            // keep newest-first as batches (per action) interleave
-            this.liclog.events.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
           } else if (ev.type === 'done') {
             this.liclog.capped = !!ev.capped;
           } else if (ev.type === 'error') {
             this.liclog.err = ev.message || '로그 조회 실패';
           }
         });
+        // sort once at the end (newest first) rather than on every batch, so rows
+        // don't reshuffle under the cursor while per-product batches interleave
+        this.liclog.events.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
       } catch (e) { if (e.name !== 'AbortError') this.liclog.err = '로그 조회 실패: ' + e; }
       finally { if (this.liclog._ctrl === ctrl) { this.liclog.loading = false; this.liclog._ctrl = null; } }
     },
@@ -3504,6 +3551,7 @@ document.addEventListener('alpine:init', () => {
       await this.stream(`/api/tasks/${this.selected.spec.name}/execute`,
                         { plan_id: this.plan.plan_id }, total, `실행 시작 · 대상 ${total}건`);
       this.plan = null;  // token consumed server side
+      this.planConsumed = true;  // tell the operator the preview is gone
     },
 
     // ---- 작업 기록 (rollback history) ----
@@ -3512,10 +3560,15 @@ document.addEventListener('alpine:init', () => {
       if (i >= 0) this.histOpen.splice(i, 1); else this.histOpen.push(id);
     },
     async loadHistory() {
+      this.historyErr = '';
       try {
         const res = await fetch('/api/history?limit=100');
-        this.history = res.ok ? await res.json() : [];
-      } catch (e) { /* history is best-effort */ }
+        if (!res.ok) { this.historyErr = '작업 기록을 불러오지 못했습니다 (' + res.status + ').'; return; }
+        this.history = await res.json();
+      } catch (e) {
+        // don't leave a failed load looking like "nothing ran" — say so
+        this.historyErr = '작업 기록을 불러오지 못했습니다: ' + e;
+      }
     },
 
     toggleHistory() {
@@ -3719,7 +3772,7 @@ document.addEventListener('alpine:init', () => {
     resetRun() {
       this.progress = { done: 0, total: 0, ok: 0, fail: 0 };
       this.log = []; this.status = ''; this.phase = ''; this.logOpen = true; this.runMode = 'run';
-      this.runItems = [];
+      this.runItems = []; this.planConsumed = false;
     },
 
     // human label for a result row: the plan's Change.label when we have it
