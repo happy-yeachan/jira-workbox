@@ -570,10 +570,12 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
                 f"워크플로우 조회가 불완전합니다({cached.integrity.detail}). 모든 '전용' 판정이 "
                 "'확인 불가'로 내려갑니다"
             )
-        if len(cached.wf_rows) >= params.max_workflows:
+        # compare against the cap the cache was actually scanned with, not this
+        # run's — a later audit with a lower cap must not fake a "stopped at cap"
+        if len(cached.wf_rows) >= cached.max_workflows:
             index.workflow_scan_complete = False
             yield report.warn(
-                f"워크플로우 조회가 상한({params.max_workflows})에서 멈췄습니다. 한도를 "
+                f"워크플로우 조회가 상한({cached.max_workflows})에서 멈췄습니다. 한도를 "
                 "올려 다시 실행한 뒤 결과를 신뢰하세요"
             )
         unparsed = _ingest_workflows(index, cached.wf_rows)

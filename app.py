@@ -364,7 +364,7 @@ async def setup_org(body: OrgSetupRequest, request: Request) -> dict[str, object
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — never surface an opaque 500 during setup
-        log.error("org key verification failed unexpectedly: %s", exc)
+        log.error("org key verification failed unexpectedly: %s", exc, exc_info=True)
         raise HTTPException(status_code=502, detail=(
             f"조직 API 키 확인 중 예기치 못한 오류({type(exc).__name__}). "
             "네트워크와 키를 확인하세요.")) from None
@@ -374,7 +374,7 @@ async def setup_org(body: OrgSetupRequest, request: Request) -> dict[str, object
     try:
         store_org_credentials(creds.api_key.get_secret_value(), org_id)
     except Exception as exc:  # noqa: BLE001 — the keychain write can fail or be denied
-        log.error("org key keychain write failed: %s", exc)
+        log.error("org key keychain write failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=(
             f"키는 확인했지만 OS 키체인 저장에 실패했습니다({type(exc).__name__}). "
             "키체인 접근 권한을 확인하세요.")) from None

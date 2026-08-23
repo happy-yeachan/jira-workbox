@@ -27,9 +27,14 @@ log = logging.getLogger("workbox.atlassian_status")
 
 #: Statuspage severity, worst last — used to pick the overall indicator.
 _INDICATOR_RANK = {"none": 0, "maintenance": 1, "minor": 2, "major": 3, "critical": 4}
+_RANK_NAME = {v: k for k, v in _INDICATOR_RANK.items()}
 #: indicators that mean "no problem" → no banner
 _OK_INDICATORS = {"none", ""}
 _TIMEOUT = 8.0
+
+
+def _rank_name(rank: int) -> str:
+    return _RANK_NAME.get(rank, "none")
 
 
 def _summary_url(key: str) -> str:
@@ -63,23 +68,25 @@ async def _fetch_one(client: httpx.AsyncClient, key: str) -> dict[str, Any]:
     status = data.get("status") or {}
     indicator = str(status.get("indicator") or "none").lower()
     incidents = [
-        {"name": i.get("name"), "impact": i.get("impact"),
+        {"name": i.get("name"), "impact": str(i.get("impact") or "").lower(),
          "status": i.get("status"), "url": i.get("shortlink")}
         for i in (data.get("incidents") or [])
     ]
-    maintenances = [
-        {"name": m.get("name"), "status": m.get("status"), "url": m.get("shortlink")}
-        for m in (data.get("scheduled_maintenances") or [])
-        if m.get("status") == "in_progress"
-    ]
+    # summary.json's `incidents` are the UNRESOLVED ones. A page can report
+    # indicator "none" while an incident is live (the very under-reporting this
+    # module exists to catch — see the docstring), so a real incident counts as a
+    # problem on its own, and the effective severity is the worst of the indicator
+    # and the incident impacts. Impact-"none" incidents are informational → ignored.
+    real = [i for i in incidents if _INDICATOR_RANK.get(i["impact"], 0) >= _INDICATOR_RANK["minor"]]
+    ranks = [_INDICATOR_RANK.get(indicator, 0)] + [_INDICATOR_RANK.get(i["impact"], 0) for i in real]
+    effective = _rank_name(max(ranks))
     return {
         "key": key,
         "name": (data.get("page") or {}).get("name") or key,
-        "indicator": indicator,
-        "ok": indicator in _OK_INDICATORS,
+        "indicator": effective,
+        "ok": indicator in _OK_INDICATORS and not real,
         "description": status.get("description") or "",
         "incidents": incidents,
-        "maintenances": maintenances,
     }
 
 
@@ -102,9 +109,14 @@ async def fetch_status(transport: httpx.BaseTransport | None = None) -> dict[str
         products = await asyncio.gather(*[_fetch_one(client, k) for k in keys])
 
     reported = [p for p in products if p["indicator"] != "unknown"]
-    worst = max((p["indicator"] for p in reported),
-                key=lambda i: _INDICATOR_RANK.get(i, 0), default="none")
     problems = [p for p in products if p["ok"] is False]
+    if not reported:
+        # nothing could be verified (offline / all pages down) — do NOT show a
+        # green "정상"; report unknown so the chip goes grey and no alarm fires.
+        worst = "unknown"
+    else:
+        worst = max((p["indicator"] for p in reported),
+                    key=lambda i: _INDICATOR_RANK.get(i, 0), default="none")
     return {
         "enabled": True,
         "ok": not problems,

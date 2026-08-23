@@ -1568,12 +1568,19 @@ async def suite_atlassian_status() -> None:
                 "incidents": [{"name": "Delays loading pages", "impact": "major",
                                "status": "investigating", "shortlink": "https://stspg.io/x"}],
                 "scheduled_maintenances": []})
+        if host == "compass.status.atlassian.com":
+            # the under-reporting case: indicator says "none" but an incident is live
+            return httpx.Response(200, json={"page": {"name": "Compass"},
+                "status": {"indicator": "none", "description": "All Systems Operational"},
+                "incidents": [{"name": "간헐적 오류", "impact": "minor",
+                               "status": "investigating", "shortlink": "https://stspg.io/c"}],
+                "scheduled_maintenances": []})
         if host == "status.bitbucket.org":
             return httpx.Response(500, json={"error": "boom"})  # unreachable → unknown
         return httpx.Response(404, json={})
 
     async def run_status():
-        os.environ["WORKBOX_ATLASSIAN_STATUS_PRODUCTS"] = "jira-software,confluence,status.bitbucket.org"
+        os.environ["WORKBOX_ATLASSIAN_STATUS_PRODUCTS"] = "jira-software,confluence,compass,status.bitbucket.org"
         cfg.load_settings.cache_clear()
         try:
             return await ast.fetch_status(transport=httpx.MockTransport(handler))
@@ -1593,13 +1600,29 @@ async def suite_atlassian_status() -> None:
           by.get("status.bitbucket.org"))
     check("atl: overall NOT ok + worst indicator when a product is down",
           res["ok"] is False and res["indicator"] == "major", res.get("indicator"))
-    check("atl: only real problems listed (unknown excluded)",
-          [p["key"] for p in res["problems"]] == ["confluence"], res["problems"])
+    check("atl: indicator 'none' but a live incident → still flagged (under-report guard)",
+          by["compass"]["ok"] is False and by["compass"]["indicator"] == "minor", by.get("compass"))
+    check("atl: real problems = degraded + incident-only, unknown excluded",
+          sorted(p["key"] for p in res["problems"]) == ["compass", "confluence"], res["problems"])
 
     check("atl: bare key → status.atlassian.com subdomain",
           ast._summary_url("rovo") == "https://rovo.status.atlassian.com/api/v2/summary.json")
     check("atl: dotted value → used as a full host",
           ast._summary_url("status.bitbucket.org") == "https://status.bitbucket.org/api/v2/summary.json")
+
+    # every page unreachable → 'unknown' overall (grey chip), never a green false-OK
+    async def run_all_down():
+        os.environ["WORKBOX_ATLASSIAN_STATUS_PRODUCTS"] = "jira-software,confluence"
+        cfg.load_settings.cache_clear()
+        try:
+            return await ast.fetch_status(transport=httpx.MockTransport(
+                lambda r: httpx.Response(503, json={"error": "down"})))
+        finally:
+            del os.environ["WORKBOX_ATLASSIAN_STATUS_PRODUCTS"]
+            cfg.load_settings.cache_clear()
+    down = await run_all_down()
+    check("atl: all pages unreachable → indicator 'unknown' (not a green '정상')",
+          down["indicator"] == "unknown" and not down["problems"], down)
 
     os.environ["WORKBOX_ATLASSIAN_STATUS_ENABLED"] = "false"
     cfg.load_settings.cache_clear()

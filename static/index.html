@@ -619,9 +619,9 @@
      A problem drops the banner automatically; the header chip opens it any time
      (including when all is well, to inspect every product). -->
 <template x-if="atl && atl.enabled && (atlOpen || (!atl.ok && !atlIsDismissed()))">
-  <div class="atl-banner" :class="{ crit: atl.indicator === 'major' || atl.indicator === 'critical', ok: atl.ok }">
+  <div class="atl-banner" :class="{ crit: atlSeverity() === 'crit', ok: atlSeverity() === 'ok' }">
     <div class="atl-main">
-      <span class="atl-ico" x-text="atl.ok ? '✓' : ((atl.indicator === 'major' || atl.indicator === 'critical') ? '⛔' : '⚠')"></span>
+      <span class="atl-ico" x-text="atlIcon()"></span>
       <div style="min-width:0">
         <div class="atl-head">
           <span x-text="atlHeadline()"></span>
@@ -633,7 +633,7 @@
             <span class="atl-badge" :class="'ind-' + p.indicator" x-text="p.name"></span>
             <span x-text="p.description"></span>
             <template x-for="(inc, i) in (p.incidents || [])" :key="i">
-              <a class="atl-inc" :href="inc.url" target="_blank" rel="noopener" x-text="inc.name"></a>
+              <a class="atl-inc" :href="atlSafeUrl(inc.url)" target="_blank" rel="noopener" x-text="inc.name"></a>
             </template>
           </div>
         </template>
@@ -2276,25 +2276,31 @@ document.addEventListener('alpine:init', () => {
     atlIsDismissed() { return this.atlSig() !== '' && this.atlDismissedSig === this.atlSig(); },
     dismissAtl() { this.atlDismissedSig = this.atlSig(); },
     atlSeverity() {  // ok | warn | crit | unknown
-      if (!this.atl) return 'unknown';
+      if (!this.atl || this.atl.indicator === 'unknown') return 'unknown';
       if (this.atl.ok) return 'ok';
       return (this.atl.indicator === 'major' || this.atl.indicator === 'critical') ? 'crit' : 'warn';
     },
     atlChipClass() { return this.atlSeverity(); },
+    atlIcon() { return { ok: '✓', warn: '⚠', crit: '⛔', unknown: '…' }[this.atlSeverity()]; },
     atlChipLabel() {
-      return { ok: '아틀라시안 정상', warn: '아틀라시안 점검', crit: '아틀라시안 장애',
-               unknown: '아틀라시안 확인 중' }[this.atlSeverity()];
+      const s = this.atlSeverity();
+      if (s === 'unknown') return this.atl ? '아틀라시안 확인 안됨' : '아틀라시안 확인 중';
+      return { ok: '아틀라시안 정상', warn: '아틀라시안 점검', crit: '아틀라시안 장애' }[s];
     },
+    atlSafeUrl(u) { return (typeof u === 'string' && /^https?:\/\//i.test(u)) ? u : '#'; },
     atlChipTitle() {
       const n = (this.atl && this.atl.products) ? this.atl.products.length : 0;
       const when = this.atl && this.atl.checked_at ? this.fmtTime(this.atl.checked_at) + ' 확인' : '';
       return `제품 ${n}개 모니터링 · ${when} · 클릭하면 상세`;
     },
     atlHeadline() {
+      if (this.atlSeverity() === 'unknown') {
+        return '아틀라시안 상태를 확인하지 못했습니다 — 네트워크를 확인하세요';
+      }
       if (this.atl.ok) {
-        const n = (this.atl.products || []).length;
-        const unk = (this.atl.products || []).filter(p => p.indicator === 'unknown').length;
-        return `아틀라시안 전 제품 정상 — ${n}개 확인` + (unk ? ` (${unk}개 확인 안됨)` : '');
+        const all = (this.atl.products || []);
+        const unk = all.filter(p => p.indicator === 'unknown').length;
+        return `아틀라시안 전 제품 정상 — ${all.length - unk}개 확인` + (unk ? ` (${unk}개 확인 안됨)` : '');
       }
       const n = (this.atl.problems || []).length;
       const crit = this.atl.indicator === 'major' || this.atl.indicator === 'critical';

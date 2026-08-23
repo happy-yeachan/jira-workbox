@@ -510,7 +510,12 @@ async def _itss_shared_live(client: WorkboxClient, itss_id: str, target_id: str)
     if not integ.complete:
         return True
     tid = _sid(target_id)
-    return any(_sid(r.get("id")) not in ("", tid) for r in rows)
+    ids = [_sid(r.get("id")) for r in rows]
+    # rows present but no ids at all → the response shape isn't what we expect;
+    # fail safe (treat as shared → clone) rather than risk an in-place edit
+    if rows and not any(ids):
+        return True
+    return any(i and i != tid for i in ids)
 
 
 async def _screen_scheme_shared_live(
@@ -1503,12 +1508,6 @@ async def execute_stream(
                 undos.append(Change(target_id=change.target_id, label=change.label, after=undo))
             yield ProgressEvent(type="item", index=done, total=total, item=item)
 
-        if any(r.ok for r in results):
-            # this run cloned/edited workflows, screens or schemes → the cached
-            # global workflow scan is now stale; drop it so the next audit re-reads
-            from tasks import screen_share_analysis as _ssa
-            _ssa.invalidate_workflow_cache(client)
-
         if undos:
             a0 = plan_result.changes[0].after
             did_isolate = a0.get("op") == "isolate"
@@ -1530,6 +1529,11 @@ async def execute_stream(
         cancelled = True
         raise
     finally:
+        # in finally so a run cancelled mid-loop still drops the stale cache for
+        # the writes it already applied (workflows/screens/schemes changed)
+        if any(r.ok for r in results):
+            from tasks import screen_share_analysis as _ssa
+            _ssa.invalidate_workflow_cache(client)
         audit.record_execution(build_result(), batch_size=opts.batch_size)
 
 
