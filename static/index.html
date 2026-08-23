@@ -205,6 +205,9 @@
   .report-row b.ok { color: var(--ok); }
   .report-row b.bad { color: var(--bad); }
   .report-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .report-label-wrap { overflow: visible; white-space: normal; word-break: keep-all; }
+  .report-undo-head { font-size: 13px; margin: 2px 0 10px; padding: 8px 11px;
+    background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; color: var(--ink); }
   .danger-note { display: flex; gap: 9px; align-items: flex-start; margin: 4px 0 2px;
     background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--ink);
     border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5; }
@@ -1875,16 +1878,21 @@
           </div>
           <div class="bar" x-show="running" style="margin:10px 0 2px"><i :style="'width:' + pct() + '%'"></i></div>
 
+          <!-- what was undone, in plain language (not an internal id) -->
+          <div class="report-undo-head" x-show="runMode === 'undo' && undoTitle">
+            <b x-text="undoTitle"></b> 작업을 되돌렸습니다.
+          </div>
+
           <!-- per-item report — shown for runs AND rollbacks so a partial failure
-               is legible either way (undo labels are internal ids, so hint that) -->
+               is legible either way. For undo we lead with the human note. -->
           <template x-if="runItems.length">
             <div class="report-items">
-              <div class="sub" x-show="runMode === 'undo'" style="padding:4px 2px">되돌리기 항목별 결과 (식별자 기준):</div>
               <template x-for="(r, i) in runItems" :key="i">
                 <div class="report-row">
                   <b :class="r.ok ? 'ok' : 'bad'" x-text="r.ok ? '✓' : '✕'"></b>
-                  <span class="report-label" x-text="r.label"></span>
-                  <span class="sub" x-show="r.note" style="color:var(--muted); min-width:0; overflow:hidden; text-overflow:ellipsis"
+                  <span class="report-label" :class="runMode === 'undo' ? 'report-label-wrap' : ''"
+                        x-text="runMode === 'undo' ? (r.note || r.label) : r.label"></span>
+                  <span class="sub" x-show="r.note && runMode !== 'undo'" style="color:var(--muted); min-width:0; overflow:hidden; text-overflow:ellipsis"
                         x-text="'· ' + r.note"></span>
                   <span class="spacer"></span>
                   <span class="sub" :class="r.ok ? '' : 'bad'" x-show="r.error || !r.ok"
@@ -2249,7 +2257,7 @@ document.addEventListener('alpine:init', () => {
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
     isoNames: {},  // config_isolate: editable name per clone that will be created
-    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [], planConsumed: false, dangerAck: false,
+    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [], planConsumed: false, dangerAck: false, undoTitle: '',
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
     atl: null, atlDismissedSig: '', atlOpen: false,
@@ -3588,6 +3596,7 @@ document.addEventListener('alpine:init', () => {
     async rollback(h) {
       if (this.running) return;
       this.historyOpen = false;
+      this.undoTitle = h.title || '';  // show WHAT was undone, not an internal id
       await this.stream(`/api/history/${h.id}/rollback`, {}, h.count,
                         `되돌리는 중 · ${h.title}`, 'undo');
     },
@@ -3779,6 +3788,8 @@ document.addEventListener('alpine:init', () => {
       this.progress = { done: 0, total: 0, ok: 0, fail: 0 };
       this.log = []; this.status = ''; this.phase = ''; this.logOpen = true; this.runMode = 'run';
       this.runItems = []; this.planConsumed = false;
+      // undoTitle is set by rollback() right before stream()/resetRun run, and only
+      // renders in undo mode, so it must survive resetRun — don't clear it here.
     },
 
     // human label for a result row: the plan's Change.label when we have it
