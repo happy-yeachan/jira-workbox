@@ -815,7 +815,9 @@
           <span class="nav-body">
             <span class="t" style="display:flex; align-items:center; gap:6px">
               <span x-text="selected.spec.title" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis"></span>
-              <button class="nav-x" @click.stop="closeTask()" title="작업 닫기" aria-label="현재 작업 닫기">✕</button>
+              <span class="nav-x" role="button" tabindex="0" aria-label="현재 작업 닫기" title="작업 닫기"
+                    @click.stop="closeTask()" @keydown.enter.stop="closeTask()"
+                    @keydown.space.prevent.stop="closeTask()">✕</span>
             </span>
             <span class="d" x-text="planning ? '분석 중…' : (running ? '실행 중…' : (plan ? '미리보기 준비됨' : (log.length ? '완료' : '작성 중')))"></span>
           </span>
@@ -935,7 +937,7 @@
               <table>
                 <thead><tr>
                   <th style="width:34%">이름</th><th>이메일</th>
-                  <th x-show="dash.selApp === JSM_KEY" style="width:32%">서비스데스크</th>
+                  <th x-show="dash.selApp === JSM_KEY" style="width:32%">JSM 프로젝트</th>
                 </tr></thead>
                 <tbody>
                   <template x-for="u in pagedUsers()" :key="u.account_id">
@@ -1063,7 +1065,7 @@
             <input type="text" class="lic-log-search" placeholder="스페이스 키·이름으로 검색" x-model="spacemgr.q" @input.debounce.300ms="searchSpaces()">
             <button class="btn small" @click="openSpaceCreate()">＋ 스페이스 추가</button>
           </div>
-          <div class="sub" style="margin:0 2px 10px">스페이스를 클릭하면 설정 공유 진단(화면·워크플로우·권한 공유 여부)을 실행합니다.</div>
+          <div class="sub" style="margin:0 2px 10px">스페이스를 클릭하면 설정 공유 진단(화면·워크플로우·권한 공유 여부) 화면이 열립니다 — 검사 항목을 고른 뒤 실행하세요.</div>
           <div class="progbar" x-show="spacemgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
           <div class="notice err" x-show="spacemgr.err" x-text="spacemgr.err" style="margin-bottom:10px"></div>
           <div class="lic-users" x-show="!spacemgr.err">
@@ -1072,7 +1074,7 @@
                 <thead><tr><th style="width:160px">키</th><th>이름</th></tr></thead>
                 <tbody>
                   <template x-for="p in spacemgr.list" :key="p.id">
-                    <tr class="clickrow" @click="openSpaceAudit(p)" title="클릭하면 설정 공유 진단을 실행합니다">
+                    <tr class="clickrow" @click="openSpaceAudit(p)" title="클릭하면 진단 화면이 열립니다 (검사 항목 선택 후 실행)">
                       <td class="mono" x-text="p.key"></td>
                       <td x-text="p.name"></td>
                     </tr>
@@ -1882,6 +1884,8 @@
                 <div class="report-row">
                   <b :class="r.ok ? 'ok' : 'bad'" x-text="r.ok ? '✓' : '✕'"></b>
                   <span class="report-label" x-text="r.label"></span>
+                  <span class="sub" x-show="r.note" style="color:var(--muted); min-width:0; overflow:hidden; text-overflow:ellipsis"
+                        x-text="'· ' + r.note"></span>
                   <span class="spacer"></span>
                   <span class="sub" :class="r.ok ? '' : 'bad'" x-show="r.error || !r.ok"
                         x-text="(r.ok ? '⚠ ' : (r.status ? '(' + r.status + ') ' : '')) + (r.error || '실패')"></span>
@@ -2036,7 +2040,7 @@
                         <span class="spacer"></span>
                         <template x-if="n.assign">
                           <button class="btn small ghost" style="flex:none" @click.stop="openAssignScreen(n.assign, n.label)"
-                                  title="이 이슈타입만 화면·화면 스킴을 복제해 전용으로 분리합니다">이 이슈타입만 분리</button>
+                                  title="특정 이슈타입만 화면·화면 스킴을 복제해 전용으로 분리합니다">특정 이슈타입만 분리</button>
                         </template>
                         <template x-if="n.isolate">
                           <button class="btn small" style="flex:none" @click.stop="isolate(n.isolate)"
@@ -2389,7 +2393,7 @@ document.addEventListener('alpine:init', () => {
       this.form.project = p.key;
       this.projectNames = { [p.key]: (p.key + (p.name ? ' · ' + p.name : '')) };
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      this.doPlan();
+      // don't auto-run — let the operator pick 검사 항목 (skip slow ones) then 분석 실행
     },
     // ＋ 스페이스 추가 → open the space-create task form
     openSpaceCreate() {
@@ -3667,11 +3671,13 @@ document.addEventListener('alpine:init', () => {
         const it = ev.item || {};
         this.progress.done = ev.index ?? this.progress.done + 1;
         const label = this.itemLabel(it.target_id);
-        this.runItems.push({ label, key: it.target_id, ok: !!it.ok, status: it.status_code ?? null, error: it.error || '' });
+        this.runItems.push({ label, key: it.target_id, ok: !!it.ok, status: it.status_code ?? null,
+                             error: it.error || '', note: it.note || '' });
         if (it.ok) this.progress.ok++; else this.progress.fail++;
-        // keep a raw line for the collapsible 자세히 log (label, not the internal id)
+        // keep a raw line for the collapsible 자세히 log — include the human note
+        // (e.g. which clones a rollback deleted) so it isn't just an internal id
         this.push(it.ok ? 'ok' : 'bad', it.ok ? '✓' : '✕',
-                  `${label} (${it.status_code ?? '-'})${it.error ? ' ' + it.error : ''}`);
+                  `${label}${it.note ? ' — ' + it.note : ''} (${it.status_code ?? '-'})${it.error ? ' ' + it.error : ''}`);
       } else if (ev.type === 'batch') {
         this.push('sys', '·', ev.message || '중간 지점');
       } else if (ev.type === 'summary') {

@@ -1466,7 +1466,9 @@ async def suite_rollback_safety() -> None:
          "restore_scheme_id": "700",
          "inplace_restore": [["PUT", "/issuetypescreenscheme/700/mapping", {"x": 1}]],
          "delete": [["/screenscheme/{id}", "600"], ["/screens/{id}", "S9"]],
-         "steps": [], "inplace": []}
+         "steps": [{"ref": "screen0", "create_path": "/screens", "body": {"name": "NZGE: Bug 스크린"}},
+                   {"ref": "screen_scheme", "create_path": "/screenscheme", "body": {"name": "NZGE: Bug 화면 스킴"}}],
+         "inplace": []}
     change = Change(target_id="NZGE", label="x", after=a)
 
     # a failed in-place revert must NOT proceed to delete the clones — the
@@ -1498,6 +1500,9 @@ async def suite_rollback_safety() -> None:
     await client2.aclose()
     check("fork-restore: successful revert → both clones deleted",
           res2.ok and sum(1 for m, _ in calls2 if m == "DELETE") == 2, calls2)
+    check("fork-restore: undo note names the deleted clones (readable log)",
+          "복제본 삭제" in (res2.note or "") and "NZGE: Bug 화면 스킴" in (res2.note or "")
+          and "NZGE: Bug 스크린" in (res2.note or ""), res2.note)
 
     # a non-404 error on the draft-existence check is a real failure, not "done"
     def site_draft_500(request: httpx.Request) -> httpx.Response:

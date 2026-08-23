@@ -694,6 +694,34 @@ async def _plan_screen_fork(
 
 _OP_KO = {"default": "기본", "create": "생성", "edit": "편집", "view": "보기"}
 
+_KIND_KO = {
+    "screens": "스크린", "screenscheme": "화면 스킴", "issuetypescreenscheme": "이슈 유형 화면 스킴",
+    "workflows": "워크플로우", "workflowscheme": "워크플로우 스킴",
+    "issuetypescheme": "이슈 타입 스킴", "issuesecurityschemes": "보안 스킴",
+}
+
+
+def _kind_ko(path: str) -> str:
+    return _KIND_KO.get((path or "").strip("/").split("/")[0], "객체")
+
+
+def _fork_restore_note(a: dict[str, Any]) -> str:
+    """Human, PII-free summary of an undone path-clone: which clones were deleted
+    (by name, from the stored steps) and that the project was re-pointed back."""
+    names: list[str] = []
+    for st in a.get("steps", []):
+        body = (st.get("body") or {}) if isinstance(st, dict) else {}
+        if body.get("name"):
+            names.append(f"{_kind_ko(st.get('create_path', ''))} '{body['name']}'")
+    parts: list[str] = []
+    if names:
+        parts.append("복제본 삭제: " + ", ".join(names))
+    if a.get("inplace_restore"):
+        parts.append("제자리 재지정 원복")
+    if a.get("repoint") or a.get("restore_scheme_id"):
+        parts.append("원래 설정으로 재지정")
+    return " · ".join(parts)
+
 
 async def _plan_issue_type_screen(
     client: WorkboxClient, params: Params, target_id: str, target_key: str
@@ -1240,7 +1268,8 @@ async def _apply_fork_restore(
         resp = await client.request("DELETE", one_path.format(id=nid))
         if not (resp.status_code < 400 or resp.status_code == 404):
             leftovers.append(_leftover_label(one_path, nid))
-    return ItemResult(target_id=change.target_id, ok=True, error=_leftover_note(leftovers)), undo
+    return ItemResult(target_id=change.target_id, ok=True, error=_leftover_note(leftovers),
+                      note=_fork_restore_note(a)), undo
 
 
 async def _publish_draft_if_any(client: WorkboxClient, ws_id: str) -> tuple[bool, str]:
@@ -1383,8 +1412,14 @@ async def _apply_workflow_restore(
             "project_id": a["project_id"], "project_key": a["project_key"],
             "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"],
             "ws_body": a["ws_body"], "restore_ws_id": a["restore_ws_id"]}
+    wf_note_names = []
+    if a.get("wf_new_name"):
+        wf_note_names.append(f"워크플로우 '{a['wf_new_name']}'")
+    if isinstance(a.get("ws_body"), dict) and a["ws_body"].get("name"):
+        wf_note_names.append(f"워크플로우 스킴 '{a['ws_body']['name']}'")
+    wf_note = ("복제본 삭제: " + ", ".join(wf_note_names) + " · " if wf_note_names else "") + "원래 스킴으로 재지정"
     return ItemResult(target_id=change.target_id, ok=True, status_code=code or 200,
-                      error=_leftover_note(leftovers)), undo
+                      error=_leftover_note(leftovers), note=wf_note), undo
 
 
 async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult, dict[str, Any]]:
@@ -1465,8 +1500,11 @@ async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult,
             # re-point (essential) succeeded; a refused clone delete is a warning
             leftover = None if (resp.status_code < 400 or resp.status_code == 404) else \
                 _leftover_note([_leftover_label(a["one_path"], a["delete_scheme_id"])])
+            gen_kind = _kind_ko(a.get("one_path", ""))
+            gen_note = (f"복제본({gen_kind}) 삭제 · 원래 "
+                        f"{gen_kind} '{a.get('restore_scheme_name', '')}'(으)로 재지정")
             return ItemResult(target_id=change.target_id, ok=True, status_code=code or 200,
-                              error=leftover), undo
+                              error=leftover, note=gen_note), undo
     except asyncio.CancelledError:
         raise
     except UpstreamError as exc:

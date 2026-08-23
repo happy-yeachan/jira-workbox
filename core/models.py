@@ -132,6 +132,9 @@ class ItemResult(BaseModel):
     ok: bool
     status_code: int | None = None
     error: str | None = None
+    #: human, PII-free summary of what this item did (e.g. which clones a rollback
+    #: deleted). Shown in the result/undo report so the log isn't id-only.
+    note: str | None = None
 
 
 class ExecuteResult(BaseModel):
