@@ -1548,7 +1548,7 @@
     </div>
 
     <!-- ---------- parameters ---------- -->
-    <template x-if="selected && landingView === 'task'">
+    <template x-if="selected && landingView === 'task' && runMode !== 'undo'">
       <div class="card narrow">
         <header>
           <span class="step">1</span>
@@ -1867,6 +1867,7 @@
           <span class="spacer"></span>
           <button class="btn small ghost" @click="logOpen = !logOpen"
                   x-text="logOpen ? '자세히 접기' : '자세히'"></button>
+          <button class="btn small ghost" x-show="runMode === 'undo' && !running" @click="closeUndo()">닫기</button>
         </header>
         <div class="body">
           <!-- summary: pass / fail at a glance -->
@@ -1918,7 +1919,7 @@
     </template>
 
     <!-- ---------- result ---------- -->
-    <template x-if="landingView === 'task' && plan">
+    <template x-if="landingView === 'task' && plan && runMode !== 'undo'">
       <div class="card">
         <header>
           <span class="step">2</span>
@@ -3597,8 +3598,15 @@ document.addEventListener('alpine:init', () => {
       if (this.running) return;
       this.historyOpen = false;
       this.undoTitle = h.title || '';  // show WHAT was undone, not an internal id
+      // present the undo result standalone, not stacked under whatever task
+      // happens to be loaded (its Step 1/2 cards hide while runMode === 'undo')
+      this.landingView = 'task';
       await this.stream(`/api/history/${h.id}/rollback`, {}, h.count,
                         `되돌리는 중 · ${h.title}`, 'undo');
+    },
+    closeUndo() {
+      this.resetRun();  // clears the log + runMode → 'run', so task cards return
+      this.landingView = this.selected ? 'task' : 'dashboard';
     },
 
     // one streaming-execute path for both a plan run and a rollback run
