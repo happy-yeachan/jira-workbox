@@ -598,6 +598,25 @@
   .hist-detail-row { font-size: 12.5px; color: var(--ink-2); padding: 4px 0; border-bottom: 1px solid var(--line-soft); word-break: break-word; }
   .hist-detail-row:last-child { border-bottom: 0; }
 
+  /* ---------- license trend ---------- */
+  .trend-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+  .trend-card { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; background: var(--surface); }
+  .trend-name { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .trend-nums { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
+  .trend-nums .t-add { color: var(--ok); font-weight: 600; }
+  .trend-nums .t-rem { color: var(--bad); font-weight: 600; }
+  .trend-nums .t-net { margin-left: auto; font-size: 12px; font-weight: 600; }
+  .trend-nums .t-net.up { color: var(--ok); }
+  .trend-nums .t-net.down { color: var(--bad); }
+  .trend-spark { width: 100%; height: 26px; margin-top: 8px; display: block; }
+  .trend-chart-wrap { margin-top: 12px; }
+  .trend-legend { display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+  .trend-legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .trend-legend .sw-add { background: var(--ok); }
+  .trend-legend .sw-rem { background: var(--bad); }
+  .trend-legend .sub { margin-left: auto; }
+  .trend-chart { width: 100%; height: 120px; display: block; }
+
   /* ---------- loading skeletons (a clearer cue than the thin bar) ---------- */
   @keyframes skel-shimmer { 0% { background-position: -200px 0; } 100% { background-position: 200px 0; } }
   .skel { display: inline-block; height: 12px; border-radius: 6px; vertical-align: middle;
@@ -1013,6 +1032,66 @@
               <span class="sub"><b x-text="dash.userPage"></b> / <span x-text="userPages()"></span> 페이지</span>
               <button class="btn small ghost" @click="setUserPage(dash.userPage + 1)" :disabled="dash.userPage >= userPages()">다음</button>
             </div>
+          </div>
+        </div>
+
+        <!-- license trend — increase/decrease over the selected window (org events) -->
+        <div class="dash" x-show="health.configured && landingView === 'dashboard' && health.org_configured">
+          <div class="lic-users">
+            <div class="lic-users-h">
+              <h3>라이선스 증감 추이</h3>
+              <span class="sub" x-text="'· 최근 ' + liclog.days + '일 기준'"></span>
+              <span class="sub" x-show="liclog.capped" style="color:var(--warn)">· 상한 도달 — 추이가 일부 누락될 수 있음</span>
+              <span class="sub" x-show="liclog.loading">· 불러오는 중…</span>
+            </div>
+            <template x-if="!liclog.loading && !trendHasData()">
+              <div class="sub" style="padding:12px 2px">이 기간에 라이선스 변경이 없습니다.</div>
+            </template>
+            <template x-if="trendHasData()">
+              <div>
+                <!-- per-product summary cards + cumulative-net sparkline -->
+                <div class="trend-cards">
+                  <template x-for="o in trendByProduct()" :key="o.key">
+                    <div class="trend-card">
+                      <div class="trend-name" x-text="o.name"></div>
+                      <div class="trend-nums">
+                        <span class="t-add" x-text="'+' + o.added"></span>
+                        <span class="t-rem" x-text="'−' + o.removed"></span>
+                        <span class="t-net" :class="(o.added - o.removed) >= 0 ? 'up' : 'down'"
+                              x-text="'순증 ' + ((o.added - o.removed) >= 0 ? '+' : '') + (o.added - o.removed)"></span>
+                      </div>
+                      <svg class="trend-spark" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true">
+                        <polyline :points="sparkPoints(o)" fill="none"
+                                  :stroke="(o.added - o.removed) >= 0 ? 'var(--ok)' : 'var(--bad)'" stroke-width="1.5"/>
+                      </svg>
+                    </div>
+                  </template>
+                </div>
+                <!-- daily added/removed bars, filterable by product -->
+                <div class="lic-chips" style="margin-top:6px">
+                  <span class="sub chip-label">제품</span>
+                  <template x-for="c in logProducts" :key="'t-' + c.k">
+                    <button class="chip" :class="{ on: trendProduct === c.k }" @click="trendProduct = c.k" x-text="c.label"></button>
+                  </template>
+                </div>
+                <div class="trend-chart-wrap">
+                  <div class="trend-legend">
+                    <span><i class="sw sw-add"></i> 추가</span>
+                    <span><i class="sw sw-rem"></i> 삭제</span>
+                    <span class="sub" x-text="'일 최대 ' + trendChartMax() + '건'"></span>
+                  </div>
+                  <svg class="trend-chart" viewBox="0 0 100 120" preserveAspectRatio="none" aria-hidden="true">
+                    <line x1="0" y1="60" x2="100" y2="60" stroke="var(--line)" stroke-width="0.4"/>
+                    <template x-for="(b, i) in trendBars()" :key="i">
+                      <g>
+                        <rect :x="b.x" :y="b.gY" :width="b.bw" :height="b.gH" fill="var(--ok)"><title x-text="b.day + ' · 추가 ' + b.g"></title></rect>
+                        <rect :x="b.x" :y="b.rY" :width="b.bw" :height="b.rH" fill="var(--bad)"><title x-text="b.day + ' · 삭제 ' + b.r"></title></rect>
+                      </g>
+                    </template>
+                  </svg>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -2346,6 +2425,7 @@ document.addEventListener('alpine:init', () => {
     ctxDelId: null,
     ctxDelBusy: false,
     ctxDelErr: '',
+    trendProduct: '',
     liclog: { loading: false, err: '', events: [], days: 7, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100, capped: false, _ctrl: null },
     logProducts: [
@@ -3069,6 +3149,70 @@ document.addEventListener('alpine:init', () => {
       return { jira: 'Jira', jsm: 'JSM (agent)', confluence: 'Confluence', admin: '조직 관리자' }[this.productKey(p)] || (p || '—');
     },
     setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
+
+    // ---------- 라이선스 증감 추이 (client-side, from the change-log events) ----------
+    // window = the log's day selector; both draw from the same (capped) event set.
+    _trendCutoff() { return Date.now() - (this.liclog.days || 90) * 86400000; },
+    _trendEvents() {
+      const cut = this._trendCutoff();
+      return this.liclog.events.filter(e => {
+        const t = Date.parse(e.time || ''); return !isNaN(t) && t >= cut;
+      });
+    },
+    trendHasData() { return this._trendEvents().length > 0; },
+    trendByProduct() {
+      const defs = [{ key: 'jira', name: 'Jira' }, { key: 'jsm', name: 'JSM (agent)' },
+                    { key: 'confluence', name: 'Confluence' }, { key: 'admin', name: '조직 관리자' }];
+      const by = {}; defs.forEach(d => by[d.key] = { ...d, added: 0, removed: 0, daily: {} });
+      for (const e of this._trendEvents()) {
+        const o = by[this.productKey(e.product)]; if (!o) continue;
+        const day = (e.time || '').slice(0, 10);
+        o.daily[day] = o.daily[day] || { g: 0, r: 0 };
+        if (e.kind === 'grant') { o.added++; o.daily[day].g++; }
+        else if (e.kind === 'revoke') { o.removed++; o.daily[day].r++; }
+      }
+      return defs.map(d => by[d.key]);
+    },
+    // cumulative-net polyline points for a product's sparkline (viewBox 0 0 100 26)
+    sparkPoints(o) {
+      const days = Object.keys(o.daily).sort();
+      const series = [0]; let cum = 0;
+      for (const d of days) { cum += o.daily[d].g - o.daily[d].r; series.push(cum); }
+      const min = Math.min(0, ...series), max = Math.max(0, ...series), range = (max - min) || 1;
+      const n = series.length, W = 100, H = 26;
+      return series.map((v, i) => {
+        const x = n === 1 ? 0 : (i / (n - 1)) * W;
+        const y = H - ((v - min) / range) * (H - 2) - 1;
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+    },
+    // per-day added/removed for the bar chart (optionally filtered by trendProduct)
+    trendDaily() {
+      const cut = this._trendCutoff(), pk = this.trendProduct, map = {};
+      for (const e of this.liclog.events) {
+        const t = Date.parse(e.time || ''); if (isNaN(t) || t < cut) continue;
+        if (pk && this.productKey(e.product) !== pk) continue;
+        const day = (e.time || '').slice(0, 10);
+        map[day] = map[day] || { day, g: 0, r: 0 };
+        if (e.kind === 'grant') map[day].g++; else if (e.kind === 'revoke') map[day].r++;
+      }
+      return Object.values(map).sort((a, b) => a.day.localeCompare(b.day));
+    },
+    // bar geometry in a 0..100 x, 0..120 y viewBox (mid=60 baseline)
+    trendBars() {
+      const days = this.trendDaily(), n = days.length || 1, mid = 60;
+      const maxv = Math.max(1, ...days.map(d => Math.max(d.g, d.r)));
+      const bw = Math.max(1.5, Math.min(12, (100 / n) * 0.62));
+      return days.map((d, i) => {
+        const cx = ((i + 0.5) / n) * 100, gh = (d.g / maxv) * (mid - 8), rh = (d.r / maxv) * (mid - 8);
+        return { day: d.day, g: d.g, r: d.r, x: cx - bw / 2, bw,
+                 gY: mid - gh, gH: gh, rY: mid, rH: rh };
+      });
+    },
+    trendChartMax() {
+      const days = this.trendDaily();
+      return Math.max(1, ...days.map(d => Math.max(d.g, d.r)));
+    },
     setLogKind(k) { this.liclog.filter = k; this.liclog.page = 1; },
     filteredEvents() {
       const f = this.liclog.filter, pk = this.liclog.product, q = (this.liclog.q || '').trim().toLowerCase();
