@@ -204,6 +204,9 @@
   .report-row b.ok { color: var(--ok); }
   .report-row b.bad { color: var(--bad); }
   .report-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .report-link { flex: none; font-size: 12.5px; font-weight: 550; color: var(--accent); text-decoration: none;
+    padding: 2px 9px; border: 1px solid var(--accent-soft); border-radius: 999px; }
+  .report-link:hover { background: var(--accent-soft); }
   .sub.bad { color: var(--bad); }
   .card > header {
     all: unset; display: flex; align-items: center; gap: 10px;
@@ -1856,6 +1859,10 @@
                   <span class="spacer"></span>
                   <span class="sub" :class="r.ok ? '' : 'bad'" x-show="r.error || !r.ok"
                         x-text="(r.ok ? '⚠ ' : (r.status ? '(' + r.status + ') ' : '')) + (r.error || '실패')"></span>
+                  <template x-if="r.ok && r.key && selected && selected.spec.name === 'space_create' && health.site_url">
+                    <a class="report-link" :href="spaceLink(r.key)" target="_blank" rel="noopener"
+                       x-text="'스페이스 열기 ↗'"></a>
+                  </template>
                 </div>
               </template>
             </div>
@@ -3601,7 +3608,7 @@ document.addEventListener('alpine:init', () => {
         const it = ev.item || {};
         this.progress.done = ev.index ?? this.progress.done + 1;
         const label = this.itemLabel(it.target_id);
-        this.runItems.push({ label, ok: !!it.ok, status: it.status_code ?? null, error: it.error || '' });
+        this.runItems.push({ label, key: it.target_id, ok: !!it.ok, status: it.status_code ?? null, error: it.error || '' });
         if (it.ok) this.progress.ok++; else this.progress.fail++;
         // keep a raw line for the collapsible 자세히 log (label, not the internal id)
         this.push(it.ok ? 'ok' : 'bad', it.ok ? '✓' : '✕',
@@ -3714,6 +3721,12 @@ document.addEventListener('alpine:init', () => {
     itemLabel(tid) {
       const c = (this.plan && this.plan.changes || []).find(x => x.target_id === tid);
       return (c && c.label) ? c.label : (tid || '항목');
+    },
+    // direct link to a just-created project; /browse/{KEY} resolves to the
+    // project's home for any project type
+    spaceLink(key) {
+      const base = (this.health.site_url || '').replace(/\/+$/, '');
+      return base + '/browse/' + encodeURIComponent(key);
     },
 
     push(cls, tag, text) {
