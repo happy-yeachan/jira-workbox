@@ -86,8 +86,10 @@
     display: flex; align-items: center; gap: 11px;
     padding: 0 18px; height: 54px;
     background: var(--surface); border-bottom: 1px solid var(--line);
-    position: sticky; top: 0; z-index: 10;
+    position: sticky; top: 0; z-index: 50;
   }
+  .nav-toggle { display: none; }  /* hamburger: only on narrow screens */
+  .nav-backdrop { display: none; }
   .logo {
     width: 26px; height: 26px; flex: none; border-radius: 8px; display: inline-flex;
     align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 14px;
@@ -595,11 +597,37 @@
   .hist-detail { padding: 4px 12px 10px; border-top: 1px solid var(--line-soft); background: var(--surface-2); }
   .hist-detail-row { font-size: 12.5px; color: var(--ink-2); padding: 4px 0; border-bottom: 1px solid var(--line-soft); word-break: break-word; }
   .hist-detail-row:last-child { border-bottom: 0; }
+
+  /* ---------- loading skeletons (a clearer cue than the thin bar) ---------- */
+  @keyframes skel-shimmer { 0% { background-position: -200px 0; } 100% { background-position: 200px 0; } }
+  .skel { display: inline-block; height: 12px; border-radius: 6px; vertical-align: middle;
+    background: linear-gradient(90deg, var(--surface-2) 25%, var(--hover) 37%, var(--surface-2) 63%);
+    background-size: 400px 100%; animation: skel-shimmer 1.2s infinite linear; }
+  .skel-row { display: flex; gap: 16px; align-items: center; padding: 9px 2px; border-bottom: 1px solid var(--line-soft); }
+
+  /* ---------- responsive: collapse the sidebar on narrow / split windows ---------- */
+  @media (max-width: 860px) {
+    header { flex-wrap: wrap; height: auto; row-gap: 8px; padding: 8px 12px; }
+    .nav-toggle { display: inline-flex; }
+    nav {
+      position: fixed; top: 54px; left: 0; bottom: 0; z-index: 45;
+      transform: translateX(-100%); transition: transform .18s ease;
+      box-shadow: 2px 0 16px rgba(0,0,0,.18);
+    }
+    nav.open { transform: translateX(0); }
+    .nav-backdrop { display: block; position: fixed; inset: 54px 0 0 0; z-index: 44;
+      background: rgba(0,0,0,.32); }
+    section.work { padding-left: 14px; padding-right: 14px; }
+    /* let dense tables scroll horizontally instead of crushing columns */
+    .lic-users table { width: max-content; min-width: 100%; }
+  }
 </style>
 </head>
 <body x-data="workbox" x-init="boot()">
 
 <header>
+  <button class="btn small ghost icon-btn nav-toggle" x-show="health.configured"
+          @click="navOpen = !navOpen" aria-label="메뉴 열기/닫기" title="메뉴">☰</button>
   <span class="brand" @click="landingView = 'dashboard'" title="홈으로"
         style="cursor:pointer; display:inline-flex; align-items:center; gap:9px">
     <span class="logo">W</span><span>jira<span class="dim">-workbox</span></span>
@@ -808,7 +836,8 @@
 </template>
 
 <main x-show="health.configured !== false && !setupOpen">
-  <nav>
+  <div class="nav-backdrop" x-show="navOpen" @click="navOpen = false"></div>
+  <nav :class="{ open: navOpen }" @click="navOpen = false">
     <!-- current task (kept while you browse other tabs; ✕ closes it) -->
     <template x-if="selected">
       <div class="nav-current">
@@ -827,7 +856,7 @@
         </button>
       </div>
     </template>
-    <!-- fixed order: 라이선스 · 그룹 관리 · (tasks) · 필드 관리 -->
+    <!-- fixed order: 현재 작업(있으면) · 라이선스 · 그룹 관리 · 스페이스 관리 · 필드 관리 -->
     <div style="margin-bottom:12px">
       <button @click="landingView = 'dashboard'"
               :aria-current="String(landingView === 'dashboard')">
@@ -966,6 +995,13 @@
                   </template>
                 </tbody>
               </table>
+              <template x-if="usersBusy() && !filteredUsers().length">
+                <div style="padding:2px">
+                  <template x-for="i in 6" :key="i">
+                    <div class="skel-row"><span class="skel" style="width:28%"></span><span class="skel" style="width:34%"></span></div>
+                  </template>
+                </div>
+              </template>
               <div class="sub" x-show="!usersBusy() && !filteredUsers().length" style="padding:12px 14px">해당 사용자가 없습니다.</div>
             </div>
             <div class="lic-users-foot" x-show="!usersErr() && userPages() > 1">
@@ -1084,7 +1120,13 @@
                   </template>
                 </tbody>
               </table>
-              <div class="sub" x-show="spacemgr.loading && !spacemgr.list.length" style="padding:14px">검색 중…</div>
+              <template x-if="spacemgr.loading && !spacemgr.list.length">
+                <div style="padding:2px">
+                  <template x-for="i in 5" :key="i">
+                    <div class="skel-row"><span class="skel" style="width:120px"></span><span class="skel" style="width:40%"></span></div>
+                  </template>
+                </div>
+              </template>
               <div class="sub" x-show="!spacemgr.loading && !spacemgr.list.length" style="padding:12px 14px"
                    x-text="spacemgr.q.trim() ? '검색 결과가 없습니다.' : '스페이스 키·이름으로 검색하거나, ＋ 스페이스 추가로 새로 만드세요.'"></div>
               <div class="sub" x-show="!spacemgr.loading && spacemgr.list.length >= 50" style="padding:8px 14px; color:var(--muted)">
@@ -1104,7 +1146,6 @@
               <span class="sub" x-show="fieldmgr.loading">· 검색 중…</span>
               <span style="flex:1"></span>
               <input type="text" class="lic-log-search" placeholder="필드 이름으로 검색" x-model="fieldmgr.q" @input.debounce.300ms="loadFields()">
-              <button class="btn small ghost" @click="loadFields()" :disabled="fieldmgr.loading || !fieldmgr.q.trim()">새로고침</button>
             </div>
             <div class="sub" style="margin:0 2px 8px">스페이스 스코프 = 컨텍스트가 걸린 프로젝트 범위(전역=모두 공통) · 화면 = 필드가 올라간 화면 수</div>
             <div class="progbar" x-show="fieldmgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
@@ -1133,7 +1174,13 @@
                     </template>
                   </tbody>
                 </table>
-                <div class="sub" x-show="fieldmgr.loading && !fieldmgr.list.length" style="padding:14px">검색 중…</div>
+                <template x-if="fieldmgr.loading && !fieldmgr.list.length">
+                  <div style="padding:2px">
+                    <template x-for="i in 6" :key="i">
+                      <div class="skel-row"><span class="skel" style="width:26%"></span><span class="skel" style="width:16%"></span><span class="skel" style="width:12%; margin-left:auto"></span></div>
+                    </template>
+                  </div>
+                </template>
                 <div class="sub" x-show="!fieldmgr.loading && !filteredFields().length" style="padding:12px 14px"
                      x-text="fieldmgr.q.trim() ? '검색 결과가 없습니다.' : '필드 이름으로 검색하세요.'"></div>
               </div>
@@ -1430,7 +1477,6 @@
               <span style="flex:1"></span>
               <input type="text" class="lic-log-search" placeholder="그룹 이름으로 검색" x-model="groupmgr.q" @input.debounce.300ms="searchGroupList()">
               <button class="btn small" x-show="!groupmgr.creating" @click="newGroup()">＋ 그룹 추가</button>
-              <button class="btn small ghost" @click="searchGroupList()" :disabled="groupmgr.loading || !groupmgr.q.trim()">새로고침</button>
             </div>
             <div class="progbar" x-show="groupmgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
             <div class="notice err" x-show="groupmgr.err" x-text="groupmgr.err" style="margin-bottom:10px"></div>
@@ -1461,7 +1507,13 @@
                     </template>
                   </tbody>
                 </table>
-                <div class="sub" x-show="groupmgr.loading && !groupmgr.list.length" style="padding:14px">검색 중…</div>
+                <template x-if="groupmgr.loading && !groupmgr.list.length">
+                  <div style="padding:2px">
+                    <template x-for="i in 5" :key="i">
+                      <div class="skel-row"><span class="skel" style="width:38%"></span><span class="skel" style="width:20%; margin-left:auto"></span></div>
+                    </template>
+                  </div>
+                </template>
                 <div class="sub" x-show="!groupmgr.loading && !filteredGroups().length" style="padding:12px 14px"
                      x-text="groupmgr.q.trim() ? '검색 결과가 없습니다.' : '그룹 이름으로 검색하세요.'"></div>
               </div>
@@ -1845,7 +1897,9 @@
           </div>
 
           <div x-show="planning || running" style="margin-top:16px">
-            <div class="bar"><i :style="'width:' + pct() + '%'"></i></div>
+            <!-- indeterminate until a total is known (e.g. a readonly scan probing) -->
+            <div class="progbar" x-show="!progress.total" style="margin-bottom:6px; border-radius:3px"></div>
+            <div class="bar" x-show="progress.total"><i :style="'width:' + pct() + '%'"></i></div>
             <div class="metrics">
               <span><b x-text="progress.done"></b><span x-show="progress.total" x-text="' / ' + progress.total"></span></span>
               <span class="ok" x-show="progress.ok">ok <b x-text="progress.ok"></b></span>
@@ -1877,7 +1931,8 @@
             <span class="badge v-unknown" x-show="!progress.ok && !progress.fail && running">진행 중</span>
             <span class="sub" x-show="progress.total" x-text="'총 ' + progress.total + '건' + (running ? ' · ' + progress.done + ' 처리됨' : '')"></span>
           </div>
-          <div class="bar" x-show="running" style="margin:10px 0 2px"><i :style="'width:' + pct() + '%'"></i></div>
+          <div class="progbar" x-show="running && !progress.total" style="margin:10px 0 2px; border-radius:3px"></div>
+          <div class="bar" x-show="running && progress.total" style="margin:10px 0 2px"><i :style="'width:' + pct() + '%'"></i></div>
 
           <!-- what was undone, in plain language (not an internal id) -->
           <div class="report-undo-head" x-show="runMode === 'undo' && undoTitle">
@@ -2261,6 +2316,7 @@ document.addEventListener('alpine:init', () => {
     batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [], planConsumed: false, dangerAck: false, undoTitle: '',
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
+    navOpen: false,
     atl: null, atlDismissedSig: '', atlOpen: false,
     history: [], historyErr: '', historyOpen: false, histOpen: [],
     gp: { q: '', results: [], loading: false, err: '' }, groupNames: {},
