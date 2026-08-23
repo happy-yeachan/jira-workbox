@@ -599,23 +599,64 @@
   .hist-detail-row:last-child { border-bottom: 0; }
 
   /* ---------- license trend ---------- */
-  .trend-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-  .trend-card { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; background: var(--surface); }
-  .trend-name { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-  .trend-nums { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
-  .trend-nums .t-add { color: var(--ok); font-weight: 600; }
-  .trend-nums .t-rem { color: var(--bad); font-weight: 600; }
-  .trend-nums .t-net { margin-left: auto; font-size: 12px; font-weight: 600; }
-  .trend-nums .t-net.up { color: var(--ok); }
-  .trend-nums .t-net.down { color: var(--bad); }
-  .trend-spark { width: 100%; height: 26px; margin-top: 8px; display: block; }
-  .trend-chart-wrap { margin-top: 12px; }
-  .trend-legend { display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+  .trend-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+  .trend-card { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; background: var(--surface);
+    display: flex; align-items: center; gap: 12px; cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+  .trend-card:hover { border-color: var(--accent); }
+  .trend-card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .trend-divider { height: 1px; background: var(--line); margin: 18px 0 14px; }
+  /* one consistent inset for all merged-section content (header uses 14px too) */
+  .trend-body { padding: 8px 14px 14px; }
+  .trend-body .lic-chips { padding-left: 0; padding-right: 0; }
+  .trend-body .trend-legend, .trend-body .trend-foot { margin-left: 0; margin-right: 0; }
+  .trend-body .lic-users-body { max-height: 420px; }
+  .lic-log-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .lic-log-h h4 { margin: 0; font-size: 14px; }
+  .lic-range { display: inline-flex; align-items: center; gap: 4px; }
+  .lic-range .chip { padding: 5px 10px; font-size: 12px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink-2); cursor: pointer; }
+  .lic-range .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .lic-days { width: 52px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 7px;
+    font: inherit; font-size: 12.5px; text-align: right; margin-left: 4px; }
+  .trend-card-l { min-width: 0; flex: 1; }
+  .trend-name { font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 6px; }
+  .trend-cov { font-size: 11px; font-weight: 500; color: var(--muted); }
+  .trend-net-big { font-size: 22px; font-weight: 700; line-height: 1.2; margin-top: 2px; }
+  .trend-net-big.up { color: var(--ok); } .trend-net-big.down { color: var(--bad); }
+  .trend-ar { font-size: 11.5px; }
+  .t-add { color: var(--ok); font-weight: 600; } .t-rem { color: var(--bad); font-weight: 600; margin-left: 6px; }
+  .trend-mini { width: 88px; height: 32px; flex: none; }
+  .trend-mini .spark-svg { width: 100%; height: 100%; display: block; }
+  .trend-legend { display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--ink-2); margin: 8px 2px 6px; }
   .trend-legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-  .trend-legend .sw-add { background: var(--ok); }
-  .trend-legend .sw-rem { background: var(--bad); }
+  .trend-legend .sw-up { background: var(--ok); } .trend-legend .sw-down { background: var(--bad); }
   .trend-legend .sub { margin-left: auto; }
-  .trend-chart { width: 100%; height: 120px; display: block; }
+  .trend-graph-wrap { display: flex; gap: 14px; align-items: stretch; }
+  .trend-line { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--surface); padding: 14px 16px 10px; }
+  .chart-svg { width: 100%; height: auto; display: block; }
+  .chart-svg .ax { fill: var(--muted); font-size: 9px; font-family: inherit; }
+  .chart-svg .dlt { font-size: 7.5px; font-weight: 700; font-family: inherit; }
+  .chart-svg text { font-family: inherit; }
+  .trend-empty { padding: 40px 12px; text-align: center; color: var(--muted); font-size: 13px; }
+  .trend-legend .lg-up { color: var(--ok); font-weight: 600; }
+  .trend-legend .lg-down { color: var(--bad); font-weight: 600; }
+  .trend-foot { margin: 8px 2px 0; color: var(--muted); }
+  .trend-net-list { flex: none; width: 210px; align-self: stretch; min-height: 0; overflow-y: auto;
+    border: 1px solid var(--line); border-radius: 10px; }
+  .trend-net-row { display: grid; grid-template-columns: 46px 1fr 1fr 1fr; align-items: center; gap: 8px;
+    padding: 6px 11px; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; }
+  .trend-net-row:last-child { border-bottom: 0; }
+  .trend-net-head { font-size: 10.5px; letter-spacing: .02em; color: var(--muted);
+    font-weight: 700; background: var(--surface-2); position: sticky; top: 0; }
+  .trend-net-row.today { background: var(--accent-soft); }
+  .trend-net-row .tnr-day { font-weight: 600; }
+  .trend-net-row .tnr-c, .trend-net-row .tnr-net { text-align: right; font-variant-numeric: tabular-nums; margin: 0; }
+  .trend-net-row .tnr-c { font-size: 12px; }
+  .trend-net-row .t-add { color: var(--ok); font-weight: 600; }
+  .trend-net-row .t-rem { color: var(--bad); font-weight: 600; }
+  .trend-net-row .tnr-net { font-weight: 600; }
+  .tnr-net.up { color: var(--ok); } .tnr-net.down { color: var(--bad); }
 
   /* ---------- loading skeletons (a clearer cue than the thin bar) ---------- */
   @keyframes skel-shimmer { 0% { background-position: -200px 0; } 100% { background-position: 200px 0; } }
@@ -1035,115 +1076,114 @@
           </div>
         </div>
 
-        <!-- license trend — increase/decrease over the selected window (org events) -->
-        <div class="dash" x-show="health.configured && landingView === 'dashboard' && health.org_configured">
-          <div class="lic-users">
-            <div class="lic-users-h">
-              <h3>라이선스 증감 추이</h3>
-              <span class="sub" x-text="'· 최근 ' + liclog.days + '일 기준'"></span>
-              <span class="sub" x-show="liclog.capped" style="color:var(--warn)">· 상한 도달 — 추이가 일부 누락될 수 있음</span>
-              <span class="sub" x-show="liclog.loading">· 불러오는 중…</span>
-            </div>
-            <template x-if="!liclog.loading && !trendHasData()">
-              <div class="sub" style="padding:12px 2px">이 기간에 라이선스 변경이 없습니다.</div>
-            </template>
-            <template x-if="trendHasData()">
-              <div>
-                <!-- per-product summary cards + cumulative-net sparkline -->
-                <div class="trend-cards">
-                  <template x-for="o in trendByProduct()" :key="o.key">
-                    <div class="trend-card">
-                      <div class="trend-name" x-text="o.name"></div>
-                      <div class="trend-nums">
-                        <span class="t-add" x-text="'+' + o.added"></span>
-                        <span class="t-rem" x-text="'−' + o.removed"></span>
-                        <span class="t-net" :class="(o.added - o.removed) >= 0 ? 'up' : 'down'"
-                              x-text="'순증 ' + ((o.added - o.removed) >= 0 ? '+' : '') + (o.added - o.removed)"></span>
-                      </div>
-                      <svg class="trend-spark" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true">
-                        <polyline :points="sparkPoints(o)" fill="none"
-                                  :stroke="(o.added - o.removed) >= 0 ? 'var(--ok)' : 'var(--bad)'" stroke-width="1.5"/>
-                      </svg>
-                    </div>
-                  </template>
-                </div>
-                <!-- daily added/removed bars, filterable by product -->
-                <div class="lic-chips" style="margin-top:6px">
-                  <span class="sub chip-label">제품</span>
-                  <template x-for="c in logProducts" :key="'t-' + c.k">
-                    <button class="chip" :class="{ on: trendProduct === c.k }" @click="trendProduct = c.k" x-text="c.label"></button>
-                  </template>
-                </div>
-                <div class="trend-chart-wrap">
-                  <div class="trend-legend">
-                    <span><i class="sw sw-add"></i> 추가</span>
-                    <span><i class="sw sw-rem"></i> 삭제</span>
-                    <span class="sub" x-text="'일 최대 ' + trendChartMax() + '건'"></span>
-                  </div>
-                  <svg class="trend-chart" viewBox="0 0 100 120" preserveAspectRatio="none" aria-hidden="true">
-                    <line x1="0" y1="60" x2="100" y2="60" stroke="var(--line)" stroke-width="0.4"/>
-                    <template x-for="(b, i) in trendBars()" :key="i">
-                      <g>
-                        <rect :x="b.x" :y="b.gY" :width="b.bw" :height="b.gH" fill="var(--ok)"><title x-text="b.day + ' · 추가 ' + b.g"></title></rect>
-                        <rect :x="b.x" :y="b.rY" :width="b.bw" :height="b.rH" fill="var(--bad)"><title x-text="b.day + ' · 삭제 ' + b.r"></title></rect>
-                      </g>
-                    </template>
-                  </svg>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- license change log — stacked below the dashboard on the same view -->
+        <!-- license 증감 추이 + 변경 로그 — one section; picking a product drives both -->
         <div class="dash" x-show="health.configured && landingView === 'dashboard'">
           <div class="lic-users">
             <div class="lic-users-h">
-              <h3>라이선스 변경 로그</h3>
+              <h3>라이선스 증감 · 변경 로그</h3>
+              <span class="sub" x-show="!liclog.loading && health.org_configured && trendHasData()" x-text="'· ' + trendReliableLabel()"></span>
               <span class="sub" x-show="liclog.loading">· 불러오는 중…</span>
-              <span class="sub" x-show="!liclog.loading && !liclog.err && health.org_configured" x-text="logCountLabel()"></span>
               <span style="flex:1"></span>
               <template x-if="health.org_configured">
                 <span style="display:flex; gap:6px; align-items:center">
-                  <select class="lic-sel" x-model.number="liclog.days" @change="loadEvents()">
-                    <option value="7">최근 7일</option>
-                    <option value="30">최근 30일</option>
-                    <option value="90">최근 90일</option>
-                  </select>
+                  <span class="lic-range">
+                    <button class="chip" :class="{ on: liclog.days === 7 }" @click="setDays(7)">7일</button>
+                    <button class="chip" :class="{ on: liclog.days === 30 }" @click="setDays(30)">30일</button>
+                    <button class="chip" :class="{ on: liclog.days === 90 }" @click="setDays(90)">90일</button>
+                    <input type="number" min="1" max="365" class="lic-days" x-model.number="liclog.days"
+                           @change="setDays(liclog.days)" @keydown.enter="setDays(liclog.days)"
+                           title="직접 일수 입력 (1–365)">
+                    <span class="sub">일</span>
+                  </span>
                   <input type="text" class="lic-log-search" placeholder="사용자·수행자 검색" x-model="liclog.q" @input="liclog.page = 1">
                   <button class="btn small ghost" @click="loadEvents()" :disabled="liclog.loading">새로고침</button>
                 </span>
               </template>
             </div>
             <div class="progbar" x-show="liclog.loading"></div>
-            <!-- add/delete filter chips -->
-            <div class="lic-chips" x-show="health.org_configured && !liclog.err">
-              <span class="sub chip-label">변경</span>
-              <template x-for="c in logKinds" :key="c.k">
-                <button class="chip" :class="{ on: liclog.filter === c.k }" @click="setLogKind(c.k)" x-text="c.label"></button>
-              </template>
-            </div>
-            <!-- product filter chips -->
-            <div class="lic-chips" x-show="health.org_configured && !liclog.err" style="padding-top:2px">
-              <span class="sub chip-label">제품</span>
-              <template x-for="c in logProducts" :key="c.k">
-                <button class="chip" :class="{ on: liclog.product === c.k }" @click="setLogProduct(c.k)" x-text="c.label"></button>
-              </template>
-            </div>
+
             <template x-if="!health.org_configured">
               <div class="sub" style="padding:14px">
-                조직 admin API 키를 연결하면 라이선스 추가·삭제 로그를 볼 수 있습니다 (사이트 토큰으로는 불가).
+                조직 admin API 키를 연결하면 라이선스 증감 추이·변경 로그를 볼 수 있습니다 (사이트 토큰으로는 불가).
                 <a href="#" @click.prevent="openSetup()">접속 정보에서 연결 →</a>
               </div>
             </template>
-            <template x-if="health.org_configured">
-              <div>
-                <div class="notice err" x-show="liclog.err" x-text="liclog.err" style="margin:10px 14px"></div>
-                <div class="lic-users-body" x-show="!liclog.err">
+            <div class="notice err" x-show="health.org_configured && liclog.err" x-text="liclog.err" style="margin:10px 2px"></div>
+            <template x-if="health.org_configured && !liclog.err && !liclog.loading && !trendHasData()">
+              <div class="sub" style="padding:12px 2px">이 기간에 라이선스 변경이 없습니다.</div>
+            </template>
+
+            <template x-if="health.org_configured && !liclog.err && trendHasData()">
+              <div class="trend-body">
+                <!-- per-product summary cards — click to select (drives chart + log) -->
+                <div class="trend-cards">
+                  <template x-for="o in trendByProduct()" :key="o.key">
+                    <div class="trend-card" :class="{ sel: trendProduct === o.key }" @click="selectTrend(o.key)"
+                         title="클릭하면 이 제품의 그래프·로그를 봅니다">
+                      <div class="trend-card-l">
+                        <div class="trend-name">
+                          <span x-text="o.name"></span>
+                          <span class="trend-cov" x-text="trendCardDays(o.key)"></span>
+                        </div>
+                        <div class="trend-net-big" :class="o.net >= 0 ? 'up' : 'down'"
+                             x-text="o.has ? ((o.net >= 0 ? '+' : '') + o.net) : '—'"></div>
+                        <div class="trend-ar" x-show="o.has"><span class="t-add" x-text="'+' + o.added"></span>
+                          <span class="t-rem" x-text="'−' + o.removed"></span></div>
+                        <div class="trend-ar" x-show="!o.has" style="color:var(--muted)">데이터 없음</div>
+                      </div>
+                      <div class="trend-mini" x-html="sparkSvg(o.key)"></div>
+                    </div>
+                  </template>
+                </div>
+                <!-- single product selector: chart AND log both follow it -->
+                <div class="lic-chips" style="margin-top:12px">
+                  <span class="sub chip-label">제품</span>
+                  <template x-for="c in logProducts.filter(p => p.k)" :key="'t-' + c.k">
+                    <button class="chip" :class="{ on: trendProduct === c.k }" @click="selectTrend(c.k)" x-text="c.label"></button>
+                  </template>
+                </div>
+                <div class="trend-legend">
+                  <span class="lg-up">▲ 증가</span>
+                  <span class="lg-down">▼ 감소</span>
+                  <span class="sub" x-text="'선·마커 = 시트 증감 방향 · 점 옆 숫자 = 그날 증감' + (_currentUsed(trendProduct) === null ? ' · 기준선 없음(상대)' : '')"></span>
+                </div>
+                <div class="trend-graph-wrap">
+                  <div class="trend-line" x-html="chartSvg()"></div>
+                  <div class="trend-net-list">
+                    <div class="trend-net-row trend-net-head">
+                      <span class="tnr-day">날짜</span><span class="tnr-c">추가</span><span class="tnr-c">삭제</span><span class="tnr-net">순증</span>
+                    </div>
+                    <template x-for="r in trendRows()" :key="r.day">
+                      <div class="trend-net-row" :class="{ today: r.label === '오늘' }">
+                        <span class="tnr-day" x-text="r.label"></span>
+                        <span class="tnr-c t-add" x-text="r.g"></span>
+                        <span class="tnr-c t-rem" x-text="r.r"></span>
+                        <span class="tnr-net" :class="r.net >= 0 ? 'up' : 'down'"
+                              x-text="(r.net >= 0 ? '+' : '') + r.net"></span>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+                <div class="sub trend-foot" x-show="_prodFloor(trendProduct)"
+                     x-text="'※ ' + (logProducts.find(p => p.k === trendProduct) || {}).label + '은(는) 변경량이 많아 조회 상한에 걸려, 집계 가능한 최근 ' + _completeDays(trendProduct) + '일만 표시합니다.'"></div>
+
+                <!-- change log for the selected product -->
+                <div class="trend-divider"></div>
+                <div class="lic-log-h">
+                  <h4><span x-text="(logProducts.find(p => p.k === trendProduct) || {}).label"></span> 변경 로그</h4>
+                  <span class="sub" x-text="logCountLabel()"></span>
+                  <span style="flex:1"></span>
+                  <div class="lic-chips" style="margin:0">
+                    <template x-for="c in logKinds" :key="c.k">
+                      <button class="chip" :class="{ on: liclog.filter === c.k }" @click="setLogKind(c.k)" x-text="c.label"></button>
+                    </template>
+                  </div>
+                </div>
+                <div class="lic-users-body">
                   <table>
                     <thead><tr>
-                      <th style="width:160px">시각</th><th style="width:64px">작업</th>
-                      <th>사용자</th><th>제품</th><th style="width:22%">수행자</th>
+                      <th style="width:170px">시각</th><th style="width:64px">작업</th>
+                      <th>사용자</th><th style="width:26%">수행자</th>
                     </tr></thead>
                     <tbody>
                       <template x-for="(e, i) in pagedEvents()" :key="i">
@@ -1155,9 +1195,10 @@
                           </td>
                           <td>
                             <span x-text="e.user_name || '—'"></span>
+                            <span class="opt admin-tag" x-show="productKey(e.product) === 'admin'"
+                                  style="margin-left:6px" title="org-admins 추가/삭제 — 모든 제품 라이선스에 영향">조직 관리자</span>
                             <span class="sub" x-show="e.user_email && e.user_email !== e.user_name" x-text="' · ' + e.user_email"></span>
                           </td>
-                          <td x-text="productShort(e.product)"></td>
                           <td class="u-off" x-text="e.actor_name || e.actor_email || '—'"></td>
                         </tr>
                       </template>
@@ -1165,10 +1206,10 @@
                   </table>
                   <div class="sub" x-show="!liclog.loading && !filteredEvents().length" style="padding:12px 14px">
                     표시할 로그가 없습니다.
-                    <span x-show="liclog.q.trim()" style="color:var(--muted)"> · 검색은 사용자·수행자만 대상입니다(제품은 위 칩으로 거르세요).</span>
+                    <span x-show="liclog.q.trim()" style="color:var(--muted)"> · 검색은 사용자·수행자만 대상입니다.</span>
                   </div>
                 </div>
-                <div class="lic-users-foot" x-show="!liclog.err && logPages() > 1">
+                <div class="lic-users-foot" x-show="logPages() > 1">
                   <button class="btn small ghost" @click="setLogPage(liclog.page - 1)" :disabled="liclog.page <= 1">이전</button>
                   <span class="sub"><b x-text="liclog.page"></b> / <span x-text="logPages()"></span> 페이지</span>
                   <button class="btn small ghost" @click="setLogPage(liclog.page + 1)" :disabled="liclog.page >= logPages()">다음</button>
@@ -2425,13 +2466,14 @@ document.addEventListener('alpine:init', () => {
     ctxDelId: null,
     ctxDelBusy: false,
     ctxDelErr: '',
-    trendProduct: '',
+    trendProduct: 'jira',
     liclog: { loading: false, err: '', events: [], days: 7, filter: 'all', q: '',
-              product: '', page: 1, pageSize: 100, capped: false, _ctrl: null },
+              product: '', page: 1, pageSize: 100, capped: false, coverage: {}, _ctrl: null },
+    // org-admins grants ALL products, so it's not a product of its own — those
+    // events are folded into every product's trend/log (see _matchProduct).
     logProducts: [
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
       { label: 'JSM (agent)', k: 'jsm' }, { label: 'Confluence', k: 'confluence' },
-      { label: '조직 관리자', k: 'admin' },
     ],
     logKinds: [
       { label: '전체', k: 'all' }, { label: '추가', k: 'grant' }, { label: '삭제', k: 'revoke' },
@@ -3112,7 +3154,7 @@ document.addEventListener('alpine:init', () => {
       if (this.liclog._ctrl) this.liclog._ctrl.abort();
       const ctrl = new AbortController(); this.liclog._ctrl = ctrl;
       this.liclog.loading = true; this.liclog.err = ''; this.liclog.page = 1;
-      this.liclog.events = []; this.liclog.capped = false;
+      this.liclog.events = []; this.liclog.capped = false; this.liclog.coverage = {};
       try {
         const res = await fetch('/api/license/events/stream?days=' + encodeURIComponent(this.liclog.days),
                                 { signal: ctrl.signal });
@@ -3125,6 +3167,7 @@ document.addEventListener('alpine:init', () => {
             this.liclog.events.push(...(ev.events || []));
           } else if (ev.type === 'done') {
             this.liclog.capped = !!ev.capped;
+            this.liclog.coverage = ev.coverage || {};
           } else if (ev.type === 'error') {
             this.liclog.err = ev.message || '로그 조회 실패';
           }
@@ -3149,10 +3192,22 @@ document.addEventListener('alpine:init', () => {
       return { jira: 'Jira', jsm: 'JSM (agent)', confluence: 'Confluence', admin: '조직 관리자' }[this.productKey(p)] || (p || '—');
     },
     setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
+    // one product selector drives both the trend graph and the change log
+    selectTrend(k) { this.trendProduct = k; this.liclog.page = 1; },
+    // window: presets or a custom day count (1–365); refetches the org events
+    setDays(n) {
+      n = Math.max(1, Math.min(365, Math.round(Number(n) || 7)));
+      this.liclog.days = n; this.liclog.page = 1; this.loadEvents();
+    },
 
     // ---------- 라이선스 증감 추이 (client-side, from the change-log events) ----------
     // window = the log's day selector; both draw from the same (capped) event set.
-    _trendCutoff() { return Date.now() - (this.liclog.days || 90) * 86400000; },
+    // day-aligned: exactly `days` calendar days back to midnight, so "7일" is 7 days
+    // (not 7×24h that clips a partial 8th day into the window)
+    _trendCutoff() {
+      const d = new Date(); d.setHours(0, 0, 0, 0);
+      return d.getTime() - ((this.liclog.days || 90) - 1) * 86400000;
+    },
     _trendEvents() {
       const cut = this._trendCutoff();
       return this.liclog.events.filter(e => {
@@ -3160,71 +3215,169 @@ document.addEventListener('alpine:init', () => {
       });
     },
     trendHasData() { return this._trendEvents().length > 0; },
-    trendByProduct() {
-      const defs = [{ key: 'jira', name: 'Jira' }, { key: 'jsm', name: 'JSM (agent)' },
-                    { key: 'confluence', name: 'Confluence' }, { key: 'admin', name: '조직 관리자' }];
-      const by = {}; defs.forEach(d => by[d.key] = { ...d, added: 0, removed: 0, daily: {} });
+    _dayKey(ms) { const d = new Date(ms), p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); },
+    // oldest FULLY-covered day for a product (null = complete over the whole window)
+    _prodFloor(key) {
+      const c = (this.liclog.coverage || {})[key];
+      return (c && c.capped && c.cap_floor) ? c.cap_floor : null;
+    },
+    // THE one source of truth per product: ascending [{day,g,r,net}], complete days
+    // only. Cards, sparklines, the main chart and the day list all derive from this,
+    // so a card's 순증 always equals the sum of its day list.
+    // bucket by LOCAL calendar day (not the UTC slice of the ISO string), so a day
+    // here matches what the change log shows via fmtTime — else e.g. a 08-23 00–09h
+    // KST event lands under 08-22 (UTC) and "오늘" looks empty though the log has it
+    _eventDay(e) { const t = Date.parse(e.time || ''); return isNaN(t) ? '' : this._dayKey(t); },
+    // an org-admin change grants EVERY product, so it counts toward each product's
+    // trend/log — not a bucket of its own
+    _matchProduct(e, key) { const pk = this.productKey(e.product); return pk === key || pk === 'admin'; },
+    _prodDaily(key) {
+      const floor = this._prodFloor(key), map = {};
       for (const e of this._trendEvents()) {
-        const o = by[this.productKey(e.product)]; if (!o) continue;
-        const day = (e.time || '').slice(0, 10);
-        o.daily[day] = o.daily[day] || { g: 0, r: 0 };
-        if (e.kind === 'grant') { o.added++; o.daily[day].g++; }
-        else if (e.kind === 'revoke') { o.removed++; o.daily[day].r++; }
-      }
-      return defs.map(d => by[d.key]);
-    },
-    // cumulative-net polyline points for a product's sparkline (viewBox 0 0 100 26)
-    sparkPoints(o) {
-      const days = Object.keys(o.daily).sort();
-      const series = [0]; let cum = 0;
-      for (const d of days) { cum += o.daily[d].g - o.daily[d].r; series.push(cum); }
-      const min = Math.min(0, ...series), max = Math.max(0, ...series), range = (max - min) || 1;
-      const n = series.length, W = 100, H = 26;
-      return series.map((v, i) => {
-        const x = n === 1 ? 0 : (i / (n - 1)) * W;
-        const y = H - ((v - min) / range) * (H - 2) - 1;
-        return x.toFixed(1) + ',' + y.toFixed(1);
-      }).join(' ');
-    },
-    // per-day added/removed for the bar chart (optionally filtered by trendProduct)
-    trendDaily() {
-      const cut = this._trendCutoff(), pk = this.trendProduct, map = {};
-      for (const e of this.liclog.events) {
-        const t = Date.parse(e.time || ''); if (isNaN(t) || t < cut) continue;
-        if (pk && this.productKey(e.product) !== pk) continue;
-        const day = (e.time || '').slice(0, 10);
+        if (!this._matchProduct(e, key)) continue;
+        const day = this._eventDay(e);
+        if (!day || (floor && day < floor)) continue;   // drop older, incomplete days
         map[day] = map[day] || { day, g: 0, r: 0 };
         if (e.kind === 'grant') map[day].g++; else if (e.kind === 'revoke') map[day].r++;
       }
-      return Object.values(map).sort((a, b) => a.day.localeCompare(b.day));
+      return Object.values(map).sort((a, b) => a.day.localeCompare(b.day)).map(d => ({ ...d, net: d.g - d.r }));
     },
-    // bar geometry in a 0..100 x, 0..120 y viewBox (mid=60 baseline)
-    trendBars() {
-      const days = this.trendDaily(), n = days.length || 1, mid = 60;
-      const maxv = Math.max(1, ...days.map(d => Math.max(d.g, d.r)));
-      const bw = Math.max(1.5, Math.min(12, (100 / n) * 0.62));
-      return days.map((d, i) => {
-        const cx = ((i + 0.5) / n) * 100, gh = (d.g / maxv) * (mid - 8), rh = (d.r / maxv) * (mid - 8);
-        return { day: d.day, g: d.g, r: d.r, x: cx - bw / 2, bw,
-                 gY: mid - gh, gH: gh, rY: mid, rH: rh };
+    trendByProduct() {
+      return [['jira', 'Jira'], ['jsm', 'JSM (agent)'], ['confluence', 'Confluence']]
+        .map(([key, name]) => {
+          const s = this._prodDaily(key);
+          return { key, name, has: s.length > 0,
+                   added: s.reduce((a, d) => a + d.g, 0), removed: s.reduce((a, d) => a + d.r, 0),
+                   net: s.reduce((a, d) => a + d.net, 0) };
+        });
+    },
+    // days actually shown for a product = distinct days with events in its complete
+    // range (so the header count, the X points and the table rows always agree)
+    _completeDays(key) { return this._prodDaily(key).length; },
+    trendCardDays(key) { return this._completeDays(key) + '일'; },
+    trendReliableLabel() {
+      const k = this.trendProduct, capped = !!this._prodFloor(k);
+      return '요청 ' + this.liclog.days + '일 · 표시 ' + this._completeDays(k) + '일'
+             + (capped ? ' (상한 도달)' : '');
+    },
+    // ---- seat-occupancy line ----
+    // current used seats for a trend product (from the dashboard), or null if the
+    // product has no Jira applicationrole seat count (confluence/admin)
+    _currentUsed(key) {
+      const m = { jira: 'jira-software', jsm: 'jira-servicedesk' };
+      const ak = m[key]; if (!ak) return null;
+      const a = (this.dash.apps || []).find(x => x.key === ak);
+      return (a && Number.isFinite(a.used)) ? a.used : null;
+    },
+    // occupancy per day = seats used at end of that day. Anchored at today's current
+    // count and walked BACKWARD by each later day's net. Products with no seat count
+    // fall back to a relative baseline (0 at the start). Returns [{day,net,occ,rel}].
+    _occupancy(key) {
+      const s = this._prodDaily(key);
+      if (!s.length) return [];
+      const n = s.length, occ = new Array(n);
+      const anchor = this._currentUsed(key), rel = anchor == null;
+      if (rel) {  // relative: cumulative net from the range start
+        let c = 0;
+        for (let i = 0; i < n; i++) { c += s[i].net; occ[i] = c; }
+      } else {    // absolute: today's count, minus each later day's net going back
+        occ[n - 1] = anchor;
+        for (let i = n - 2; i >= 0; i--) occ[i] = occ[i + 1] - s[i + 1].net;
+      }
+      return s.map((d, i) => ({ day: d.day, net: d.net, occ: occ[i], rel }));
+    },
+    // nice-number Y scale: ticks fall on 1/2/5×10ⁿ (integers), domain snapped to them
+    _niceScale(vals, top, h, want) {
+      want = want || 4;
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      if (lo === hi) { lo -= 1; hi += 1; }                 // flat data → tiny span
+      const raw = (hi - lo) / want, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+      const norm = raw / mag;
+      let step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+      step = Math.max(1, Math.round(step));                // seats are integers
+      const mn = Math.floor(lo / step) * step, mx = Math.ceil(hi / step) * step;
+      const ticks = []; for (let v = mn; v <= mx + step * 0.5; v += step) ticks.push(Math.round(v));
+      const rng = (mx - mn) || 1;
+      return { mn, mx, ticks, y: v => top + (mx - v) / rng * h };
+    },
+    // compact card sparkline of seat occupancy, coloured by net direction
+    sparkSvg(key) {
+      const s = this._occupancy(key);
+      if (!s.length) return '';
+      const W = 100, H = 30, m = this._niceScale(s.map(d => d.occ), 3, H - 6);
+      const x = i => s.length === 1 ? W / 2 : (i / (s.length - 1)) * W;
+      const pts = s.map((d, i) => x(i).toFixed(1) + ',' + m.y(d.occ).toFixed(1)).join(' ');
+      const total = s.reduce((a, d) => a + d.net, 0), col = total >= 0 ? 'var(--ok)' : 'var(--bad)';
+      return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="spark-svg" preserveAspectRatio="xMidYMid meet">'
+        + '<polyline points="' + pts + '" fill="none" style="stroke:' + col + ';stroke-width:1.6"/></svg>';
+    },
+    // main chart: seat occupancy over time (nice Y axis + X dates). The line is
+    // segment-coloured by direction and points carry a shape marker (▲ up / ▼ down)
+    // plus a signed label, so it reads without relying on colour.
+    chartSvg() {
+      const s = this._occupancy(this.trendProduct);
+      if (!s.length) return '<div class="trend-empty">이 기간에 변경 데이터가 없습니다.</div>';
+      const W = 680, H = 230, mL = 58, mR = 30, mT = 32, mB = 28, pw = W - mL - mR, ph = H - mT - mB;
+      const occs = s.map(d => d.occ), m = this._niceScale(occs, mT, ph);
+      const x = i => s.length === 1 ? mL + pw / 2 : mL + (i / (s.length - 1)) * pw;
+      const esc = t => String(t);
+      const flat = Math.max(...occs) - Math.min(...occs) === 0;
+      let g = '';
+      m.ticks.forEach(v => {  // Y grid + nice labels
+        const yy = m.y(v).toFixed(1);
+        g += '<line x1="' + mL + '" y1="' + yy + '" x2="' + (W - mR) + '" y2="' + yy + '" style="stroke:var(--line-soft);stroke-width:0.5"/>';
+        g += '<text x="' + (mL - 8) + '" y="' + (m.y(v) + 3).toFixed(1) + '" text-anchor="end" class="ax">' + v.toLocaleString() + '</text>';
       });
+      const step = s.length <= 12 ? 1 : Math.ceil(s.length / 10);
+      for (let i = 0; i < s.length; i++) {  // X date labels (every point when few)
+        if (i % step !== 0 && i !== s.length - 1) continue;
+        g += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 9) + '" text-anchor="middle" class="ax">'
+          + esc(s[i].day.slice(5).replace('-', '/')) + '</text>';
+      }
+      // segment-coloured line: each segment green if seats rose, red if they fell
+      for (let i = 1; i < s.length; i++) {
+        const col = s[i].net >= 0 ? 'var(--ok)' : 'var(--bad)';
+        g += '<line x1="' + x(i - 1).toFixed(1) + '" y1="' + m.y(s[i - 1].occ).toFixed(1)
+          + '" x2="' + x(i).toFixed(1) + '" y2="' + m.y(s[i].occ).toFixed(1)
+          + '" style="stroke:' + col + ';stroke-width:1.8;stroke-linecap:round"/>';
+      }
+      for (let i = 0; i < s.length; i++) {
+        const cx = x(i), cy = m.y(s[i].occ), net = s[i].net, col = net > 0 ? 'var(--ok)' : net < 0 ? 'var(--bad)' : 'var(--muted)';
+        // shape marker (colour-independent): ▲ increase, ▼ decrease, ● no change
+        if (net > 0) g += '<path d="M' + cx.toFixed(1) + ',' + (cy - 3).toFixed(1) + ' l3,4.5 l-6,0 z" style="fill:' + col + '"/>';
+        else if (net < 0) g += '<path d="M' + cx.toFixed(1) + ',' + (cy + 3).toFixed(1) + ' l3,-4.5 l-6,0 z" style="fill:' + col + '"/>';
+        else g += '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="2" style="fill:' + col + '"/>';
+        g += '<title>' + esc(s[i].day) + ' · 사용 ' + Math.round(s[i].occ).toLocaleString()
+          + (s[i].rel ? ' (상대)' : '') + ' · 증감 ' + (net >= 0 ? '+' : '') + net + '</title>';
+        // signed delta label; nudge inward at the edges so it isn't clipped
+        const anchor = i === 0 ? 'start' : i === s.length - 1 ? 'end' : 'middle';
+        const lx = i === 0 ? cx + 2 : i === s.length - 1 ? cx - 2 : cx;
+        g += '<text x="' + lx.toFixed(1) + '" y="' + (cy - 7).toFixed(1) + '" text-anchor="' + anchor
+          + '" class="dlt" style="fill:' + col + '">' + (net >= 0 ? '+' : '') + net + '</text>';
+      }
+      if (flat) g += '<text x="' + (mL + pw / 2) + '" y="' + (mT + ph / 2) + '" text-anchor="middle" class="ax" style="font-size:11px">변동 없음</text>';
+      return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img">' + g + '</svg>';
     },
-    trendChartMax() {
-      const days = this.trendDaily();
-      return Math.max(1, ...days.map(d => Math.max(d.g, d.r)));
+    // newest-first per-day net readout (complete days only)
+    trendRows() {
+      const now = new Date(), todayK = this._dayKey(now.getTime()), yK = this._dayKey(now.getTime() - 86400000);
+      return this._prodDaily(this.trendProduct).slice().reverse().map(d => {
+        let label = d.day.slice(5).replace('-', '/');
+        if (d.day === todayK) label = '오늘'; else if (d.day === yK) label = '어제';
+        return { day: d.day, label, g: d.g, r: d.r, net: d.net };
+      });
     },
     setLogKind(k) { this.liclog.filter = k; this.liclog.page = 1; },
     filteredEvents() {
-      const f = this.liclog.filter, pk = this.liclog.product, q = (this.liclog.q || '').trim().toLowerCase();
-      // client-side date window too: the org /events `from` filter is unreliable,
-      // so the 7/30/90일 selector is guaranteed to narrow here.
-      const cutoff = Date.now() - (this.liclog.days || 90) * 86400000;
+      const f = this.liclog.filter, pk = this.trendProduct, q = (this.liclog.q || '').trim().toLowerCase();
+      // same day-aligned window as the trend, so the log matches the graph exactly
+      const cutoff = this._trendCutoff();
       return this.liclog.events.filter(e => {
         if (f !== 'all' && e.kind !== f) return false;
-        if (pk && this.productKey(e.product) !== pk) return false;
+        if (!this._matchProduct(e, pk)) return false;  // section's product (org-admin ⊂ all)
         if (e.time) { const t = Date.parse(e.time); if (!isNaN(t) && t < cutoff) return false; }
-        // search only the person columns — user and performer. Product has its
-        // own chip filter, so matching it here just floods results ("ji" → Jira).
+        // search only the person columns — user and performer (product is the section selector)
         if (q && !((e.user_name || '').toLowerCase().includes(q)
                 || (e.user_email || '').toLowerCase().includes(q)
                 || (e.actor_name || '').toLowerCase().includes(q)

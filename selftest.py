@@ -673,7 +673,7 @@ async def suite_license_stream() -> None:
     check("legacy 'Jira Service Desk' shown as 'Jira Service Management'",
           by["jira-servicedesk"]["name"] == "Jira Service Management", by["jira-servicedesk"]["name"])
     check("other apps keep 시트", by["jira-software"]["seat_noun"] == "시트")
-    check("summary is Jira-only (no Confluence)", "confluence" not in by)
+    check("summary is Jira-only (Confluence not a Jira applicationrole)", "confluence" not in by)
     check("cards ordered: Jira Software before JSM",
           [a["key"] for a in apps] == ["jira-software", "jira-servicedesk"], [a["key"] for a in apps])
 

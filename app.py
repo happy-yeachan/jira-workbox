@@ -1028,9 +1028,39 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
         [(a, term) for a in group_actions for term in org_client.LICENSE_GROUP_QUERIES]
         + [(a, None) for a in direct_actions])
     _BATCH = 40
-    _PER_QUERY_ROWS = 500     # classified rows kept per (action, group)
-    _PER_QUERY_SCAN = 1200    # events read per query before moving on (dense filter)
-    _TOTAL_SCAN = 40000       # runaway backstop across all queries
+    _PER_QUERY_ROWS = 1200    # classified rows kept per (action, group) — higher = fewer dropped
+    _PER_QUERY_SCAN = 3000    # events read per query before moving on (dense filter)
+    _TOTAL_SCAN = 80000       # runaway backstop across all queries
+
+    def _pkey(name: str) -> str:
+        n = (name or "").lower()
+        if "관리자" in (name or "") or "admin" in n:
+            return "admin"
+        if "confluence" in n:
+            return "confluence"
+        if "service" in n:
+            return "jsm"
+        if "jira" in n or "discovery" in n:
+            return "jira"
+        return "other"
+
+    # Per-product coverage. Each (action, group) query is fetched newest-first up to
+    # a cap, but instead of cutting mid-day we FINISH the day the cap fell on, then
+    # stop at the older-day boundary — so the oldest kept day is COMPLETE. cap_floor
+    # is that oldest fully-covered day (YYYY-MM-DD); the UI shows only days >= it, so
+    # there are no partial days. Per product we keep the NEWEST cap_floor (the query
+    # that truncated soonest limits the product's trustworthy range).
+    coverage: dict[str, dict[str, object]] = {}
+
+    def _touch(key: str) -> None:
+        coverage.setdefault(key, {"capped": False, "cap_floor": None})
+
+    def _cover(key: str, cap_floor: str | None, capped: bool) -> None:
+        c = coverage.setdefault(key, {"capped": False, "cap_floor": None})
+        if capped:
+            c["capped"] = True
+            if cap_floor and (c["cap_floor"] is None or cap_floor > c["cap_floor"]):
+                c["cap_floor"] = cap_floor
 
     async def lines() -> AsyncIterator[str]:
         scanned = 0
@@ -1040,6 +1070,9 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
             for action, q in plan:
                 batch: list[dict[str, object]] = []
                 got = local = 0
+                q_key = _pkey(org_client._product_for_group(q)) if q else None
+                cap_day: str | None = None   # day the cap fell on — finish it, then stop
+                day_done = False             # did an older day appear (cap_day complete)?
                 async for ev in org.iter_events(org_id, from_ms=from_ms, action=action,
                                                 q=q, page_size=100):
                     scanned += 1
@@ -1051,8 +1084,16 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
                         continue
                     row = org_client.classify_license_event(ev)
                     if row is not None:
+                        t = str(row.get("time") or "")
+                        day = t[:10]
+                        # once capped, keep the rest of cap_day; stop at an older day
+                        if cap_day is not None and day and day < cap_day:
+                            day_done = True
+                            break
                         if eid:
                             seen.add(eid)
+                        if q_key is None and t:  # direct-access query: attribute per row
+                            _touch(_pkey(str(row.get("product") or "")))
                         batch.append(row)
                         got += 1
                         if len(batch) >= _BATCH:
@@ -1060,16 +1101,31 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
                             batch.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
                             yield json.dumps({"type": "batch", "events": batch}, ensure_ascii=False) + "\n"
                             batch = []
-                    if got >= _PER_QUERY_ROWS or local >= _PER_QUERY_SCAN or scanned >= _TOTAL_SCAN:
+                        if got >= _PER_QUERY_ROWS and cap_day is None and day:
+                            cap_day = day  # reached the cap; finish this day before stopping
+                    if local >= _PER_QUERY_SCAN or scanned >= _TOTAL_SCAN:
                         break
                 if batch:
                     await _enrich_display_names(batch)
                     batch.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
                     yield json.dumps({"type": "batch", "events": batch}, ensure_ascii=False) + "\n"
+                q_capped = cap_day is not None
+                cap_floor: str | None = None
+                if q_capped:
+                    if day_done:
+                        cap_floor = cap_day  # cap_day is fully covered; older days dropped
+                    else:  # stopped mid cap_day (scan backstop) → oldest complete = next day
+                        cap_floor = (datetime.fromisoformat(cap_day) + timedelta(days=1)).date().isoformat()
+                if q_key is not None:
+                    _cover(q_key, cap_floor, q_capped)
+                elif q_capped:  # a capped direct query truncates every product it produced
+                    for k in list(coverage):
+                        _cover(k, cap_floor, True)
                 if scanned >= _TOTAL_SCAN:
                     break
             yield json.dumps({"type": "done", "scanned": scanned,
-                              "capped": scanned >= _TOTAL_SCAN}, ensure_ascii=False) + "\n"
+                              "capped": scanned >= _TOTAL_SCAN,
+                              "coverage": coverage}, ensure_ascii=False) + "\n"
         except asyncio.CancelledError:
             raise
         except UpstreamError as exc:
