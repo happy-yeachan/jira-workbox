@@ -359,6 +359,13 @@ async def setup_org(body: OrgSetupRequest, request: Request) -> dict[str, object
             raise HTTPException(status_code=404, detail=(
                 "이 키로 접근할 수 있는 조직이 없습니다. 올바른 조직의 admin 키인지 확인하세요."
             )) from None
+        if exc.status_code is None:  # transport/connect failure — host unreachable, not an HTTP error
+            raise HTTPException(status_code=502, detail=(
+                "조직 API 서버(api.atlassian.com)에 연결하지 못했습니다. 사이트(*.atlassian.net)는 "
+                "되지만 이 호스트만 막혀 있다면, 사내 방화벽·프록시에서 api.atlassian.com 접근이 "
+                "차단된 것입니다 — 허용 목록에 추가하거나, 프록시를 쓴다면 HTTPS_PROXY 환경변수를 "
+                "설정한 뒤 다시 시도하세요. (키 자체는 아직 확인되지 않았습니다.)"
+            )) from None
         raise HTTPException(status_code=502,
                             detail=f"조직 API 키 확인 중 오류: {exc}"[:200]) from None
     except HTTPException:
