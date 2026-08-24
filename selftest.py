@@ -628,8 +628,7 @@ async def suite_license_users() -> None:
 
 
 def _license_stream_site():
-    """One big Jira Software group (to exercise batching), a JSM role, and a
-    discoverable confluence-users group."""
+    """One big Jira Software group (to exercise batching) and a JSM role."""
     big = [{"accountId": f"u{i}", "displayName": f"User {i:04d}", "emailAddress": f"u{i}@x",
             "active": True, "accountType": "atlassian"} for i in range(250)]
 
@@ -646,10 +645,6 @@ def _license_stream_site():
         if p == "/rest/api/3/instance/license":
             return httpx.Response(200, json={"applications": []})
         if p == "/rest/api/3/groups/picker":
-            if "confluence" in (q.get("query") or ""):
-                return httpx.Response(200, json={"groups": [
-                    {"name": "confluence-users-site", "groupId": "g-conf"},
-                    {"name": "confluence-admins", "groupId": "g-cadm"}]})
             return httpx.Response(200, json={"groups": []})
         if p == "/rest/api/3/group/member":
             rows = big if q.get("groupId") == "g-sw" else big[:80]
@@ -689,6 +684,24 @@ async def suite_license_stream() -> None:
           and sum(len(e["users"]) for e in capped if e["type"] == "batch") <= 100)
     err = [e async for e in lic.stream_application_users(client, "nope")]
     check("unknown app streams an error event", err[0]["type"] == "error")
+
+    # applicationrole-driven license group map: the authoritative {group→product}
+    # the change log classifies by, instead of guessing from names.
+    from core import org_client
+    gm = await lic.license_group_map(client)
+    check("group map built from applicationrole groupDetails",
+          gm == {"jira-software-users": "Jira Software",
+                 "jsm-agents": "Jira Service Management"}, gm)
+    check("map catches a group with no matching name prefix (jsm-agents → JSM)",
+          org_client._product_for_group("jsm-agents", gm) == "Jira Service Management")
+    check("map excludes a group not granted a license role (even if name looks like one)",
+          org_client._product_for_group("jira-users-hkmc-cci", gm) == "")
+    check("admin groups stay an all-products change under the map",
+          org_client._product_for_group("org-admins", gm) == org_client._ADMIN_PRODUCT)
+    ev = _group_event("g1", "user_added_to_group", "2026-08-10T00:00:00Z", "z@x", "jsm-agents")
+    row = org_client.classify_license_event(ev, gm)
+    check("classify uses the map (jsm-agents → Jira Service Management grant)",
+          row and row["product"] == "Jira Service Management" and row["kind"] == "grant", row)
     await client.aclose()
     set_client(None)
 
@@ -707,7 +720,7 @@ def _group_event(eid, action, time, user, group):
 
 
 def _org_events_client():
-    """OrgClient over a MockTransport: a Jira add, a Confluence remove (both
+    """OrgClient over a MockTransport: a Jira add, a Jira Software remove (both
     product-access groups → kept), and an add to a non-product group (skipped).
     Server-side action filter is honoured so each action query is separate."""
     from core.auth import OrgCredentials
@@ -721,7 +734,7 @@ def _org_events_client():
         _group_event("e6", "user_added_to_group", "2026-08-06T09:00:00Z", "root@x", "org-admins"),
     ]
     removed = [
-        _group_event("e2", "user_removed_from_group", "2026-08-02T11:00:00Z", "bob@x", "confluence-users-hmg"),
+        _group_event("e2", "user_removed_from_group", "2026-08-02T11:00:00Z", "bob@x", "jira-software-users-hkmc-cci"),
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -752,8 +765,8 @@ async def suite_license_events() -> None:
                 rows.append(row)
     prods = sorted(r["product"] for r in rows)
     check("non-product-access group add is skipped; products mapped (incl. org-admins)",
-          prods == ["Confluence", "Jira", "Jira Product Discovery", "Jira Service Management",
-                    "조직 관리자 (모든 제품)"], prods)
+          prods == ["Jira", "Jira Product Discovery", "Jira Service Management",
+                    "Jira Software", "조직 관리자 (모든 제품)"], prods)
     check("org-admins add is a license change (all products)",
           any(r["product"] == "조직 관리자 (모든 제품)" and r["kind"] == "grant"
               and r["user_name"] == "root@x" for r in rows), rows)
@@ -762,8 +775,8 @@ async def suite_license_events() -> None:
     check("add to jira-users → grant, product Jira, user extracted",
           grant and grant["user_name"] == "alice@x" and grant["kind"] == "grant"
           and grant["actor_name"] == "API Key", grant)
-    check("remove from confluence-users → revoke, product Confluence",
-          revoke and revoke["user_name"] == "bob@x" and revoke["product"] == "Confluence", revoke)
+    check("remove from jira-software-users → revoke, product Jira Software",
+          revoke and revoke["user_name"] == "bob@x" and revoke["product"] == "Jira Software", revoke)
     check("real JSM group (jira-servicemanagement-users) → Jira Service Management",
           any(r["product"] == "Jira Service Management" for r in rows))
     # the log streams one dense query per product group so JSM isn't starved by Jira

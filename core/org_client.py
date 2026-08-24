@@ -126,12 +126,13 @@ def _first_by_type(items: Any, *type_words: str) -> dict[str, Any]:
     return {}
 
 
-#: product-access group name prefixes → product label. Atlassian's default
-#: access groups are "<product>-users[-<site>]"; matched longest-first so
-#: jira-software-users isn't caught by jira-users. A group that matches none is
-#: not a license group (its add/remove is ordinary membership, not a license).
+#: Fallback product-access group name prefixes → product label, used only when
+#: the authoritative applicationrole group map is unavailable. Atlassian's
+#: default access groups are "<product>-users[-<site>]"; matched longest-first
+#: so jira-software-users isn't caught by jira-users. Confluence is intentionally
+#: absent — it has no applicationrole and its licensed groups can't be derived
+#: from a site token, so Confluence license changes are out of scope here.
 _GROUP_PRODUCT = (
-    ("confluence-users", "Confluence"),
     ("jira-servicemanagement-users", "Jira Service Management"),
     ("jira-service-management-users", "Jira Service Management"),
     ("jira-servicedesk-users", "Jira Service Management"),
@@ -159,17 +160,29 @@ def _is_admin_group(name: str) -> bool:
     return n in _ADMIN_GROUPS or n.startswith("org-admin") or n.startswith("site-admin")
 
 
-def _product_for_group(name: str) -> str:
-    n = (name or "").lower()
+def _product_for_group(name: str, group_map: dict[str, str] | None = None) -> str:
+    """Product label a group grants a license for, or "" for none.
+
+    ``group_map`` (``{group-name-lower → product label}``, built from Jira's
+    ``applicationrole`` group details) is authoritative when given: only groups
+    Atlassian actually maps to a license-granting role count, so oddly-named
+    groups (e.g. ``group-fund-inspection``) are caught and non-licensing groups
+    (JSM customers/stakeholders) are excluded. Admin groups are always an
+    all-products change. Falls back to name-prefix matching when no map."""
+    n = (name or "").lower().strip()
+    if _is_admin_group(n):
+        return _ADMIN_PRODUCT
+    if group_map is not None:
+        return group_map.get(n, "")
     for prefix, product in _GROUP_PRODUCT:
         if n.startswith(prefix):
             return product
-    if _is_admin_group(n):
-        return _ADMIN_PRODUCT
     return ""
 
 
-def classify_license_event(ev: dict[str, Any]) -> dict[str, Any] | None:
+def classify_license_event(
+    ev: dict[str, Any], group_map: dict[str, str] | None = None
+) -> dict[str, Any] | None:
     """Turn one org audit event into a license-change row, or ``None`` if it is
     not a license change.
 
@@ -178,8 +191,9 @@ def classify_license_event(ev: dict[str, Any]) -> dict[str, Any] | None:
     * direct product-access events (``product_access_granted`` / ``_revoked``);
     * group membership (``user_added_to_group`` / ``user_removed_from_group``) —
       the common path, where product access is granted by adding the user to a
-      ``<product>-users`` group. Only product-access groups count; ordinary group
-      membership is skipped.
+      license-granting group. Only such groups count; ordinary group membership
+      is skipped. ``group_map`` (from Jira's applicationrole) makes that decision
+      authoritative; without it, name-prefix matching is used.
 
     Shape: ``{attributes:{time, action, actor, context:[…], container:[…]}}``;
     context carries a ``users`` item (the target) and a ``groups`` item."""
@@ -201,7 +215,7 @@ def classify_license_event(ev: dict[str, Any]) -> dict[str, Any] | None:
     group_name = _s(ga.get("name") or ga.get("groupName"))
 
     if "group" in action:
-        product = _product_for_group(group_name)
+        product = _product_for_group(group_name, group_map)
         if not product:
             return None  # membership in a non-product-access group is not a license
     else:

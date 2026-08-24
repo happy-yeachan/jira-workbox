@@ -2473,7 +2473,7 @@ document.addEventListener('alpine:init', () => {
     // events are folded into every product's trend/log (see _matchProduct).
     logProducts: [
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
-      { label: 'JSM (agent)', k: 'jsm' }, { label: 'Confluence', k: 'confluence' },
+      { label: 'JSM (agent)', k: 'jsm' },
     ],
     logKinds: [
       { label: '전체', k: 'all' }, { label: '추가', k: 'grant' }, { label: '삭제', k: 'revoke' },
@@ -3178,18 +3178,18 @@ document.addEventListener('alpine:init', () => {
       } catch (e) { if (e.name !== 'AbortError') this.liclog.err = '로그 조회 실패: ' + e; }
       finally { if (this.liclog._ctrl === ctrl) { this.liclog.loading = false; this.liclog._ctrl = null; } }
     },
-    // Collapse every product into three simple buckets for the log: Confluence,
-    // JSM (agent), or Jira (Software / Work Mgmt / Product Discovery all → Jira).
+    // Collapse every product into simple buckets for the log: JSM (agent) or
+    // Jira (Software / Work Mgmt / Product Discovery all → Jira). Admin events
+    // are folded into every product (see _matchProduct), so 'admin' is a marker.
     productKey(p) {
       p = (p || '').toLowerCase();
       if (p.includes('관리자') || p.includes('admin')) return 'admin';
-      if (p.includes('confluence')) return 'confluence';
       if (p.includes('service management') || p.includes('service desk') || p.includes('servicedesk')) return 'jsm';
       if (p.includes('jira') || p.includes('product discovery')) return 'jira';
       return 'other';
     },
     productShort(p) {
-      return { jira: 'Jira', jsm: 'JSM (agent)', confluence: 'Confluence', admin: '조직 관리자' }[this.productKey(p)] || (p || '—');
+      return { jira: 'Jira', jsm: 'JSM (agent)', admin: '조직 관리자' }[this.productKey(p)] || (p || '—');
     },
     setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
     // one product selector drives both the trend graph and the change log
@@ -3244,7 +3244,7 @@ document.addEventListener('alpine:init', () => {
       return Object.values(map).sort((a, b) => a.day.localeCompare(b.day)).map(d => ({ ...d, net: d.g - d.r }));
     },
     trendByProduct() {
-      return [['jira', 'Jira'], ['jsm', 'JSM (agent)'], ['confluence', 'Confluence']]
+      return [['jira', 'Jira'], ['jsm', 'JSM (agent)']]
         .map(([key, name]) => {
           const s = this._prodDaily(key);
           return { key, name, has: s.length > 0,
@@ -3263,7 +3263,7 @@ document.addEventListener('alpine:init', () => {
     },
     // ---- seat-occupancy line ----
     // current used seats for a trend product (from the dashboard), or null if the
-    // product has no Jira applicationrole seat count (confluence/admin)
+    // product has no Jira applicationrole seat count
     _currentUsed(key) {
       const m = { jira: 'jira-software', jsm: 'jira-servicedesk' };
       const ak = m[key]; if (!ak) return null;

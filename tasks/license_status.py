@@ -49,9 +49,9 @@ _SEAT_NOUN = {"jira-servicedesk": "에이전트"}
 #: display-name overrides — some tenants still return the legacy "Jira Service
 #: Desk" from applicationrole; show the current product name instead
 _APP_NAME = {"jira-servicedesk": "Jira Service Management"}
-#: card display order (Confluence is intentionally not implemented — no reliable
-#: seat source — but kept in the order so it slots correctly if added later)
-_PRODUCT_ORDER = ["jira-software", "confluence", "jira-servicedesk",
+#: card display order (Jira applications only — Confluence has no comparable
+#: seat/applicationrole source, so it is out of scope here)
+_PRODUCT_ORDER = ["jira-software", "jira-servicedesk",
                   "jira-product-discovery", "jira-core"]
 
 #: how close to full before we call it out
@@ -129,6 +129,34 @@ async def fetch_applications(client: WorkboxClient) -> list[dict[str, Any]]:
         })
     order = {k: i for i, k in enumerate(_PRODUCT_ORDER)}
     out.sort(key=lambda a: (order.get(a["key"], len(order)), a["name"]))
+    return out
+
+
+async def license_group_map(client: WorkboxClient) -> dict[str, str]:
+    """``{group-name (lowercased) → product label}`` for every Jira application,
+    built from ``applicationrole`` group details — the same authoritative source
+    the seat counts use. This is the set of groups that actually grant a paid
+    license, so the change log can classify events by real membership instead of
+    guessing from names. Admin groups are left as-is (the classifier treats them
+    as an all-products change). Returns ``{}`` if applicationrole is unavailable,
+    so callers fall back to name-prefix matching."""
+    try:
+        roles = await client.get_json(_P_ROLES)
+    except UpstreamError:
+        return {}
+    if isinstance(roles, dict):
+        roles = roles.get("value") or []
+    roles = roles if isinstance(roles, list) else []
+    out: dict[str, str] = {}
+    for r in roles:
+        key = _sid(r.get("key"))
+        label = _APP_NAME.get(key) or _sid(r.get("name")) or key
+        if not label:
+            continue
+        for g in (r.get("groupDetails") or []):
+            name = _sid(g.get("name")).strip().lower()
+            if name:
+                out.setdefault(name, label)  # first application wins on collision
     return out
 
 
@@ -584,8 +612,7 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
             Column(key="rate", title="사용률"),
         ],
         rows=rows,
-        note="시트는 Jira 애플리케이션 기준입니다. '무제한'은 좌석 제한이 없는 요금제입니다. "
-             "Confluence는 별도 시트 API가 없어 제외됩니다.",
+        note="시트는 Jira 애플리케이션 기준입니다. '무제한'은 좌석 제한이 없는 요금제입니다.",
     )
     report = {"schema_version": 1, "task": TASK_NAME, "applications": apps}
     result = planstore.register(

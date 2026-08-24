@@ -962,6 +962,12 @@ async def license_events(days: int = 30, limit: int = 1000) -> dict[str, object]
         ("product_access_granted", None),
         ("product_access_revoked", None),
     ]
+    gm = None
+    try:
+        from tasks import license_status
+        gm = await license_status.license_group_map(get_client()) or None
+    except Exception:  # noqa: BLE001 — best-effort; fall back to name prefixes
+        gm = None
     scanned = 0
     out: list[dict[str, object]] = []
     try:
@@ -971,7 +977,7 @@ async def license_events(days: int = 30, limit: int = 1000) -> dict[str, object]
             async for ev in org.iter_events(org_id, from_ms=from_ms, action=action,
                                             q=q, page_size=100):
                 scanned += 1
-                row = org_client.classify_license_event(ev)
+                row = org_client.classify_license_event(ev, gm)
                 if row is not None:
                     out.append(row)
                     got_rows += 1
@@ -1031,8 +1037,25 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
     # tenants that emit direct access events.
     group_actions = ("user_added_to_group", "user_removed_from_group")
     direct_actions = ("product_access_granted", "product_access_revoked")
+    # Authoritative group→product map from Jira's applicationrole (same source the
+    # seat counts use): only groups Atlassian actually maps to a license role, so
+    # oddly-named grantors (e.g. group-fund-inspection) are caught and non-licensing
+    # groups (JSM customers/stakeholders) are excluded. If the site token is absent
+    # or the read fails, fall back to name-prefix matching (group_map=None).
+    group_map: dict[str, str] = {}
+    try:
+        from tasks import license_status
+        group_map = await license_status.license_group_map(get_client())
+    except Exception:  # noqa: BLE001 — best-effort; fall back to prefixes below
+        group_map = {}
+    gm = group_map or None
+    # Query the audit log by the real group names when we have them, else the
+    # legacy prefixes. Admin groups are always queried (all-products changes).
+    query_terms = (
+        list(dict.fromkeys([*group_map, *org_client._ADMIN_GROUPS])) if group_map
+        else list(org_client.LICENSE_GROUP_QUERIES))
     plan: list[tuple[str, str | None]] = (
-        [(a, term) for a in group_actions for term in org_client.LICENSE_GROUP_QUERIES]
+        [(a, term) for a in group_actions for term in query_terms]
         + [(a, None) for a in direct_actions])
     _BATCH = 40
     _PER_QUERY_ROWS = 1200    # classified rows kept per (action, group) — higher = fewer dropped
@@ -1043,8 +1066,6 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
         n = (name or "").lower()
         if "관리자" in (name or "") or "admin" in n:
             return "admin"
-        if "confluence" in n:
-            return "confluence"
         if "service" in n:
             return "jsm"
         if "jira" in n or "discovery" in n:
@@ -1077,7 +1098,7 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
             for action, q in plan:
                 batch: list[dict[str, object]] = []
                 got = local = 0
-                q_key = _pkey(org_client._product_for_group(q)) if q else None
+                q_key = _pkey(org_client._product_for_group(q, gm)) if q else None
                 cap_day: str | None = None   # day the cap fell on — finish it, then stop
                 day_done = False             # did an older day appear (cap_day complete)?
                 async for ev in org.iter_events(org_id, from_ms=from_ms, action=action,
@@ -1089,7 +1110,7 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
                         if local >= _PER_QUERY_SCAN:
                             break
                         continue
-                    row = org_client.classify_license_event(ev)
+                    row = org_client.classify_license_event(ev, gm)
                     if row is not None:
                         t = str(row.get("time") or "")
                         day = t[:10]
