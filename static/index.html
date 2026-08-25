@@ -442,10 +442,14 @@
   .lic-users th { position: sticky; top: 0; background: var(--surface); color: var(--muted); font-weight: 600; font-size: 11.5px; }
   .lic-users .u-off { color: var(--muted); }
   .lic-users .u-tag { font-size: 10.5px; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 0 6px; border-radius: 999px; }
+  .app-tag { font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); background: var(--surface-2); padding: 0 6px; border-radius: 999px; vertical-align: middle; }
   .lic-users-foot { display: flex; align-items: center; justify-content: center; gap: 12px;
                     padding: 10px 14px; border-top: 1px solid var(--line-soft); }
   .lic-sel { width: auto; padding: 6px 26px 6px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; background: var(--surface); flex: none; min-width: 96px; }
   .lic-log-search { padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12.5px; min-width: 150px; }
+  .add-preview { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  .add-preview-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
+  .add-preview-body { max-height: 260px; overflow: auto; }
   .tag-grant { font-size: 11px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok-line); background: var(--ok-bg); padding: 1px 8px; border-radius: 999px; }
   .tag-revoke { font-size: 11px; font-weight: 700; color: var(--bad); border: 1px solid var(--bad-line); background: var(--bad-bg); padding: 1px 8px; border-radius: 999px; }
   .lic-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px 2px; align-items: center; }
@@ -1688,14 +1692,54 @@
             </div>
             <div class="progbar" x-show="groupmgr.detailLoading" style="margin-bottom:10px; border-radius:2px"></div>
             <div class="notice err" x-show="groupmgr.detailErr" x-text="groupmgr.detailErr" style="margin-bottom:10px"></div>
-            <!-- add members -->
+            <!-- add members: preview (resolve) → confirm, no popup -->
             <div class="iso-names">
               <div class="name" style="margin-bottom:6px">멤버 추가 (이메일)</div>
               <div class="opt-bulk">
-                <textarea rows="3" placeholder="이메일 — 한 줄에 하나" x-model="groupmgr.addText"></textarea>
-                <button class="btn small" @click="addGroupMembers()" :disabled="groupmgr.addBusy || !groupmgr.addText.trim()"
-                        x-text="groupmgr.addBusy ? '추가 중…' : '추가'"></button>
+                <textarea rows="3" placeholder="이메일 — 한 줄에 하나" x-model="groupmgr.addText"
+                          @input="groupmgr.addPreview = null"></textarea>
+                <button class="btn small" @click="previewAddMembers()"
+                        :disabled="groupmgr.previewBusy || groupmgr.detailLoading || !groupmgr.addText.trim()"
+                        x-text="groupmgr.previewBusy ? '확인 중…' : '미리보기'"></button>
               </div>
+
+              <!-- inline preview: 추가 예정 / 이미 멤버 / 계정 없음 -->
+              <template x-if="groupmgr.addPreview">
+                <div class="add-preview">
+                  <div class="add-preview-h">
+                    <span class="sub">미리보기 —
+                      <b class="t-add" x-text="'추가 예정 ' + _previewCount('add')"></b> ·
+                      <span class="sub" x-text="'이미 멤버 ' + _previewCount('member')"></span> ·
+                      <span class="t-rem" x-text="'계정 없음 ' + _previewCount('invalid')"></span>
+                    </span>
+                    <span style="flex:1"></span>
+                    <button class="btn small" @click="confirmAddMembers()"
+                            :disabled="groupmgr.addBusy || !_previewCount('add')"
+                            x-text="groupmgr.addBusy ? '추가 중…' : ('추가 확정 (' + _previewCount('add') + '명)')"></button>
+                    <button class="btn small ghost" @click="groupmgr.addPreview = null" :disabled="groupmgr.addBusy">취소</button>
+                  </div>
+                  <div class="add-preview-body">
+                    <table class="fields-table">
+                      <thead><tr><th style="width:40%">이메일</th><th>사용자</th><th style="width:110px">상태</th></tr></thead>
+                      <tbody>
+                        <template x-for="p in groupmgr.addPreview" :key="p.email">
+                          <tr>
+                            <td class="u-off" x-text="p.email"></td>
+                            <td x-text="p.name || '—'"></td>
+                            <td>
+                              <span x-show="p.kind === 'add'" class="tag-grant">추가 예정</span>
+                              <span x-show="p.kind === 'member'" class="sub">이미 멤버</span>
+                              <span x-show="p.kind === 'invalid'" class="tag-revoke" :title="p.note" x-text="p.note || '계정 없음'"></span>
+                            </td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </template>
+
+              <!-- post-add result -->
               <template x-if="groupmgr.addResults">
                 <div class="opt-list" style="margin-top:8px">
                   <template x-for="r in groupmgr.addResults" :key="r.email">
@@ -1723,6 +1767,10 @@
                       <tr>
                         <td>
                           <span x-text="m.name"></span>
+                          <span class="app-tag" x-show="m.account_type === 'app'" style="margin-left:6px"
+                                title="Marketplace 앱의 시스템 계정입니다 (사람 아님). 앱 접근 권한으로 그룹에 들어 있습니다.">앱</span>
+                          <span class="app-tag" x-show="m.account_type === 'customer'" style="margin-left:6px"
+                                title="고객(포털) 계정입니다.">고객</span>
                           <span class="u-tag" x-show="!m.active" style="margin-left:6px">비활성</span>
                           <span class="opt admin-tag" x-show="isOrgAdmin(m)" style="margin-left:6px">조직 관리자</span>
                         </td>
@@ -2481,7 +2529,8 @@ document.addEventListener('alpine:init', () => {
     groupmgr: { loading: false, err: '', list: [], q: '', page: 1, pageSize: 50, _ctrl: null, _loadedQ: '',
                 detail: null, detailLoading: false, detailErr: '', memberQ: '', memberPage: 1,
                 creating: null, delConfirm: false, delBusy: false,
-                addText: '', addBusy: false, addResults: null, _mctrl: null },
+                addText: '', addBusy: false, addResults: null, _mctrl: null,
+                addPreview: null, previewBusy: false },
     spacemgr: { loading: false, err: '', list: [], q: '', _ctrl: null },
     ctxEdit: null,
     ctxNew: null,
@@ -2856,6 +2905,9 @@ document.addEventListener('alpine:init', () => {
           else if (ev.type === 'meta' && ev.name) this.groupmgr.detail.name = ev.name;
           else if (ev.type === 'error') this.groupmgr.detailErr = ev.message || '멤버 조회 실패';
         });
+        // people first, app/customer (non-human) accounts last — so they don't
+        // sit mixed among the users. stable, so order within each group is kept.
+        this.groupmgr.detail.members.sort((a, b) => (this._nonHuman(a) ? 1 : 0) - (this._nonHuman(b) ? 1 : 0));
       } catch (e) { if (e.name !== 'AbortError') this.groupmgr.detailErr = '멤버 조회 실패: ' + e; }
       finally { if (this.groupmgr._mctrl === ctrl) { this.groupmgr.detailLoading = false; this.groupmgr._mctrl = null; } }
     },
@@ -2863,6 +2915,7 @@ document.addEventListener('alpine:init', () => {
       if (this.groupmgr._mctrl) this.groupmgr._mctrl.abort();
       this.groupmgr.detail = null; this.groupmgr.detailErr = ''; this.groupmgr.delConfirm = false;
     },
+    _nonHuman(m) { return m.account_type === 'app' || m.account_type === 'customer'; },
     filteredMembers() {
       const d = this.groupmgr.detail; if (!d) return [];
       const q = (this.groupmgr.memberQ || '').trim().toLowerCase();
@@ -2899,14 +2952,31 @@ document.addEventListener('alpine:init', () => {
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     },
-    async addGroupMembers() {
+    // step 1 — resolve emails (no write) and classify against the loaded members
+    async previewAddMembers() {
       const emails = (this.groupmgr.addText || '').split(/[\n,]/).map(s => s.trim()).filter(Boolean);
       if (!emails.length) return;
-      // real write — grants access/licenses; summarise and confirm before adding
-      const gname = (this.groupmgr.detail && this.groupmgr.detail.name) || '이 그룹';
-      const shown = emails.slice(0, 15).join('\n');
-      const more = emails.length > 15 ? `\n… 외 ${emails.length - 15}명` : '';
-      if (!confirm(`'${gname}' 그룹에 다음 ${emails.length}명을 추가합니다 — 접근·라이선스가 부여됩니다.\n\n${shown}${more}\n\n계속할까요?`)) return;
+      this.groupmgr.previewBusy = true; this.groupmgr.addResults = null; this.groupmgr.detailErr = '';
+      try {
+        const res = await fetch('/api/groups/members/resolve', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+          body: JSON.stringify({ emails }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.groupmgr.detailErr = this.errText(data) || '미리보기 실패'; return; }
+        const members = new Set(((this.groupmgr.detail && this.groupmgr.detail.members) || []).map(m => m.account_id));
+        this.groupmgr.addPreview = (data.results || []).map(r => ({
+          email: r.email, name: r.name || '', account_id: r.account_id || '', note: r.note || '',
+          kind: r.status !== 'ok' ? 'invalid' : (members.has(r.account_id) ? 'member' : 'add'),
+        }));
+      } catch (e) { this.groupmgr.detailErr = '미리보기 실패: ' + e; }
+      finally { this.groupmgr.previewBusy = false; }
+    },
+    _previewCount(kind) { return (this.groupmgr.addPreview || []).filter(p => p.kind === kind).length; },
+    // step 2 — commit only the "추가 예정" ones (write)
+    async confirmAddMembers() {
+      const emails = (this.groupmgr.addPreview || []).filter(p => p.kind === 'add').map(p => p.email);
+      if (!emails.length) return;
       this.groupmgr.addBusy = true; this.groupmgr.addResults = null;
       try {
         const gid = this.groupmgr.detail.groupId;
@@ -2917,10 +2987,8 @@ document.addEventListener('alpine:init', () => {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { this.groupmgr.detailErr = this.errText(data) || '멤버 추가 실패'; return; }
         this.groupmgr.addResults = data.results || [];
-        if ((this.groupmgr.addResults).some(r => r.status === 'added')) {
-          this.groupmgr.addText = '';
-          await this.loadGroupMembers();  // refresh with the new members
-        }
+        this.groupmgr.addPreview = null; this.groupmgr.addText = '';
+        await this.loadGroupMembers();  // refresh with the new members
       } catch (e) { this.groupmgr.detailErr = '멤버 추가 실패: ' + e; }
       finally { this.groupmgr.addBusy = false; }
     },

@@ -104,8 +104,11 @@ async def iter_members(client: WorkboxClient, group_id: str) -> AsyncIterator[di
         aid = _sid(m.get("accountId"))
         if not aid:
             continue
+        # accountType distinguishes people ("atlassian") from Marketplace app/system
+        # accounts ("app") and customers — a group can hold any, so the UI can tag them
         yield {"account_id": aid, "name": _sid(m.get("displayName")) or aid,
-               "email": m.get("emailAddress"), "active": bool(m.get("active", True))}
+               "email": m.get("emailAddress"), "active": bool(m.get("active", True)),
+               "account_type": _sid(m.get("accountType"))}
         n += 1
         if n >= _MEMBER_CAP:
             return
@@ -169,5 +172,28 @@ async def add_members(client: WorkboxClient, group_id: str, emails: list[str]) -
     return out
 
 
+async def resolve_members(client: WorkboxClient, emails: list[str]) -> list[dict[str, Any]]:
+    """Dry-run for the add preview: resolve each email to an account WITHOUT
+    adding it. Returns ``{email, status, account_id, name, note}`` per email so
+    the UI can show 추가 예정 / 이미 멤버(client-side vs the loaded member list) /
+    계정 없음. Read-only."""
+    from tasks.group_membership_bulk import _resolve_email
+
+    out: list[dict[str, Any]] = []
+    for email in emails:
+        info = await _resolve_email(client, email)
+        status = info.get("status")
+        if status == "ok":
+            out.append({"email": email, "status": "ok",
+                        "account_id": _sid(info.get("account_id")),
+                        "name": _sid(info.get("display_name"))})
+        else:
+            note = {"missing": "계정 없음", "ambiguous": info.get("detail", "계정 특정 불가"),
+                    "error": f"조회 실패: {info.get('detail', '')}"}.get(status, "실패")
+            out.append({"email": email, "status": status or "error", "note": note})
+    return out
+
+
 __all__ = ["iter_groups", "search_groups", "group_name", "iter_members", "group_exists",
-           "create_group", "delete_group", "remove_member", "add_members", "UpstreamError"]
+           "create_group", "delete_group", "remove_member", "add_members", "resolve_members",
+           "UpstreamError"]

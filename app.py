@@ -860,6 +860,24 @@ async def add_group_members(group_id: str, body: GroupMembersAdd, request: Reque
     return {"results": results}
 
 
+@app.post("/api/groups/members/resolve")
+async def resolve_group_members(body: GroupMembersAdd, request: Request) -> dict[str, object]:
+    """Dry-run for the add preview: resolve emails to accounts, add nothing.
+    Read-only; the UI classifies 추가 예정 / 이미 멤버 / 계정 없음."""
+    _guard_setup_request(request)
+    from tasks import group_inventory
+    client = _require_client()
+    emails = [e.strip() for e in body.emails if e and e.strip()]
+    if not emails:
+        raise HTTPException(status_code=422, detail="이메일을 최소 하나 입력하세요.")
+    try:
+        results = await group_inventory.resolve_members(client, emails)
+    except UpstreamError as exc:
+        code = 403 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code, detail=str(exc)[:200]) from None
+    return {"results": results}
+
+
 @app.delete("/api/groups/manage/{group_id}/members/{account_id}")
 async def remove_group_member(group_id: str, account_id: str, request: Request) -> dict[str, object]:
     """Remove one member from a group. Write — guarded."""

@@ -1241,9 +1241,10 @@ async def suite_group_inventory() -> None:
             rows = [{"groupId": "g1", "name": "팀A"}, {"groupId": "g2", "name": "팀B"}]
             return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 50, "total": 2})
         if p == "/rest/api/3/group/member":
-            rows = [{"accountId": "u1", "displayName": "Alice", "emailAddress": "alice@x", "active": True},
-                    {"accountId": "u2", "displayName": "Bob", "emailAddress": "bob@x", "active": False}]
-            return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 50, "total": 2})
+            rows = [{"accountId": "u1", "displayName": "Alice", "emailAddress": "alice@x", "active": True, "accountType": "atlassian"},
+                    {"accountId": "u2", "displayName": "Bob", "emailAddress": "bob@x", "active": False, "accountType": "atlassian"},
+                    {"accountId": "app1", "displayName": "draw.io Diagrams", "active": True, "accountType": "app"}]
+            return httpx.Response(200, json={"values": rows, "isLast": True, "startAt": 0, "maxResults": 50, "total": 3})
         if p == "/rest/api/3/groups/picker":
             query = (q.get("query") or "")
             if query == "이미있음":
@@ -1284,7 +1285,10 @@ async def suite_group_inventory() -> None:
     check("search: picker name without id is resolved via bulk (finds org-admins)",
           admin == [{"groupId": "gA", "name": "org-admins"}], admin)
     members = [m async for m in gi.iter_members(client, "g1")]
-    check("members: streamed with active flag", [(m["name"], m["active"]) for m in members] == [("Alice", True), ("Bob", False)], members)
+    check("members: streamed with active flag", [(m["name"], m["active"]) for m in members[:2]] == [("Alice", True), ("Bob", False)], members)
+    check("members: accountType carried so app accounts can be tagged",
+          [(m["name"], m["account_type"]) for m in members] ==
+          [("Alice", "atlassian"), ("Bob", "atlassian"), ("draw.io Diagrams", "app")], members)
     check("group name resolved", await gi.group_name(client, "g1") == "팀A")
 
     check("exists: true for a known name", await gi.group_exists(client, "이미있음") is True)
@@ -1298,6 +1302,10 @@ async def suite_group_inventory() -> None:
     check("add: resolved email added, unknown skipped",
           [(r["email"], r["status"]) for r in res] == [("new@x", "added"), ("missing@x", "skip")]
           and calls["add"] == [("g1", "u9")], res)
+    resolved = await gi.resolve_members(client, ["new@x", "missing@x"])
+    check("resolve (dry-run): matches account, flags unknown, adds nothing",
+          [(r["email"], r["status"]) for r in resolved] == [("new@x", "ok"), ("missing@x", "missing")]
+          and resolved[0].get("account_id") == "u9" and calls["add"] == [("g1", "u9")], resolved)
     check("remove: DELETEs the member", await gi.remove_member(client, "g1", "u1") and calls["remove"] == [("g1", "u1")], calls["remove"])
     await client.aclose()
 
