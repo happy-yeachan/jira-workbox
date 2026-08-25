@@ -618,6 +618,9 @@
   .lic-range .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .lic-days { width: 52px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 7px;
     font: inherit; font-size: 12.5px; text-align: right; margin-left: 4px; }
+  /* beat the generic ".lic-users-h input { flex:1; min-width:180px }" so the day
+     box stays a small number field instead of stretching like the search box */
+  .lic-range .lic-days { flex: none; width: 48px; min-width: 0; text-align: center; margin-left: 0; }
   .trend-card-l { min-width: 0; flex: 1; }
   .trend-name { font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 6px; }
   .trend-cov { font-size: 11px; font-weight: 500; color: var(--muted); }
@@ -632,8 +635,10 @@
   .trend-legend .sw-up { background: var(--ok); } .trend-legend .sw-down { background: var(--bad); }
   .trend-legend .sub { margin-left: auto; }
   .trend-graph-wrap { display: flex; gap: 14px; align-items: stretch; }
-  .trend-line { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px;
-    background: var(--surface); padding: 14px 16px 10px; }
+  /* cap the graph width so its ~3:1 viewBox can't balloon to ~490px tall on wide
+     screens; at 1000px the chart is ~340px tall. Graph + table stay grouped left. */
+  .trend-line { flex: 1 1 auto; min-width: 0; max-width: 1000px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--surface); padding: 14px 16px 10px; }
   .chart-svg { width: 100%; height: auto; display: block; }
   .chart-svg .ax { fill: var(--muted); font-size: 9px; font-family: inherit; }
   .chart-svg .dlt { font-size: 7.5px; font-weight: 700; font-family: inherit; }
@@ -1074,48 +1079,51 @@
               <button class="btn small ghost" @click="setUserPage(dash.userPage + 1)" :disabled="dash.userPage >= userPages()">다음</button>
             </div>
           </div>
-        </div>
 
-        <!-- license 증감 추이 + 변경 로그 — one section; picking a product drives both -->
-        <div class="dash" x-show="health.configured && landingView === 'dashboard'">
+          <!-- 증감 추이 + 변경 로그 — same section as 현황; a product drives both -->
           <div class="lic-users">
             <div class="lic-users-h">
-              <h3>라이선스 증감 · 변경 로그</h3>
-              <span class="sub" x-show="!liclog.loading && health.org_configured && trendHasData()" x-text="'· ' + trendReliableLabel()"></span>
-              <span class="sub" x-show="liclog.loading">· 불러오는 중…</span>
-              <span style="flex:1"></span>
-              <template x-if="health.org_configured">
-                <span style="display:flex; gap:6px; align-items:center">
-                  <span class="lic-range">
-                    <button class="chip" :class="{ on: liclog.days === 7 }" @click="setDays(7)">7일</button>
-                    <button class="chip" :class="{ on: liclog.days === 30 }" @click="setDays(30)">30일</button>
-                    <button class="chip" :class="{ on: liclog.days === 90 }" @click="setDays(90)">90일</button>
-                    <input type="number" min="1" max="365" class="lic-days" x-model.number="liclog.days"
-                           @change="setDays(liclog.days)" @keydown.enter="setDays(liclog.days)"
-                           title="직접 일수 입력 (1–365)">
-                    <span class="sub">일</span>
-                  </span>
-                  <input type="text" class="lic-log-search" placeholder="사용자·수행자 검색" x-model="liclog.q" @input="liclog.page = 1">
-                  <button class="btn small ghost" @click="loadEvents()" :disabled="liclog.loading">새로고침</button>
+              <h3>라이선스 시트 추이 · 변경 로그</h3>
+              <span class="sub" x-show="snapHasData()" x-text="'· ' + trendReliableLabel()"></span>
+              <span class="sub" x-show="snapHasData() && _latestCapture(trendProduct)"
+                    x-text="'· ' + _latestCapture(trendProduct) + ' 기준'"></span>
+              <span class="sub" x-show="snap.loading || liclog.loading">· 불러오는 중…</span>
+              <span style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-left:auto">
+                <span class="lic-range" x-show="snapHasData() || health.org_configured">
+                  <button class="chip" :class="{ on: liclog.days === 7 }" @click="setDays(7)">7일</button>
+                  <button class="chip" :class="{ on: liclog.days === 30 }" @click="setDays(30)">30일</button>
+                  <button class="chip" :class="{ on: liclog.days === 90 }" @click="setDays(90)">90일</button>
+                  <input type="number" min="1" max="365" class="lic-days" x-model.number="liclog.days"
+                         @change="setDays(liclog.days)" @keydown.enter="setDays(liclog.days)"
+                         title="직접 일수 입력 (1–365)">
+                  <span class="sub">일</span>
                 </span>
+                <input type="text" class="lic-log-search" placeholder="사용자·수행자 검색" x-show="health.org_configured"
+                       x-model="liclog.q" @input="liclog.page = 1">
+                <button class="btn small ghost" @click="saveSnapshot()" :disabled="snap.saving"
+                        title="오늘 시트 수를 Assets에 저장 (모든 관리자 공유)">스냅샷 저장</button>
+                <button class="btn small ghost" @click="loadSnapshots(); loadEvents()"
+                        :disabled="snap.loading || liclog.loading">새로고침</button>
+              </span>
+            </div>
+            <div class="progbar" x-show="snap.loading || liclog.loading"></div>
+            <!-- one padded body so every part shares the 14px inset -->
+            <div class="trend-body">
+            <div class="notice err" x-show="snap.err" x-text="snap.err" style="margin:10px 0"></div>
+            <div class="sub" x-show="snap.saveMsg" x-text="snap.saveMsg" style="margin:6px 0; color:var(--ok)"></div>
+            <div class="notice err" x-show="snap.saveErr" x-text="snap.saveErr" style="margin:10px 0"></div>
+
+            <!-- product selector drives BOTH the snapshot graph and the change log -->
+            <div class="lic-chips" x-show="snapHasData() || health.org_configured" style="padding:0 0 4px">
+              <span class="sub chip-label">제품</span>
+              <template x-for="c in logProducts.filter(p => p.k)" :key="'t-' + c.k">
+                <button class="chip" :class="{ on: trendProduct === c.k }" @click="selectTrend(c.k)" x-text="c.label"></button>
               </template>
             </div>
-            <div class="progbar" x-show="liclog.loading"></div>
 
-            <template x-if="!health.org_configured">
-              <div class="sub" style="padding:14px">
-                조직 admin API 키를 연결하면 라이선스 증감 추이·변경 로그를 볼 수 있습니다 (사이트 토큰으로는 불가).
-                <a href="#" @click.prevent="openSetup()">접속 정보에서 연결 →</a>
-              </div>
-            </template>
-            <div class="notice err" x-show="health.org_configured && liclog.err" x-text="liclog.err" style="margin:10px 2px"></div>
-            <template x-if="health.org_configured && !liclog.err && !liclog.loading && !trendHasData()">
-              <div class="sub" style="padding:12px 2px">이 기간에 라이선스 변경이 없습니다.</div>
-            </template>
-
-            <template x-if="health.org_configured && !liclog.err && trendHasData()">
-              <div class="trend-body">
-                <!-- per-product summary cards — click to select (drives chart + log) -->
+            <!-- seat trend, from Atlassian Assets snapshots (real userCount over time) -->
+            <template x-if="snapHasData()">
+              <div>
                 <div class="trend-cards">
                   <template x-for="o in trendByProduct()" :key="o.key">
                     <div class="trend-card" :class="{ sel: trendProduct === o.key }" @click="selectTrend(o.key)"
@@ -1127,48 +1135,58 @@
                         </div>
                         <div class="trend-net-big" :class="o.net >= 0 ? 'up' : 'down'"
                              x-text="o.has ? ((o.net >= 0 ? '+' : '') + o.net) : '—'"></div>
-                        <div class="trend-ar" x-show="o.has"><span class="t-add" x-text="'+' + o.added"></span>
-                          <span class="t-rem" x-text="'−' + o.removed"></span></div>
+                        <div class="trend-ar" x-show="o.has">사용 <b x-text="Number(o.used).toLocaleString()"></b></div>
                         <div class="trend-ar" x-show="!o.has" style="color:var(--muted)">데이터 없음</div>
                       </div>
                       <div class="trend-mini" x-html="sparkSvg(o.key)"></div>
                     </div>
                   </template>
                 </div>
-                <!-- single product selector: chart AND log both follow it -->
-                <div class="lic-chips" style="margin-top:12px">
-                  <span class="sub chip-label">제품</span>
-                  <template x-for="c in logProducts.filter(p => p.k)" :key="'t-' + c.k">
-                    <button class="chip" :class="{ on: trendProduct === c.k }" @click="selectTrend(c.k)" x-text="c.label"></button>
-                  </template>
-                </div>
                 <div class="trend-legend">
                   <span class="lg-up">▲ 증가</span>
                   <span class="lg-down">▼ 감소</span>
-                  <span class="sub" x-text="'선·마커 = 시트 증감 방향 · 점 옆 숫자 = 그날 증감' + (_currentUsed(trendProduct) === null ? ' · 기준선 없음(상대)' : '')"></span>
+                  <span class="sub">선 = 시트 사용량(userCount) · 점 옆 숫자 = 직전 스냅샷 대비 증감</span>
+                </div>
+                <div class="sub" style="margin:0 0 8px; color:var(--muted)">
+                  ※ 실측 <b>시트 사용량 스냅샷</b> 기반입니다 (그룹 다중 경로·조직 관리자까지 반영한 실제 userCount). 매일 1회 저장하면 정확한 추이가 쌓입니다.
                 </div>
                 <div class="trend-graph-wrap">
                   <div class="trend-line" x-html="chartSvg()"></div>
                   <div class="trend-net-list">
-                    <div class="trend-net-row trend-net-head">
-                      <span class="tnr-day">날짜</span><span class="tnr-c">추가</span><span class="tnr-c">삭제</span><span class="tnr-net">순증</span>
+                    <div class="trend-net-row trend-net-head" style="grid-template-columns:60px 1fr 1fr">
+                      <span class="tnr-day">날짜</span><span class="tnr-c">사용</span><span class="tnr-net">순증</span>
                     </div>
                     <template x-for="r in trendRows()" :key="r.day">
-                      <div class="trend-net-row" :class="{ today: r.label === '오늘' }">
+                      <div class="trend-net-row" :class="{ today: r.label === '오늘' }" style="grid-template-columns:60px 1fr 1fr"
+                           :title="r.day + (r.capturedAt ? ' · ' + _fmtCapture(r.capturedAt) + ' 기준' : '')">
                         <span class="tnr-day" x-text="r.label"></span>
-                        <span class="tnr-c t-add" x-text="r.g"></span>
-                        <span class="tnr-c t-rem" x-text="r.r"></span>
+                        <span class="tnr-c" x-text="Number(r.used).toLocaleString()"></span>
                         <span class="tnr-net" :class="r.net >= 0 ? 'up' : 'down'"
                               x-text="(r.net >= 0 ? '+' : '') + r.net"></span>
                       </div>
                     </template>
                   </div>
                 </div>
-                <div class="sub trend-foot" x-show="_prodFloor(trendProduct)"
-                     x-text="'※ ' + (logProducts.find(p => p.k === trendProduct) || {}).label + '은(는) 변경량이 많아 조회 상한에 걸려, 집계 가능한 최근 ' + _completeDays(trendProduct) + '일만 표시합니다.'"></div>
+              </div>
+            </template>
+            <template x-if="!snapHasData() && !snap.loading && !snap.err">
+              <div class="sub" style="padding:12px 0; line-height:1.7">
+                아직 시트 스냅샷이 없습니다 — <b>[스냅샷 저장]</b>을 누르면 오늘치가 Assets에 저장됩니다(모든 관리자 공유).
+                매일 자동으로 쌓으려면 한 번만: <code>uv run python -m tasks.license_snapshot --install-schedule</code>
+              </div>
+            </template>
 
-                <!-- change log for the selected product -->
-                <div class="trend-divider"></div>
+            <!-- change log (org audit events; needs the org admin key) -->
+            <div class="trend-divider" x-show="snapHasData()"></div>
+            <template x-if="!health.org_configured">
+              <div class="sub" style="padding:14px 0">
+                조직 admin API 키를 연결하면 <b>변경 로그</b>(누가·언제·어떤 그룹에 추가/삭제, 수행자)를 볼 수 있습니다.
+                <a href="#" @click.prevent="openSetup()">접속 정보에서 연결 →</a>
+              </div>
+            </template>
+            <template x-if="health.org_configured">
+              <div>
+                <div class="notice err" x-show="liclog.err" x-text="liclog.err" style="margin:10px 0"></div>
                 <div class="lic-log-h">
                   <h4><span x-text="(logProducts.find(p => p.k === trendProduct) || {}).label"></span> 변경 로그</h4>
                   <span class="sub" x-text="logCountLabel()"></span>
@@ -1216,6 +1234,7 @@
                 </div>
               </div>
             </template>
+            </div><!-- /trend-body -->
           </div>
         </div>
 
@@ -1692,6 +1711,9 @@
               <div class="lic-users-h">
                 <h3>멤버</h3>
                 <input type="text" placeholder="이름·이메일 검색" x-model="groupmgr.memberQ" @input="groupmgr.memberPage = 1">
+                <button class="btn small ghost" @click="exportGroupCsv()"
+                        :disabled="groupmgr.detailLoading || !groupmgr.detail || !groupmgr.detail.members.length"
+                        title="이 그룹의 전체 멤버를 CSV로 내려받습니다">CSV 추출</button>
               </div>
               <div class="lic-users-body">
                 <table class="fields-table">
@@ -2469,11 +2491,13 @@ document.addEventListener('alpine:init', () => {
     trendProduct: 'jira',
     liclog: { loading: false, err: '', events: [], days: 7, filter: 'all', q: '',
               product: '', page: 1, pageSize: 100, capped: false, coverage: {}, _ctrl: null },
+    // seat trend from Assets snapshots (real userCount over time)
+    snap: { loading: false, err: '', rows: [], loaded: false, saving: false, saveMsg: '', saveErr: '' },
     // org-admins grants ALL products, so it's not a product of its own — those
     // events are folded into every product's trend/log (see _matchProduct).
     logProducts: [
       { label: '전체', k: '' }, { label: 'Jira', k: 'jira' },
-      { label: 'JSM (agent)', k: 'jsm' },
+      { label: 'JSM (agent)', k: 'jsm' }, { label: 'JPD', k: 'jpd' },
     ],
     logKinds: [
       { label: '전체', k: 'all' }, { label: '추가', k: 'grant' }, { label: '삭제', k: 'revoke' },
@@ -2495,7 +2519,7 @@ document.addEventListener('alpine:init', () => {
       this.tasks = await (await fetch('/api/tasks')).json();
       // the license dashboard is the landing headline — load it as soon as we
       // have working credentials (and again after the operator connects)
-      if (this.health.configured) this.loadDashboard();
+      if (this.health.configured) { this.loadDashboard(); this.loadSnapshots(); }
       // Atlassian status banner: check now, then every 3 minutes
       this.loadAtlassianStatus();
       setInterval(() => this.loadAtlassianStatus(), 180000);
@@ -2651,7 +2675,7 @@ document.addEventListener('alpine:init', () => {
         this.setup = { site_url: '', email: '', api_token: '' };
         this.setupOpen = false;
         await this.refreshHealth();
-        if (this.health.configured) this.loadDashboard();
+        if (this.health.configured) { this.loadDashboard(); this.loadSnapshots(); }
       } catch (e) {
         this.setupError = '접속 정보를 저장하지 못했습니다: ' + e;
       } finally {
@@ -2854,9 +2878,35 @@ document.addEventListener('alpine:init', () => {
     },
     memberPages() { return Math.max(1, Math.ceil(this.filteredMembers().length / (this.dash.userPageSize || 100))); },
     setMemberPage(p) { this.groupmgr.memberPage = Math.max(1, Math.min(p, this.memberPages())); },
+    // download the whole group's member list as CSV (client-side, from the
+    // already-streamed members — no extra request). BOM so Excel reads Hangul.
+    exportGroupCsv() {
+      const d = this.groupmgr.detail;
+      if (!d || !d.members || !d.members.length) return;
+      const cell = v => {
+        const s = v == null ? '' : String(v);
+        return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const header = ['이름', '이메일', '상태', '계정ID'];
+      const lines = d.members.map(m => [
+        cell(m.name), cell(m.email || ''), m.active === false ? '비활성' : '활성', cell(m.account_id),
+      ].join(','));
+      const csv = String.fromCharCode(0xFEFF) + [header.join(','), ...lines].join('\r\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (d.name || 'group').replace(/[^\w.-]+/g, '_') + '-members.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    },
     async addGroupMembers() {
       const emails = (this.groupmgr.addText || '').split(/[\n,]/).map(s => s.trim()).filter(Boolean);
       if (!emails.length) return;
+      // real write — grants access/licenses; summarise and confirm before adding
+      const gname = (this.groupmgr.detail && this.groupmgr.detail.name) || '이 그룹';
+      const shown = emails.slice(0, 15).join('\n');
+      const more = emails.length > 15 ? `\n… 외 ${emails.length - 15}명` : '';
+      if (!confirm(`'${gname}' 그룹에 다음 ${emails.length}명을 추가합니다 — 접근·라이선스가 부여됩니다.\n\n${shown}${more}\n\n계속할까요?`)) return;
       this.groupmgr.addBusy = true; this.groupmgr.addResults = null;
       try {
         const gid = this.groupmgr.detail.groupId;
@@ -2875,6 +2925,9 @@ document.addEventListener('alpine:init', () => {
       finally { this.groupmgr.addBusy = false; }
     },
     async removeGroupMember(m) {
+      // real write — revokes access/license; confirm before removing
+      const gname = (this.groupmgr.detail && this.groupmgr.detail.name) || '이 그룹';
+      if (!confirm(`'${gname}' 그룹에서 ${m.name || m.email || m.account_id} 을(를) 제거합니다.\n접근·라이선스가 회수됩니다. 계속할까요?`)) return;
       m._removing = true;
       try {
         const gid = this.groupmgr.detail.groupId;
@@ -3146,6 +3199,39 @@ document.addEventListener('alpine:init', () => {
       finally { e.busy = false; }
     },
 
+    // ---------- seat snapshots (Assets) ----------
+    async loadSnapshots() {
+      this.snap.loading = true; this.snap.err = '';
+      try {
+        const res = await fetch('/api/license/snapshots');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.snap.err = this.errText(data) || '스냅샷 조회 실패'; this.snap.rows = []; return; }
+        this.snap.rows = data.snapshots || [];
+        this.snap.loaded = true;
+      } catch (e) { this.snap.err = '스냅샷 조회 실패: ' + e; }
+      finally { this.snap.loading = false; }
+    },
+    // save today's snapshot to Assets (external write) — preview first, then confirm
+    async saveSnapshot() {
+      this.snap.saving = true; this.snap.saveErr = ''; this.snap.saveMsg = '';
+      try {
+        const pv = await fetch('/api/license/snapshot/preview').then(r => r.json().catch(() => ({})));
+        const rows = pv.to_write || [];
+        if (!rows.length) { this.snap.saveMsg = '저장할 제품이 없습니다.'; return; }
+        const refresh = pv.already_present || 0;
+        const lines = rows.map(r => `· ${r.productName}: 사용 ${r.used}` + (r.total != null ? ` / ${r.total}` : '')).join('\n');
+        const head = `Assets에 오늘(${pv.date}) 시트 스냅샷을 저장합니다` + (refresh ? ` (${refresh}건은 현재 값으로 갱신)` : '') + ':';
+        if (!confirm(`${head}\n\n${lines}\n\n계속할까요?`)) return;
+        const res = await fetch('/api/license/snapshot', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.snap.saveErr = this.errText(data) || '스냅샷 저장 실패'; return; }
+        const c = (data.created || []).length, u = (data.updated || []).length;
+        this.snap.saveMsg = `저장 완료 — 새로 ${c} · 갱신 ${u}`;
+        await this.loadSnapshots();
+      } catch (e) { this.snap.saveErr = '스냅샷 저장 실패: ' + e; }
+      finally { this.snap.saving = false; }
+    },
+
     // ---------- license change log (org audit events) ----------
     async loadEvents() {
       if (!this.health.org_configured) return;
@@ -3178,18 +3264,20 @@ document.addEventListener('alpine:init', () => {
       } catch (e) { if (e.name !== 'AbortError') this.liclog.err = '로그 조회 실패: ' + e; }
       finally { if (this.liclog._ctrl === ctrl) { this.liclog.loading = false; this.liclog._ctrl = null; } }
     },
-    // Collapse every product into simple buckets for the log: JSM (agent) or
-    // Jira (Software / Work Mgmt / Product Discovery all → Jira). Admin events
-    // are folded into every product (see _matchProduct), so 'admin' is a marker.
+    // Collapse every product into simple buckets for the log: JPD, JSM (agent),
+    // or Jira (Software / Work Mgmt → Jira). JPD/JSM are checked before the broad
+    // 'jira' match. Admin events are folded into every product (see _matchProduct),
+    // so 'admin' is a marker.
     productKey(p) {
       p = (p || '').toLowerCase();
       if (p.includes('관리자') || p.includes('admin')) return 'admin';
+      if (p.includes('product discovery') || p.includes('discovery')) return 'jpd';
       if (p.includes('service management') || p.includes('service desk') || p.includes('servicedesk')) return 'jsm';
-      if (p.includes('jira') || p.includes('product discovery')) return 'jira';
+      if (p.includes('jira')) return 'jira';
       return 'other';
     },
     productShort(p) {
-      return { jira: 'Jira', jsm: 'JSM (agent)', admin: '조직 관리자' }[this.productKey(p)] || (p || '—');
+      return { jira: 'Jira', jsm: 'JSM (agent)', jpd: 'JPD', admin: '조직 관리자' }[this.productKey(p)] || (p || '—');
     },
     setLogProduct(k) { this.liclog.product = k; this.liclog.page = 1; },
     // one product selector drives both the trend graph and the change log
@@ -3198,6 +3286,7 @@ document.addEventListener('alpine:init', () => {
     setDays(n) {
       n = Math.max(1, Math.min(365, Math.round(Number(n) || 7)));
       this.liclog.days = n; this.liclog.page = 1; this.loadEvents();
+      // snapshots are already loaded; the window just re-slices them client-side
     },
 
     // ---------- 라이선스 증감 추이 (client-side, from the change-log events) ----------
@@ -3208,84 +3297,80 @@ document.addEventListener('alpine:init', () => {
       const d = new Date(); d.setHours(0, 0, 0, 0);
       return d.getTime() - ((this.liclog.days || 90) - 1) * 86400000;
     },
-    _trendEvents() {
-      const cut = this._trendCutoff();
-      return this.liclog.events.filter(e => {
-        const t = Date.parse(e.time || ''); return !isNaN(t) && t >= cut;
-      });
-    },
-    trendHasData() { return this._trendEvents().length > 0; },
     _dayKey(ms) { const d = new Date(ms), p = n => String(n).padStart(2, '0');
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); },
-    // oldest FULLY-covered day for a product (null = complete over the whole window)
-    _prodFloor(key) {
-      const c = (this.liclog.coverage || {})[key];
-      return (c && c.capped && c.cap_floor) ? c.cap_floor : null;
-    },
-    // THE one source of truth per product: ascending [{day,g,r,net}], complete days
-    // only. Cards, sparklines, the main chart and the day list all derive from this,
-    // so a card's 순증 always equals the sum of its day list.
-    // bucket by LOCAL calendar day (not the UTC slice of the ISO string), so a day
-    // here matches what the change log shows via fmtTime — else e.g. a 08-23 00–09h
-    // KST event lands under 08-22 (UTC) and "오늘" looks empty though the log has it
+    // bucket a log event by LOCAL calendar day (matches fmtTime display)
     _eventDay(e) { const t = Date.parse(e.time || ''); return isNaN(t) ? '' : this._dayKey(t); },
     // an org-admin change grants EVERY product, so it counts toward each product's
-    // trend/log — not a bucket of its own
+    // change log — not a bucket of its own
     _matchProduct(e, key) { const pk = this.productKey(e.product); return pk === key || pk === 'admin'; },
-    _prodDaily(key) {
-      const floor = this._prodFloor(key), map = {};
-      for (const e of this._trendEvents()) {
-        if (!this._matchProduct(e, key)) continue;
-        const day = this._eventDay(e);
-        if (!day || (floor && day < floor)) continue;   // drop older, incomplete days
-        map[day] = map[day] || { day, g: 0, r: 0 };
-        if (e.kind === 'grant') map[day].g++; else if (e.kind === 'revoke') map[day].r++;
+
+    // ---- seat trend from Assets snapshots (real userCount, not log guesses) ----
+    // trend product key → applicationrole product key the snapshot is stored under
+    _snapKey(trendKey) {
+      return ({ jira: 'jira-software', jsm: 'jira-servicedesk', jpd: 'jira-product-discovery' })[trendKey] || trendKey;
+    },
+    // ascending [{day, used, total}] for a product within the day window; the last
+    // write for a given day wins (idempotent, but be safe)
+    _snapSeries(trendKey) {
+      const ak = this._snapKey(trendKey), cutDay = this._dayKey(this._trendCutoff()), byDay = {};
+      for (const r of (this.snap.rows || [])) {
+        if (String(r.product) !== ak) continue;
+        const day = String(r.date || '').slice(0, 10);
+        if (!day || day < cutDay) continue;
+        const used = Number(r.used);
+        if (!Number.isFinite(used)) continue;
+        byDay[day] = { day, used, total: Number(r.total), capturedAt: r.capturedAt || '' };
       }
-      return Object.values(map).sort((a, b) => a.day.localeCompare(b.day)).map(d => ({ ...d, net: d.g - d.r }));
+      return Object.values(byDay).sort((a, b) => a.day.localeCompare(b.day));
+    },
+    // "MM/DD HH:MM" from a local ISO capture stamp (e.g. 2026-08-25T09:30)
+    _fmtCapture(iso) {
+      const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+      return m ? `${m[2]}/${m[3]} ${m[4]}:${m[5]}` : '';
+    },
+    // capture time of the latest snapshot for the selected product ("HH:MM 기준")
+    _latestCapture(trendKey) {
+      const s = this._snapSeries(trendKey);
+      return s.length ? this._fmtCapture(s[s.length - 1].capturedAt) : '';
+    },
+    snapHasData() { return ['jira', 'jsm', 'jpd'].some(k => this._snapSeries(k).length > 0); },
+    trendHasData() { return this.snapHasData(); },
+    // per-snapshot-day net = used minus the previous snapshot's used (first day = 0).
+    // g/r are that net split (increase / decrease) so cards can sum them.
+    _prodDaily(key) {
+      const s = this._snapSeries(key);
+      return s.map((d, i) => {
+        const net = i === 0 ? 0 : d.used - s[i - 1].used;
+        return { day: d.day, used: d.used, total: d.total, capturedAt: d.capturedAt,
+                 net, g: Math.max(net, 0), r: Math.max(-net, 0) };
+      });
     },
     trendByProduct() {
-      return [['jira', 'Jira'], ['jsm', 'JSM (agent)']]
+      return [['jira', 'Jira'], ['jsm', 'JSM (agent)'], ['jpd', 'JPD']]
         .map(([key, name]) => {
           const s = this._prodDaily(key);
-          return { key, name, has: s.length > 0,
-                   added: s.reduce((a, d) => a + d.g, 0), removed: s.reduce((a, d) => a + d.r, 0),
-                   net: s.reduce((a, d) => a + d.net, 0) };
+          const net = s.length ? s[s.length - 1].used - s[0].used : 0;
+          return { key, name, has: s.length > 0, net,
+                   used: s.length ? s[s.length - 1].used : this._currentUsed(key),
+                   added: s.reduce((a, d) => a + d.g, 0), removed: s.reduce((a, d) => a + d.r, 0) };
         });
     },
-    // days actually shown for a product = distinct days with events in its complete
-    // range (so the header count, the X points and the table rows always agree)
-    _completeDays(key) { return this._prodDaily(key).length; },
-    trendCardDays(key) { return this._completeDays(key) + '일'; },
+    _completeDays(key) { return this._snapSeries(key).length; },
+    trendCardDays(key) { const n = this._completeDays(key); return n <= 1 ? '스냅샷 ' + n : n + '일'; },
     trendReliableLabel() {
-      const k = this.trendProduct, capped = !!this._prodFloor(k);
-      return '요청 ' + this.liclog.days + '일 · 표시 ' + this._completeDays(k) + '일'
-             + (capped ? ' (상한 도달)' : '');
+      const n = this._completeDays(this.trendProduct);
+      return n <= 1 ? '스냅샷 ' + n + '일 · 추이는 며칠 쌓이면 그려집니다' : '스냅샷 ' + n + '일';
     },
-    // ---- seat-occupancy line ----
-    // current used seats for a trend product (from the dashboard), or null if the
-    // product has no Jira applicationrole seat count
+    // current used seats for a trend product (from the dashboard donuts), or null
     _currentUsed(key) {
-      const m = { jira: 'jira-software', jsm: 'jira-servicedesk' };
-      const ak = m[key]; if (!ak) return null;
-      const a = (this.dash.apps || []).find(x => x.key === ak);
+      const a = (this.dash.apps || []).find(x => x.key === this._snapKey(key));
       return (a && Number.isFinite(a.used)) ? a.used : null;
     },
-    // occupancy per day = seats used at end of that day. Anchored at today's current
-    // count and walked BACKWARD by each later day's net. Products with no seat count
-    // fall back to a relative baseline (0 at the start). Returns [{day,net,occ,rel}].
+    // occupancy series for the chart: seats used per snapshot day (absolute, real).
     _occupancy(key) {
-      const s = this._prodDaily(key);
-      if (!s.length) return [];
-      const n = s.length, occ = new Array(n);
-      const anchor = this._currentUsed(key), rel = anchor == null;
-      if (rel) {  // relative: cumulative net from the range start
-        let c = 0;
-        for (let i = 0; i < n; i++) { c += s[i].net; occ[i] = c; }
-      } else {    // absolute: today's count, minus each later day's net going back
-        occ[n - 1] = anchor;
-        for (let i = n - 2; i >= 0; i--) occ[i] = occ[i + 1] - s[i + 1].net;
-      }
-      return s.map((d, i) => ({ day: d.day, net: d.net, occ: occ[i], rel }));
+      const s = this._snapSeries(key);
+      return s.map((d, i) => ({ day: d.day, net: i === 0 ? 0 : d.used - s[i - 1].used, occ: d.used, rel: false }));
     },
     // nice-number Y scale: ticks fall on 1/2/5×10ⁿ (integers), domain snapped to them
     _niceScale(vals, top, h, want) {
@@ -3317,7 +3402,9 @@ document.addEventListener('alpine:init', () => {
     // plus a signed label, so it reads without relying on colour.
     chartSvg() {
       const s = this._occupancy(this.trendProduct);
-      if (!s.length) return '<div class="trend-empty">이 기간에 변경 데이터가 없습니다.</div>';
+      if (!s.length) return '<div class="trend-empty">아직 이 제품의 스냅샷이 없습니다. 스냅샷을 저장하면 추이가 그려집니다.</div>';
+      if (s.length === 1) return '<div class="trend-empty">스냅샷 1개 (사용 ' + Math.round(s[0].occ).toLocaleString()
+        + ') — 다음 스냅샷부터 추이 선이 그려집니다.</div>';
       const W = 680, H = 230, mL = 58, mR = 30, mT = 32, mB = 28, pw = W - mL - mR, ph = H - mT - mB;
       const occs = s.map(d => d.occ), m = this._niceScale(occs, mT, ph);
       const x = i => s.length === 1 ? mL + pw / 2 : mL + (i / (s.length - 1)) * pw;
@@ -3365,18 +3452,18 @@ document.addEventListener('alpine:init', () => {
       return this._prodDaily(this.trendProduct).slice().reverse().map(d => {
         let label = d.day.slice(5).replace('-', '/');
         if (d.day === todayK) label = '오늘'; else if (d.day === yK) label = '어제';
-        return { day: d.day, label, g: d.g, r: d.r, net: d.net };
+        return { day: d.day, label, used: d.used, g: d.g, r: d.r, net: d.net, capturedAt: d.capturedAt };
       });
     },
     setLogKind(k) { this.liclog.filter = k; this.liclog.page = 1; },
     filteredEvents() {
       const f = this.liclog.filter, pk = this.trendProduct, q = (this.liclog.q || '').trim().toLowerCase();
-      // same day-aligned window as the trend, so the log matches the graph exactly
-      const cutoff = this._trendCutoff();
+      // no client-side time cut: the server already fetched exactly `days` back
+      // (rolling), and setDays refetches — a calendar-day cut here would drop
+      // rows the server returned (e.g. just after midnight with days=1 → "0/160")
       return this.liclog.events.filter(e => {
         if (f !== 'all' && e.kind !== f) return false;
         if (!this._matchProduct(e, pk)) return false;  // section's product (org-admin ⊂ all)
-        if (e.time) { const t = Date.parse(e.time); if (!isNaN(t) && t < cutoff) return false; }
         // search only the person columns — user and performer (product is the section selector)
         if (q && !((e.user_name || '').toLowerCase().includes(q)
                 || (e.user_email || '').toLowerCase().includes(q)

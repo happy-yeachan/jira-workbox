@@ -1066,9 +1066,11 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
         n = (name or "").lower()
         if "관리자" in (name or "") or "admin" in n:
             return "admin"
+        if "discovery" in n:
+            return "jpd"
         if "service" in n:
             return "jsm"
-        if "jira" in n or "discovery" in n:
+        if "jira" in n:
             return "jira"
         return "other"
 
@@ -1171,6 +1173,94 @@ async def license_events_stream(days: int = 30) -> StreamingResponse:
         lines(), media_type="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+# --------------------------------------------------------------------------
+# License-seat snapshots → Atlassian Assets (shared store; real seat trend)
+# --------------------------------------------------------------------------
+_assets_ws_cache: dict[str, str] = {}  # site_url -> workspace id (discovered once)
+
+
+async def _assets_and_site():
+    """(AssetsClient, site client) or an HTTPException. Reuses the site Basic auth
+    and the process-wide site client; discovers the workspace id once and caches
+    it. Caller must ``await assets.aclose()``."""
+    from core.assets_client import AssetsClient, discover_workspace_id
+    site = _require_client()
+    creds = load_credentials()
+    if creds is None:
+        raise HTTPException(status_code=503, detail=SETUP_HINT)
+    ws = _assets_ws_cache.get(site.site_url)
+    if not ws:
+        try:
+            ws = await discover_workspace_id(site)
+        except UpstreamError as exc:
+            raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)[:200]) from None
+        _assets_ws_cache[site.site_url] = ws
+    return AssetsClient(creds, load_settings(), ws), site
+
+
+def _today_local() -> str:
+    return datetime.now().date().isoformat()
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="minutes")  # local, e.g. 2026-08-25T09:30
+
+
+@app.get("/api/license/assets/status")
+async def license_assets_status() -> dict[str, object]:
+    """Read-only Assets health check: workspace id, whether our schema/type exist,
+    and how many snapshots are stored. Safe to run before any write — use it to
+    validate connectivity and the API shapes first."""
+    assets, site = await _assets_and_site()
+    try:
+        return await assets.status(site)
+    except UpstreamError as exc:
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)[:200]) from None
+    finally:
+        await assets.aclose()
+
+
+@app.get("/api/license/snapshot/preview")
+async def license_snapshot_preview() -> dict[str, object]:
+    """What today's snapshot WOULD write, without writing anything (read-only)."""
+    from tasks import license_snapshot
+    assets, site = await _assets_and_site()
+    try:
+        return await license_snapshot.preview(site, assets, _today_local(), _now_iso())
+    except UpstreamError as exc:
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)[:200]) from None
+    finally:
+        await assets.aclose()
+
+
+@app.post("/api/license/snapshot")
+async def license_snapshot_take() -> dict[str, object]:
+    """WRITE: create the schema/type/attributes if missing and store today's
+    per-product seat counts. Idempotent per (date, product). The UI shows the
+    preview and asks for confirmation before calling this."""
+    from tasks import license_snapshot
+    assets, site = await _assets_and_site()
+    try:
+        return await license_snapshot.take_snapshot(site, assets, _today_local(), _now_iso())
+    except UpstreamError as exc:
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)[:200]) from None
+    finally:
+        await assets.aclose()
+
+
+@app.get("/api/license/snapshots")
+async def license_snapshots() -> dict[str, object]:
+    """All stored seat snapshots (for the trend chart)."""
+    assets, _site = await _assets_and_site()
+    try:
+        rows = await assets.read_snapshots()
+    except UpstreamError as exc:
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)[:200]) from None
+    finally:
+        await assets.aclose()
+    return {"snapshots": rows}
 
 
 @app.get("/api/debug/jsm-role")
