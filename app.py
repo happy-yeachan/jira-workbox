@@ -857,7 +857,30 @@ async def add_group_members(group_id: str, body: GroupMembersAdd, request: Reque
         if exc.status_code in (401, 403):
             raise HTTPException(status_code=403, detail="멤버를 추가할 권한이 없습니다.") from None
         raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    # journal for 작업 기록 (undoable): the inverse removes exactly who was added
+    added_ids = [str(r.get("account_id")) for r in results
+                 if r.get("status") == "added" and r.get("account_id")]
+    if added_ids:
+        from tasks import group_membership_bulk
+        try:
+            gname = await group_inventory.group_name(client, group_id) or group_id
+        except UpstreamError:
+            gname = group_id
+        group_membership_bulk.journal_manual(group_id, gname, added=added_ids)
     return {"results": results}
+
+
+@app.get("/api/groups/license-access")
+async def group_license_access() -> dict[str, object]:
+    """The primary access group per Jira application (same groups the license
+    dashboard uses), for the group view's quick-select. Read-only; best-effort."""
+    from tasks import license_status
+    client = _require_client()
+    try:
+        groups = await license_status.license_access_groups(client)
+    except (tasks.TaskInputError, UpstreamError):
+        groups = []
+    return {"groups": groups}
 
 
 @app.post("/api/groups/members/resolve")
@@ -890,6 +913,13 @@ async def remove_group_member(group_id: str, account_id: str, request: Request) 
         if exc.status_code in (401, 403):
             raise HTTPException(status_code=403, detail="멤버를 제거할 권한이 없습니다.") from None
         raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    if ok:  # journal for 작업 기록 (undoable): the inverse re-adds the removed member
+        from tasks import group_membership_bulk
+        try:
+            gname = await group_inventory.group_name(client, group_id) or group_id
+        except UpstreamError:
+            gname = group_id
+        group_membership_bulk.journal_manual(group_id, gname, removed=[account_id])
     return {"ok": ok}
 
 

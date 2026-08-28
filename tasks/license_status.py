@@ -132,6 +132,53 @@ async def fetch_applications(client: WorkboxClient) -> list[dict[str, Any]]:
     return out
 
 
+#: short chip labels for the quick-select (group management view)
+_APP_SHORT = {"jira-software": "Jira", "jira-servicedesk": "JSM",
+              "jira-product-discovery": "JPD", "jira-core": "Jira Work Mgmt"}
+
+
+async def license_access_groups(client: WorkboxClient) -> list[dict[str, Any]]:
+    """The primary access group per Jira application — the SAME groups the license
+    dashboard resolves (from ``applicationrole.groupDetails``) — so the group view
+    can offer a real one-click target instead of guessing names. Returns
+    ``[{product, label, group_id, group_name}]`` ordered like the cards. The
+    'primary' is the standard ``…-users`` access group (else the first listed).
+    Confluence has no applicationrole, so it is resolved separately by name and
+    appended."""
+    try:
+        roles = await client.get_json(_P_ROLES)
+    except UpstreamError:
+        return []
+    if isinstance(roles, dict):
+        roles = roles.get("value") or []
+    roles = roles if isinstance(roles, list) else []
+    out: list[dict[str, Any]] = []
+    for r in roles:
+        key = _sid(r.get("key"))
+        details = [g for g in (r.get("groupDetails") or []) if g.get("groupId")]
+        if not details:
+            continue
+        primary = next((g for g in details if "-users" in _sid(g.get("name")).lower()), details[0])
+        out.append({"product": key, "label": _APP_SHORT.get(key) or _APP_NAME.get(key) or _sid(r.get("name")) or key,
+                    "group_id": _sid(primary.get("groupId")), "group_name": _sid(primary.get("name"))})
+    order = {k: i for i, k in enumerate(_PRODUCT_ORDER)}
+    out.sort(key=lambda g: order.get(g["product"], len(order)))
+    # Confluence has no applicationrole — resolve its standard access group by the
+    # generic "confluence-users" name (site suffix matched automatically; nothing
+    # tenant-specific hardcoded), and append it after the Jira apps.
+    try:
+        picked = await client.get_json(_P_GROUPS_PICKER, params={"query": "confluence-users", "maxResults": 20})
+        cands = [g for g in (picked.get("groups") or [])
+                 if _sid(g.get("name")).lower().startswith("confluence-users") and g.get("groupId")]
+        cands.sort(key=lambda g: len(_sid(g.get("name"))))  # shortest = the base access group
+        if cands:
+            out.append({"product": "confluence", "label": "Confluence",
+                        "group_id": _sid(cands[0].get("groupId")), "group_name": _sid(cands[0].get("name"))})
+    except UpstreamError:
+        pass
+    return out
+
+
 async def license_group_map(client: WorkboxClient) -> dict[str, str]:
     """``{group-name (lowercased) → product label}`` for every Jira application,
     built from ``applicationrole`` group details — the same authoritative source

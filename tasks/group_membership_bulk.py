@@ -404,6 +404,35 @@ def _invert(succeeded: list[Change]) -> list[Change]:
     return out
 
 
+def journal_manual(group_id: str, group_name: str, *,
+                   added: list[str] | None = None, removed: list[str] | None = None) -> str | None:
+    """Record a 작업 기록 entry for member changes the 그룹 관리 view made directly
+    (outside a bulk plan), so they are listed and undoable through THIS task's
+    execute path. ``added``/``removed`` are accountId lists; the stored inverse
+    flips them (added → remove, removed → add). No emails/names on disk — the
+    inverse runs off account_id/group_id/op only (same PII policy as the task)."""
+    added = added or []
+    removed = removed or []
+    inverse: list[Change] = []
+    for aid in added:
+        inverse.append(_row(aid, "", group_id, group_name, "remove", member_before=True))
+    for aid in removed:
+        inverse.append(_row(aid, "", group_id, group_name, "add", member_before=False))
+    if not inverse:
+        return None
+    parts = []
+    if added:
+        parts.append(f"부여 {len(added)}건")
+    if removed:
+        parts.append(f"회수 {len(removed)}건")
+    n = len(added) + len(removed)
+    return rollback.record(
+        task=TASK_NAME,
+        title=f"그룹 멤버십 · {' · '.join(parts)} ({group_name})",
+        inverse=inverse, attempted=n, succeeded=n, failed=0,
+    )
+
+
 async def execute_stream(
     plan_result: PlanResult, opts: ExecOptions
 ) -> AsyncIterator[ProgressEvent]:

@@ -1625,6 +1625,13 @@
               <input type="text" class="lic-log-search" placeholder="그룹 이름으로 검색" x-model="groupmgr.q" @input.debounce.300ms="searchGroupList()">
               <button class="btn small" x-show="!groupmgr.creating" @click="newGroup()">＋ 그룹 추가</button>
             </div>
+            <!-- quick-select the real license access groups (same as the dashboard) -->
+            <div class="lic-chips" x-show="!groupmgr.creating && groupmgr.quickGroups.length" style="margin:0 2px 10px">
+              <span class="sub chip-label">빠른 선택</span>
+              <template x-for="g in groupmgr.quickGroups" :key="g.group_id">
+                <button class="chip" @click="quickGroup(g)" :title="g.group_name + ' 열기'" x-text="g.label"></button>
+              </template>
+            </div>
             <div class="progbar" x-show="groupmgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
             <div class="notice err" x-show="groupmgr.err" x-text="groupmgr.err" style="margin-bottom:10px"></div>
             <template x-if="groupmgr.creating">
@@ -2530,7 +2537,7 @@ document.addEventListener('alpine:init', () => {
                 detail: null, detailLoading: false, detailErr: '', memberQ: '', memberPage: 1,
                 creating: null, delConfirm: false, delBusy: false,
                 addText: '', addBusy: false, addResults: null, _mctrl: null,
-                addPreview: null, previewBusy: false },
+                addPreview: null, previewBusy: false, quickGroups: [] },
     spacemgr: { loading: false, err: '', list: [], q: '', _ctrl: null },
     ctxEdit: null,
     ctxNew: null,
@@ -2817,10 +2824,24 @@ document.addEventListener('alpine:init', () => {
       this.groupmgr.detail = null; this.groupmgr.q = ''; this.groupmgr.page = 1; this.groupmgr.creating = null;
       this.groupmgr.list = []; this.groupmgr.err = '';  // search-first: no auto-load
       this.ensureOrgAdmins();  // for the 조직 관리자 tag on members
+      this.loadQuickGroups();  // real license access groups for quick-select
+    },
+    async loadQuickGroups() {
+      if (this.groupmgr.quickGroups.length) return;  // load once
+      try {
+        const res = await fetch('/api/groups/license-access');
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) this.groupmgr.quickGroups = data.groups || [];
+      } catch (e) { /* best-effort; chips just won't show */ }
     },
     // search-first: type → server looks up matching groups (no full-directory load)
     // NOTE: named searchGroupList (not searchGroups) — the group-picker widget
     // already owns a searchGroups(); a duplicate key would silently shadow one.
+    // quick-select a real license access group (from applicationrole) — open its
+    // members directly by id, no search/guessing
+    quickGroup(g) {
+      if (g && g.group_id) this.openGroupDetail({ groupId: g.group_id, name: g.group_name });
+    },
     async searchGroupList() {
       const q = (this.groupmgr.q || '').trim();
       if (this.groupmgr._ctrl) this.groupmgr._ctrl.abort();
@@ -2989,6 +3010,7 @@ document.addEventListener('alpine:init', () => {
         this.groupmgr.addResults = data.results || [];
         this.groupmgr.addPreview = null; this.groupmgr.addText = '';
         await this.loadGroupMembers();  // refresh with the new members
+        this.loadHistory();  // the add is now in 작업 기록 (undoable)
       } catch (e) { this.groupmgr.detailErr = '멤버 추가 실패: ' + e; }
       finally { this.groupmgr.addBusy = false; }
     },
@@ -3004,6 +3026,7 @@ document.addEventListener('alpine:init', () => {
         if (!res.ok) { const d = await res.json().catch(() => ({})); this.groupmgr.detailErr = this.errText(d) || '멤버 제거 실패'; m._removing = false; return; }
         const i = this.groupmgr.detail.members.findIndex(x => x.account_id === m.account_id);
         if (i >= 0) this.groupmgr.detail.members.splice(i, 1);  // drop locally, no reload
+        this.loadHistory();  // the removal is now in 작업 기록 (undoable)
       } catch (e) { this.groupmgr.detailErr = '멤버 제거 실패: ' + e; m._removing = false; }
     },
     async deleteGroup() {

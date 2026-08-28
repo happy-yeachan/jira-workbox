@@ -645,6 +645,10 @@ def _license_stream_site():
         if p == "/rest/api/3/instance/license":
             return httpx.Response(200, json={"applications": []})
         if p == "/rest/api/3/groups/picker":
+            if "confluence" in (q.get("query") or ""):  # Confluence access group by name
+                return httpx.Response(200, json={"groups": [
+                    {"name": "confluence-users-site", "groupId": "g-conf"},
+                    {"name": "confluence-user-access-admins-site", "groupId": "g-cadm"}]})
             return httpx.Response(200, json={"groups": []})
         if p == "/rest/api/3/group/member":
             rows = big if q.get("groupId") == "g-sw" else big[:80]
@@ -692,6 +696,12 @@ async def suite_license_stream() -> None:
     check("group map built from applicationrole groupDetails",
           gm == {"jira-software-users": "Jira Software",
                  "jsm-agents": "Jira Service Management"}, gm)
+    access = await lic.license_access_groups(client)
+    check("license access groups: Jira apps + Confluence-by-name, ordered, real ids",
+          [(a["product"], a["label"], a["group_id"], a["group_name"]) for a in access] ==
+          [("jira-software", "Jira", "g-sw", "jira-software-users"),
+           ("jira-servicedesk", "JSM", "g-jsm", "jsm-agents"),
+           ("confluence", "Confluence", "g-conf", "confluence-users-site")], access)
     check("map catches a group with no matching name prefix (jsm-agents → JSM)",
           org_client._product_for_group("jsm-agents", gm) == "Jira Service Management")
     check("map excludes a group not granted a license role (even if name looks like one)",
@@ -1307,6 +1317,17 @@ async def suite_group_inventory() -> None:
           [(r["email"], r["status"]) for r in resolved] == [("new@x", "ok"), ("missing@x", "missing")]
           and resolved[0].get("account_id") == "u9" and calls["add"] == [("g1", "u9")], resolved)
     check("remove: DELETEs the member", await gi.remove_member(client, "g1", "u1") and calls["remove"] == [("g1", "u1")], calls["remove"])
+
+    # 그룹 관리 view's direct add/remove is journaled so it shows in 작업 기록 and undoes
+    from core import rollback as rb
+    from tasks import group_membership_bulk as gmb
+    rid = gmb.journal_manual("g1", "팀A", added=["u9"])
+    entry = rb.get(rid)
+    inv = rb.inverse_changes(entry)
+    check("manual member add is journaled: bulk task, add→remove inverse, accountId-only",
+          bool(rid) and entry["task"] == "group_membership_bulk" and "팀A" in entry["title"]
+          and len(inv) == 1 and inv[0].after.get("op") == "remove"
+          and inv[0].after.get("account_id") == "u9" and inv[0].label == "", entry)
     await client.aclose()
 
 
