@@ -1706,7 +1706,7 @@
                 <textarea rows="3" placeholder="이메일 — 한 줄에 하나" x-model="groupmgr.addText"
                           @input="groupmgr.addPreview = null"></textarea>
                 <button class="btn small" @click="previewAddMembers()"
-                        :disabled="groupmgr.previewBusy || groupmgr.detailLoading || !groupmgr.addText.trim()"
+                        :disabled="groupmgr.previewBusy || !groupmgr.addText.trim()"
                         x-text="groupmgr.previewBusy ? '확인 중…' : '미리보기'"></button>
               </div>
 
@@ -1718,6 +1718,9 @@
                       <b class="t-add" x-text="'추가 예정 ' + _previewCount('add')"></b> ·
                       <span class="sub" x-text="'이미 멤버 ' + _previewCount('member')"></span> ·
                       <span class="t-rem" x-text="'계정 없음 ' + _previewCount('invalid')"></span>
+                      <span class="sub" x-show="groupmgr.detailLoading" style="color:var(--muted)"
+                            title="멤버 목록을 아직 불러오는 중이라, '이미 멤버'가 이미 가입된 사람을 놓칠 수 있습니다. 이미 멤버를 다시 추가해도 무해합니다.">
+                        · 멤버 불러오는 중(‘이미 멤버’ 부분 반영)</span>
                     </span>
                     <span style="flex:1"></span>
                     <button class="btn small" @click="confirmAddMembers()"
