@@ -345,7 +345,11 @@ _P_WFS_ONE = "/workflowscheme"
 _P_WFS_PROJECT = "/workflowscheme/project"
 _P_WF_READ = "/workflows"          # POST: bulk read by name/id
 _P_WF_CREATE = "/workflows/create" # POST: create
-_P_WF_DELETE = "/workflows/delete" # POST: delete by id
+#: DELETE /workflow/{entityId}: delete an INACTIVE workflow (classic API). The
+#: new /workflows API has create/update but no delete, so cleanup uses this. A
+#: just-created clone that was never attached (re-point failed) is inactive →
+#: deletable; if Jira still holds it active, the delete is skipped and noted.
+_P_WF_DELETE = "/workflow"
 _P_WFS_DRAFT = "/workflowscheme/{id}/draft"
 _P_WFS_PUBLISH = "/workflowscheme/{id}/draft/publish"
 
@@ -459,6 +463,41 @@ def _leftover_note(items: list[str]) -> str | None:
         return None
     return ("원복은 완료됐습니다. 다만 사용하지 않는 복제본을 삭제하지 못했습니다: "
             + ", ".join(items) + ". 미할당 상태라 안전하며 Jira에서 나중에 삭제할 수 있습니다.")
+
+
+async def _try_delete_workflow(client: WorkboxClient, wf_id: str) -> str | None:
+    """Best-effort delete of a just-created workflow clone. Returns a leftover
+    label if it couldn't be deleted (so the caller can note it) instead of raising
+    — a failed CLEANUP delete must never mask the real failure that triggered it."""
+    if not wf_id:
+        return None
+    try:
+        resp = await client.request("DELETE", f"{_P_WF_DELETE}/{wf_id}")
+        if 200 <= resp.status_code < 300 or resp.status_code == 404:
+            return None  # gone (or already absent) — nothing left over
+    except UpstreamError:
+        pass
+    return _leftover_label(_P_WF_READ, wf_id)
+
+
+async def _try_delete_scheme(client: WorkboxClient, ws_id: str) -> str | None:
+    """Best-effort delete of a just-created scheme clone; leftover label on failure."""
+    if not ws_id:
+        return None
+    try:
+        resp = await client.request("DELETE", _P_WFS_ONE + f"/{ws_id}")
+        if 200 <= resp.status_code < 300:
+            return None
+    except UpstreamError:
+        pass
+    return _leftover_label(_P_WFS_ONE, ws_id)
+
+
+def _fail_suffix(leftovers: list[str]) -> str:
+    """Append to a forward-isolation failure message when cleanup left clones."""
+    items = [x for x in leftovers if x]
+    return (" · 정리 못 한 복제본: " + ", ".join(items)
+            + " (미할당·미사용이라 안전, 콘솔에서 수동 삭제 가능)") if items else ""
 
 
 def _plan_detail(plan_result: PlanResult) -> list[str]:
@@ -1311,18 +1350,23 @@ async def _apply_workflow_isolate(
             wsid = _sid(a["ws_id"])
             resp = await client.request("PUT", _P_WFS_ONE + f"/{wsid}", json=a["ws_update_body"])
             if not (200 <= resp.status_code < 300):
-                await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
+                # the REAL failure is the re-point; clean up the clone best-effort
+                # (a failed delete becomes a leftover note, never masks this error)
+                left = await _try_delete_workflow(client, wf_id)
                 return ItemResult(target_id=change.target_id, ok=False, status_code=resp.status_code,
-                                  error=f"워크플로우 스킴 제자리 수정 실패({resp.status_code}). "
-                                        f"{WorkboxClient.short_error(resp)}"[:200]), {}
+                                  error=(f"워크플로우 스킴 제자리 수정 실패({resp.status_code}). "
+                                         f"{WorkboxClient.short_error(resp)}" + _fail_suffix([left]))[:250]), {}
             ok, err = await _publish_draft_if_any(client, wsid)
             if not ok:
-                # roll the scheme edit back and drop the clone
-                await client.request("PUT", _P_WFS_ONE + f"/{wsid}", json=a["ws_restore_body"])
-                await _publish_draft_if_any(client, wsid)
-                await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
+                # roll the scheme edit back and drop the clone (both best-effort)
+                try:
+                    await client.request("PUT", _P_WFS_ONE + f"/{wsid}", json=a["ws_restore_body"])
+                    await _publish_draft_if_any(client, wsid)
+                except Exception:  # noqa: BLE001
+                    pass
+                left = await _try_delete_workflow(client, wf_id)
                 return ItemResult(target_id=change.target_id, ok=False,
-                                  error=f"드래프트 게시 실패 — 스킴을 원복하고 복제본을 삭제했습니다. {err}"[:200]), {}
+                                  error=(f"드래프트 게시 실패 — 스킴을 원복했습니다. {err}" + _fail_suffix([left]))[:250]), {}
             undo = {"op": "restore_workflow", "ws_mode": "inplace", "scheme_type": "workflow",
                     "label": a["label"], "project_id": a["project_id"], "project_key": a["project_key"],
                     "ws_id": wsid, "ws_update_body": a["ws_update_body"],
@@ -1335,11 +1379,11 @@ async def _apply_workflow_isolate(
         ok, code, err = await _repoint(
             client, _P_WFS_PROJECT, {"workflowSchemeId": ws_id, "projectId": a["project_id"]})
         if not ok:
-            if ws_id:
-                await client.request("DELETE", _P_WFS_ONE + f"/{ws_id}")
-            await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
+            # re-point is the REAL failure; clean up both clones best-effort so a
+            # failed cleanup delete can't mask it (leftovers noted instead)
+            lefts = [await _try_delete_scheme(client, ws_id), await _try_delete_workflow(client, wf_id)]
             return ItemResult(target_id=change.target_id, ok=False, status_code=code,
-                              error=f"재지정 실패({code}) — 복제본을 삭제하고 복구했습니다. {err}"[:200]), {}
+                              error=(f"재지정 실패({code}). {err}" + _fail_suffix(lefts))[:250]), {}
         undo = {"op": "restore_workflow", "ws_mode": "clone", "scheme_type": "workflow",
                 "label": a["label"], "project_id": a["project_id"], "project_key": a["project_key"],
                 "restore_ws_id": a["restore_ws_id"], "new_ws_id": ws_id, "new_wf_id": wf_id,
@@ -1357,8 +1401,7 @@ async def _apply_workflow_isolate(
             try: await client.request("DELETE", _P_WFS_ONE + f"/{ws_id}")
             except Exception: pass  # noqa: BLE001
         if wf_id:
-            try: await client.json("POST", _P_WF_DELETE, json={"workflowIds": [wf_id]})
-            except Exception: pass  # noqa: BLE001
+            await _try_delete_workflow(client, wf_id)  # best-effort, never raises
         return ItemResult(target_id=change.target_id, ok=False,
                           error=f"{type(exc).__name__}: {exc}"[:200]), {}
 
@@ -1380,10 +1423,9 @@ async def _apply_workflow_restore(
             return ItemResult(target_id=change.target_id, ok=False,
                               error=f"드래프트 게시 실패 — 매핑 원복이 반영되지 않았습니다. {err}"[:200]), {}
         leftovers: list[str] = []
-        try:
-            await client.json("POST", _P_WF_DELETE, json={"workflowIds": [a["new_wf_id"]]})
-        except UpstreamError:
-            leftovers.append(_leftover_label(_P_WF_READ, a["new_wf_id"]))
+        left = await _try_delete_workflow(client, a["new_wf_id"])
+        if left:
+            leftovers.append(left)
         undo = {"op": "isolate_workflow", "ws_mode": "inplace", "scheme_type": "workflow",
                 "label": a["label"], "project_id": a["project_id"], "project_key": a["project_key"],
                 "ws_id": wsid, "ws_update_body": a["ws_update_body"],
@@ -1404,10 +1446,9 @@ async def _apply_workflow_restore(
     r1 = await client.request("DELETE", _P_WFS_ONE + f"/{a['new_ws_id']}")
     if not (r1.status_code < 400 or r1.status_code == 404):
         leftovers.append(_leftover_label(_P_WFS_ONE, a["new_ws_id"]))
-    try:
-        await client.json("POST", _P_WF_DELETE, json={"workflowIds": [a["new_wf_id"]]})
-    except UpstreamError:
-        leftovers.append(_leftover_label(_P_WF_READ, a["new_wf_id"]))
+    left = await _try_delete_workflow(client, a["new_wf_id"])
+    if left:
+        leftovers.append(left)
     undo = {"op": "isolate_workflow", "ws_mode": "clone", "scheme_type": "workflow", "label": a["label"],
             "project_id": a["project_id"], "project_key": a["project_key"],
             "wf_payload": a["wf_payload"], "wf_new_name": a["wf_new_name"],

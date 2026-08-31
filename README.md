@@ -8,8 +8,12 @@ uv sync
 ```
 
 브라우저가 열리면 사이트 URL·이메일·API 토큰을 넣어 연결합니다. 홈은 **라이선스 현황**
-대시보드(애플리케이션별 시트 사용량 + 라이선스 변경 로그)이고, 왼쪽 사이드바에서 작업을
-고릅니다. 작업은 두 종류입니다.
+대시보드입니다 — 제품별 시트 사용량(도넛) + **시트 추이**(Assets 스냅샷 기반 실측 그래프)
++ **라이선스 변경 로그**가 한 섹션에 모여 있습니다. 왼쪽 사이드바에서 다른 화면을 고릅니다:
+**그룹 관리**(검색·멤버·추가/제거·CSV), **스페이스 관리**(설정 공유 진단·생성), **필드 관리**.
+상단에는 **Atlassian 제품 상태** 배너와 **작업 기록**(되돌리기) 서랍이 있습니다.
+
+작업은 두 종류입니다.
 
 | 종류 | 흐름 | 예 |
 |---|---|---|
@@ -101,21 +105,31 @@ Stack: FastAPI + httpx (async) + uvicorn, one static `index.html` with
 Alpine.js from a CDN. No build step, no Node.js, one process.
 
 ```
-app.py                       FastAPI entry: lifespan, routes, static serving
+app.py                        FastAPI entry: lifespan, routes, static serving
 core/config.py                settings (config.toml / WORKBOX_* env vars)
 core/auth.py                  keyring-backed credentials + `python -m core.auth` CLI
 core/http.py                  BaseApiClient: retries, pagination, scan integrity
 core/client.py                WorkboxClient: site REST roots + Basic auth
 core/org_client.py            OrgClient: admin API (Bearer) — org events for the license log
+core/assets_client.py         AssetsClient: JSM Assets (api.atlassian.com) — seat snapshots
+core/atlassian_status.py      Statuspage poller for the product-status banner
 core/concurrency.py           map_bounded / chunked
 core/models.py                Change / PlanResult / ResultTable / ProgressEvent
 core/planstore.py             expiring plan tokens (single-use for writes)
 core/audit.py                 JSONL execution log
+core/rollback.py              durable inverse journal (작업 기록 / 되돌리기)
 tasks/__init__.py             task registry + plan adapters
-tasks/issue_bulk_label.py     reference write task
-tasks/screen_share_analysis.py  reference read-only analysis
-tasks/license_status.py       license dashboard + change-log helpers (launcher=false)
-static/index.html             whole UI
+tasks/license_status.py       license dashboard: seats, users, change-log helpers
+tasks/license_snapshot.py     daily seat snapshot → Assets (+ --preview/--reset/--install-schedule)
+tasks/group_inventory.py      그룹 관리 view: search, members, add/remove, resolve
+tasks/group_membership_bulk.py  member add/remove task (+ journal for the group view)
+tasks/screen_share_analysis.py  reverse-reachability sharing analysis (read-only)
+tasks/project_config_audit.py   설정 공유 진단 tree (read-only)
+tasks/config_isolate.py       설정 분리 (button-driven writes + rollback)
+tasks/space_create.py         스페이스(프로젝트) 생성
+tasks/field_inventory.py      필드 관리 view
+tasks/issue_bulk_label.py     reference write task (unregistered template)
+static/index.html             whole UI (Alpine.js, no build)
 selftest.py                   offline checks (no network, no credentials)
 run.command / run.bat         launchers (macOS / Windows)
 ```
@@ -221,15 +235,24 @@ Guardrails, on purpose:
 | GET  | `/api/health` | `configured`, `org_configured`, site URL, masked email + `login_email` (for prefill), TLS/concurrency settings. No secrets, no setup code. |
 | POST | `/api/setup/credentials` | write-only; needs `X-Workbox-Setup: 1` and a same-origin request. `keep_token: true` re-saves site/email but leaves the stored token. Rebuilds the client in place, so rotating a token needs no restart. |
 | POST · DELETE | `/api/setup/org` | store / remove the org admin API key (write-only, verified against `GET /orgs`). |
-| GET  | `/api/license/summary` | per-application seat + plan cards |
+| GET  | `/api/license/summary` | per-application seat + plan cards (Jira / JSM / JPD) |
 | GET  | `/api/license/users/stream?app=` | one application's licensed users, NDJSON stream |
-| GET  | `/api/license/events?days=` | license change log from org audit events (needs the org key; 403 otherwise) |
+| GET  | `/api/license/org-admins` | account ids in `org-admins` (for the 조직 관리자 tag) |
+| GET  | `/api/license/events/stream?days=` | license change log, NDJSON, per-product coverage (needs the org key) |
+| GET  | `/api/license/assets/status` | Assets connectivity + whether the snapshot schema exists (read-only) |
+| GET  | `/api/license/snapshot/preview` | what a snapshot would write today (read-only) |
+| POST | `/api/license/snapshot` | write today's per-product seat snapshot to Assets (idempotent upsert) |
+| GET  | `/api/license/snapshots` | all stored seat snapshots (for the trend chart) |
+| GET  | `/api/atlassian-status` | Atlassian product-status roll-up for the banner |
+| GET  | `/api/groups/manage/search?q=` | 그룹 관리 search |
+| GET  | `/api/groups/license-access` | primary access group per product (quick-select) |
+| GET  | `/api/groups/manage/{id}/members/stream` | a group's members, NDJSON (with `account_type`) |
+| POST | `/api/groups/members/resolve` | dry-run: resolve emails, add nothing (add preview) |
+| POST · DELETE | `/api/groups/manage/{id}/members[/{acct}]` | add / remove members (journalled → 작업 기록) |
+| POST · DELETE | `/api/groups/manage[/{id}]` | create / delete a group |
 | GET  | `/api/tasks` | specs + JSON schema for the form + `streams_plan` |
-| POST | `/api/tasks/{name}/plan` | read-only, returns `PlanResult` |
-| POST | `/api/tasks/{name}/plan/stream` | read-only, SSE, terminal `plan` event |
-| POST | `/api/tasks/{name}/execute` | `{plan_id}` → SSE (concurrency/batch come from config) |
-| GET  | `/api/history` | write-run journal, newest first, each with `can_rollback` |
-| POST | `/api/history/{id}/rollback` | undo that run (registers a plan from its inverse) → SSE |
+| POST | `/api/tasks/{name}/plan` · `/plan/stream` · `/execute` | read-only plan / streamed plan / `{plan_id}`→SSE execute |
+| GET  | `/api/history` · POST `/api/history/{id}/rollback` | write-run journal + undo (registers a plan from its inverse) |
 | GET  | `/api/groups?q=` · `/api/users?q=` | group / user typeahead for pickers |
 
 SSE event types: `start`, `phase`, `warning`, `plan` (plan streams) and `start`,
@@ -327,50 +350,86 @@ trimmed error hint. No request or response bodies, no credentials. It does
 record your task parameters (e.g. the JQL), so treat the file with the same care
 as the data it selects.
 
-## Home: license dashboard + change log — 라이선스 현황·변경 로그
+## Home: license dashboard — seats, trend, change log (라이선스 현황)
 
-The landing page (left sidebar **라이선스 현황**). It auto-loads on connect — no
-"run" click. Two parts, different data sources; `tasks/license_status.py` is
-`launcher=false` (the old menu card was dropped once this became home).
+The landing page (left sidebar **라이선스 현황**), auto-loaded on connect. One
+merged section: seat donuts on top, then the trend + change log driven by a
+single product selector. `tasks/license_status.py` supplies the reads.
 
 **Seat usage.** One donut per Jira application from `GET /applicationrole` (total
-/ used / remaining seats, unlimited) joined with `GET /instance/license` (plan).
-Site token. JSM seats are labelled 에이전트, not 시트. Confluence is intentionally
-not shown — the site token has no reliable Confluence seat API.
+/ used / remaining seats, unlimited) joined with `GET /instance/license` (plan) —
+Jira Software, **JSM (에이전트)**, **Jira Product Discovery**. Site token.
+Confluence is out of scope: it has no `applicationrole`, so the site token has no
+reliable Confluence seat count. Clicking a card opens that application's
+**licensed users** (union of its access-group members, active-only, deduped,
+paginated, searchable); app/system and deactivated accounts are skipped, and the
+count reconciles to `userCount`.
 
-Clicking a card opens that application's **licensed users**: the union of its
-access-group members (`GET /group/member` over the role's `groupDetails`,
-active-only, deduped). Every product is streamed into a cache in the background
-at load, so opening a card is instant; the list is paginated (100/page) and
-searchable. The count reconciles to the app's `userCount`; when it can't (agents
-vs users, cross-app seats) the panel says so.
+**Seat trend (Assets snapshots).** A real usage-over-time graph, not guessed from
+the log. Every day the used-seat count per product is snapshotted to an Atlassian
+**Assets** object schema (`License Snapshots`), and the chart plots those actual
+values with the day-over-day delta. Why Assets: it is a shared store, so every
+admin who runs this local tool reads the *same* history (a local file could not
+be). Details:
+
+- `core/assets_client.py` reuses the **site** Basic auth against
+  `api.atlassian.com/jsm/assets` (no new secret), discovers the workspace, and
+  ensures the schema/type/attributes on first write. Requires JSM Premium+
+  (Assets). Each object is `{date, capturedAt, product, used, total, unlimited}`
+  — numbers and dates only, **no PII**.
+- Snapshotting is a **write**, so the UI's **스냅샷 저장** button previews first;
+  it is an **upsert** (re-saving refreshes today's value to the current count).
+- Run it automatically with the CLI (macOS launchd, daily + immediately):
+  `uv run python -m tasks.license_snapshot --install-schedule [--time HH:MM]`.
+  Also `--preview` (write nothing), `--reset` (wipe + fresh), `--uninstall-schedule`.
+- Restrict the schema to `org-admins` once in the Assets UI (Configuration →
+  Roles) if you want it admin-only.
 
 **License change log — 라이선스 변경 로그.** Who was granted / revoked product
-access, when, by whom — stacked under the seat cards. This needs the
-**organisation admin API** (a second secret; the site token cannot see it):
+access, when, by whom. Needs the **organisation admin API** (a second secret; the
+site token cannot see it):
 
 - Connect an org admin API key in **접속 정보 → 조직 API 키** (from
-  admin.atlassian.net → Settings → API keys). It is stored in the keyring like
-  the site token, verified against `GET /admin/v1/orgs` before saving, and never
-  returned. Without it the log shows a "connect" prompt.
-- This tenant grants product access by **group membership**, so the log reads
-  the org audit events `user_added_to_group` / `user_removed_from_group`,
-  filtered server-side by `q="users"` (all product groups are named
-  `<product>-users*`) — a blind scan would never reach these rare events in a
-  high-volume org. `product_access_granted`/`_revoked` are also queried, for
-  tenants that emit them directly. `core/org_client.classify_license_event` maps
-  the group to a product (`confluence-users*`→Confluence,
-  `jira-servicemanagement-users*`→JSM (agent), `jira-users*` / `jira-software-*`
-  / `jira-product-discovery-*`→Jira) and drops non-product-access groups.
-- Events carry only the target's email; real display names are enriched by
-  accountId via `GET /user/bulk` (site token, best-effort). Rows show name +
-  email, an 추가/삭제 badge, the product, and the actor. Filter by product chips
-  (Jira / JSM (agent) / Confluence), 추가/삭제, and search; paginated.
-- The org events API rate-limits hard, so the scan is bounded to a few pages and
-  a 429 surfaces as "잠시 후 다시" rather than a raw error.
-  `GET /api/debug/org-events` dumps distinct actions + raw samples for tuning.
+  admin.atlassian.net → Settings → API keys). Stored in the keyring like the site
+  token, verified against `GET /admin/v1/orgs`, never returned. Without it the log
+  shows a "connect" prompt; the trend/seat parts still work on the site token.
+- Product access here is granted by **group membership**, so the log reads the org
+  audit events `user_added_to_group` / `user_removed_from_group` (plus
+  `product_access_granted`/`_revoked`), streamed per product-group with per-day
+  coverage so a high-volume product can't starve a low-volume one.
+- **Group→product mapping is authoritative, not guessed by name.** It comes from
+  Jira's `applicationrole.groupDetails` (the same groups the seat counts use), so
+  oddly-named grantors are caught and non-licensing groups excluded; `org-admins`
+  changes fold into every product. Confluence has no `applicationrole` and is out
+  of scope. Falls back to name-prefix matching only if the map is unavailable.
+- Events carry only the target's email; display names are enriched by accountId
+  via `GET /user/bulk` (best-effort). Rows show name + email, an 추가/삭제 badge,
+  and the actor. Filter by product (Jira / JSM / JPD), 추가/삭제, and search.
+- The org events API rate-limits hard: the scan is bounded and a 429 surfaces as
+  "잠시 후 다시" rather than a raw error.
 
-The org key is used **only** for this log; seat usage stays on the site token.
+The org key is used **only** for the change log; seats and trend stay on the site
+token. An **Atlassian product-status** banner (`core/atlassian_status.py`, polling
+per-product Statuspage summaries) shows at the top when any product is degraded.
+
+## Group management — 그룹 관리
+
+Left sidebar **그룹 관리** (a custom view, not a plan/execute task). Search a group
+→ see its members → add/remove. Site token only.
+
+- **Quick-select** chips (Jira / JSM / JPD / Confluence) open the **real license
+  access group** for that product — resolved from `applicationrole` (and, for
+  Confluence, the generic `confluence-users` name), so one click jumps straight to
+  the group used for licensing.
+- **Member add** is a two-step **preview → confirm**, no popup: paste emails →
+  *미리보기* resolves each (write nothing) → a table shows **추가 예정 / 이미 멤버 /
+  계정 없음** → *추가 확정* adds only the to-add ones. Exact email match only.
+- **Marketplace app accounts** (e.g. `draw.io …`) are tagged **앱** (customers 고객)
+  and sorted to the end so they don't sit among people.
+- **CSV export** of the whole member list (client-side; 이름·이메일·상태·계정ID).
+- **작업 기록·되돌리기**: add/remove journal via `group_membership_bulk` (accountId
+  and op only on disk — no emails/names), so each shows in the history drawer and
+  is undoable (add↔remove).
 
 ## Reference template: bulk label add/remove (`tasks/issue_bulk_label.py`)
 
