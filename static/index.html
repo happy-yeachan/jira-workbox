@@ -275,8 +275,10 @@
   .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .btn.danger:hover:not(:disabled) { background: var(--danger-hover); border-color: var(--danger-hover); }
   .btn.small { height: 27px; padding: 0 10px; font-size: 12.5px; }
-  .btn.ghost { border-color: transparent; background: none; color: var(--ink-2); }
-  .btn.ghost:hover:not(:disabled) { background: var(--hover); }
+  /* ghost = low-emphasis but still clearly a button: visible border + subtle fill
+     (was borderless/transparent, which read as plain text) */
+  .btn.ghost { border-color: var(--line); background: var(--surface-2); color: var(--ink-2); }
+  .btn.ghost:hover:not(:disabled) { background: var(--hover); border-color: var(--field-border); color: var(--ink); }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
@@ -1184,7 +1186,7 @@
             <span class="sub" x-show="spacemgr.loading">· 검색 중…</span>
             <span style="flex:1"></span>
             <input type="text" class="lic-log-search" placeholder="스페이스 키·이름으로 검색" x-model="spacemgr.q" @input.debounce.300ms="searchSpaces()">
-            <button class="btn small" @click="openSpaceCreate()">＋ 스페이스 추가</button>
+            <button class="btn small primary" @click="openSpaceCreate()">＋ 스페이스 추가</button>
           </div>
           <div class="sub" style="margin:0 2px 10px">스페이스를 클릭하면 설정 공유 진단(화면·워크플로우·권한 공유 여부) 화면이 열립니다 — 검사 항목을 고른 뒤 실행하세요.</div>
           <div class="progbar" x-show="spacemgr.loading" style="margin-bottom:10px; border-radius:2px"></div>
@@ -1558,7 +1560,7 @@
               <span class="sub" x-show="groupmgr.loading">· 불러오는 중…</span>
               <span style="flex:1"></span>
               <input type="text" class="lic-log-search" placeholder="그룹 이름으로 검색" x-model="groupmgr.q" @input.debounce.300ms="searchGroupList()">
-              <button class="btn small" x-show="!groupmgr.creating" @click="newGroup()">＋ 그룹 추가</button>
+              <button class="btn small primary" x-show="!groupmgr.creating" @click="newGroup()">＋ 그룹 추가</button>
             </div>
             <!-- quick-select the real license access groups (same as the dashboard) -->
             <div class="lic-chips" x-show="!groupmgr.creating && groupmgr.quickGroups.length" style="margin:0 2px 10px">

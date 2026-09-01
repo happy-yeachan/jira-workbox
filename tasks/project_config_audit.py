@@ -375,10 +375,13 @@ def _screen_tree_children(
         # (give just that issue type a different screen — de-shares safely).
         for it in sorted(its, key=lambda i: (i != "default", it_names.get(i, i))):
             it_label = "모든 작업 유형(기본)" if it == "default" else it_names.get(it, it)
-            # already separated: an explicit type that alone owns a dedicated
-            # scheme has nothing to split off → no 화면 분리 button.
-            already_own = it != "default" and v == "target_only" and its == [it]
-            assign = None if already_own else {
+            # a non-default type that is the ONLY one mapping to this screen scheme
+            # has nothing to split off: isolating just it == isolating the whole
+            # scheme, so "전용으로 분리" on the scheme already covers it. Drop the
+            # redundant per-type "특정 이슈타입만 분리" button (whether the scheme is
+            # shared or already private).
+            sole_type = it != "default" and its == [it]
+            assign = None if sole_type else {
                 "project": target_key, "scheme_type": "issuetypescreen",
                 "node_kind": "issue_type_screen", "itss_id": itss_id,
                 "screen_scheme_id": ss_id, "issue_type_id": it,
