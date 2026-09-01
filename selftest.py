@@ -1328,6 +1328,9 @@ async def suite_group_inventory() -> None:
           bool(rid) and entry["task"] == "group_membership_bulk" and "팀A" in entry["title"]
           and len(inv) == 1 and inv[0].after.get("op") == "remove"
           and inv[0].after.get("account_id") == "u9" and inv[0].label == "", entry)
+    top = next((h for h in rb.history() if h["id"] == rid), None)
+    check("history detail summarises the group add (not '이전 형식')",
+          top and any("팀A" in d and "1명 추가" in d for d in (top.get("detail") or [])), top)
     await client.aclose()
 
 
@@ -1681,152 +1684,6 @@ async def suite_atlassian_status() -> None:
     check("atl: disabled → ok, no banner", off["enabled"] is False and off["ok"] is True, off)
 
 
-def _assets_site_handler(request: httpx.Request) -> httpx.Response:
-    """Site mock: hands out the Assets workspace id and the applicationrole seats."""
-    p = request.url.path
-    if p == "/rest/servicedeskapi/assets/workspace":
-        return httpx.Response(200, json={"values": [{"workspaceId": "ws-1"}]})
-    if p == "/rest/api/3/applicationrole":
-        return httpx.Response(200, json=[
-            {"key": "jira-software", "name": "Jira Software", "numberOfSeats": 15000,
-             "userCount": 13419, "hasUnlimitedSeats": False, "groupDetails": []},
-            {"key": "jira-servicedesk", "name": "Jira Service Desk", "numberOfSeats": 200,
-             "userCount": 141, "hasUnlimitedSeats": False, "groupDetails": []}])
-    if p == "/rest/api/3/instance/license":
-        return httpx.Response(200, json={"applications": []})
-    return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
-
-
-def _assets_handler(state: dict):
-    """Stateful Assets (api.atlassian.com) mock: an empty tenant that accumulates a
-    schema, object type, attributes and objects as our client creates them."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        p = request.url.path
-        body = {}
-        if request.content:
-            try:
-                body = json.loads(request.content)
-            except ValueError:
-                body = {}
-        if p.endswith("/objectschema/list"):
-            return httpx.Response(200, json={"values": [state["schema"]] if state["schema"] else []})
-        if p.endswith("/objectschema/create"):
-            state["schema"] = {"id": "S1", "name": body.get("name"),
-                               "objectSchemaKey": body.get("objectSchemaKey")}
-            return httpx.Response(201, json=state["schema"])
-        if p.endswith("/objecttypes/flat"):
-            return httpx.Response(200, json={"values": [state["otype"]] if state["otype"] else []})
-        if p.endswith("/objecttype/create"):
-            state["otype"] = {"id": "T1", "name": body.get("name")}
-            state["attrs"] = {"Name": "A-Name"}  # object types auto-create Name
-            return httpx.Response(201, json=state["otype"])
-        if p.endswith("/icon/global"):
-            return httpx.Response(200, json={"values": [{"id": "I1"}]})
-        if "/objecttype/" in p and p.endswith("/attributes"):
-            vals = [{"id": aid, "name": name} for name, aid in state["attrs"].items()]
-            return httpx.Response(200, json={"values": vals})
-        if "/objecttypeattribute/" in p:
-            name = body.get("name"); aid = f"A-{name}"
-            state["attrs"][name] = aid
-            return httpx.Response(201, json={"id": aid, "name": name})
-        if p.endswith("/object/aql"):
-            # real Assets AQL shape: id at top level, attributes keyed by
-            # objectTypeAttributeId (no inline name).
-            objs = [{"id": o["_oid"], "attributes": [
-                {"objectTypeAttributeId": state["attrs"].get(k, k),
-                 "objectAttributeValues": [{"value": v, "displayValue": v}]}
-                for k, v in o.items() if k != "_oid"]} for o in state["objects"]]
-            mx = int(request.url.params.get("maxResults", 500))
-            return httpx.Response(200, json={"values": objs[:mx], "total": len(objs), "isLast": True})
-
-        def _vals_from_body():
-            id2name = {aid: name for name, aid in state["attrs"].items()}
-            out = {}
-            for a in body.get("attributes", []):
-                nm = id2name.get(a.get("objectTypeAttributeId"))
-                if nm:
-                    out[nm] = a["objectAttributeValues"][0]["value"]
-            return out
-        if p.endswith("/object/create"):
-            state["n"] = state.get("n", 0) + 1
-            oid = f"O{state['n']}"
-            state["objects"].append({"_oid": oid, **_vals_from_body()})
-            return httpx.Response(201, json={"id": oid})
-        if request.method == "DELETE" and "/object/" in p:  # DELETE /object/{id}
-            oid = p.rsplit("/", 1)[-1]
-            state["objects"] = [o for o in state["objects"] if o["_oid"] != oid]
-            return httpx.Response(204)
-        if "/object/" in p and body:  # PUT /object/{id} — update in place
-            oid = p.rsplit("/", 1)[-1]
-            for o in state["objects"]:
-                if o["_oid"] == oid:
-                    o.update(_vals_from_body())
-                    return httpx.Response(200, json={"id": oid})
-            return httpx.Response(404, json={"errorMessages": [f"no object {oid}"]})
-        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
-    return handler
-
-
-async def suite_assets_snapshot() -> None:
-    print("assets snapshot: workspace discovery, schema/type/attr create, write, idempotency")
-    from core.assets_client import AssetsClient, discover_workspace_id
-    from tasks import license_snapshot
-
-    site = _client_for(_assets_site_handler)
-    ws = await discover_workspace_id(site)
-    check("workspace id discovered from servicedesk API", ws == "ws-1", ws)
-
-    state = {"schema": None, "otype": None, "attrs": {}, "objects": []}
-    creds = Credentials(site_url="https://example.atlassian.net",
-                        email="operator@example.com", api_token=SecretStr("not-a-real-token"))
-    assets = AssetsClient(creds, load_settings(), ws,
-                          transport=httpx.MockTransport(_assets_handler(state)))
-
-    st = await assets.status(site)
-    check("status: schema absent on an empty tenant", st["schema_exists"] is False, st)
-
-    res = await license_snapshot.take_snapshot(site, assets, "2026-08-24", "2026-08-24T09:30")
-    check("first save creates both products",
-          sorted(res["created"]) == ["jira-servicedesk", "jira-software"] and res["updated"] == [], res)
-    check("schema + object type created", res["schema_id"] == "S1" and res["object_type_id"] == "T1", res)
-    check("every snapshot attribute ensured (incl. capturedAt)",
-          all(a in state["attrs"] for a in ("date", "capturedAt", "product", "productName", "used", "total", "unlimited")),
-          state["attrs"])
-
-    rows = await assets.read_snapshots()
-    check("read back the two snapshot objects", len(rows) == 2, rows)
-    jsw = next((r for r in rows if r.get("product") == "jira-software"), None)
-    check("snapshot carries id/date/capturedAt/used/total",
-          jsw and jsw.get("_id") and jsw.get("date") == "2026-08-24"
-          and jsw.get("capturedAt") == "2026-08-24T09:30" and jsw.get("used") == "13419"
-          and jsw.get("total") == "15000", jsw)
-
-    res2 = await license_snapshot.take_snapshot(site, assets, "2026-08-24")
-    check("second save upserts — updates in place, no duplicate",
-          res2["created"] == [] and sorted(res2["updated"]) == ["jira-servicedesk", "jira-software"], res2)
-    rows2 = await assets.read_snapshots()
-    check("still two objects after re-save (no duplication)", len(rows2) == 2, rows2)
-    pv = await license_snapshot.preview(site, assets, "2026-08-24")
-    check("preview: all rows saved, both marked as refresh",
-          len(pv["to_write"]) == 2 and pv["already_present"] == 2, pv)
-
-    st2 = await assets.status(site)
-    check("status after write: schema+type present, 2 objects",
-          st2["schema_exists"] and st2["object_type_exists"] and st2["object_count"] == 2, st2)
-
-    # reset: delete all objects (keep schema/type) then save fresh
-    rst = await license_snapshot.reset_and_snapshot(site, assets, "2026-08-25", "2026-08-25T10:00")
-    check("reset deletes the old objects then re-creates fresh",
-          rst["deleted"] == 2 and sorted(rst["created"]) == ["jira-servicedesk", "jira-software"], rst)
-    rows3 = await assets.read_snapshots()
-    check("after reset: exactly the 2 fresh objects (schema kept)", len(rows3) == 2, rows3)
-    check("fresh objects carry the new date/capturedAt",
-          all(r.get("date") == "2026-08-25" and r.get("capturedAt") == "2026-08-25T10:00" for r in rows3), rows3)
-
-    await assets.aclose()
-    await site.aclose()
-
-
 async def main() -> None:
     await suite_write_task()
     print()
@@ -1857,8 +1714,6 @@ async def main() -> None:
     await suite_space_create()
     print()
     await suite_group_inventory()
-    print()
-    await suite_assets_snapshot()
     print()
     if _failures:
         print(f"{len(_failures)} check(s) FAILED: {', '.join(_failures)}")

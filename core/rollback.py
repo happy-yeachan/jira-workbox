@@ -138,9 +138,19 @@ def _summary_from_inverse(entry: dict[str, Any]) -> list[str]:
 
     named: list[str] = []
     unnamed: Counter[str] = Counter()
+    #: group-membership inverse rows carry after.op ("add"/"remove"). The DETAIL
+    #: describes the original run, which is the opposite of the stored inverse:
+    #: an inverse "remove" means the run ADDED, an inverse "add" means it REMOVED.
+    group_counts: Counter[tuple[str, str]] = Counter()
     repoint = False
     for c in entry.get("inverse", []):
         a = c.get("after", {}) or {}
+        op = a.get("op")
+        if op in ("add", "remove") and a.get("group_id"):
+            gname = str(a.get("group_name") or a.get("group_id") or "")
+            orig = "추가" if op == "remove" else "제거"
+            group_counts[(gname, orig)] += 1
+            continue
         if a.get("wf_new_name"):
             named.append(f"복제 생성: 워크플로우 '{a['wf_new_name']}'")
         ws_body = a.get("ws_body")
@@ -167,6 +177,9 @@ def _summary_from_inverse(entry: dict[str, Any]) -> list[str]:
             repoint = True
 
     lines = list(named)
+    for (gname, orig), n in group_counts.items():
+        lines.append(f"그룹 '{gname}'에 {n}명 추가" if orig == "추가"
+                     else f"그룹 '{gname}'에서 {n}명 제거")
     if unnamed:
         lines.append("복제 생성: " + ", ".join(f"{k} {n}개" for k, n in unnamed.items()))
     if repoint:

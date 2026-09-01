@@ -56,8 +56,6 @@ py -m venv .venv
 - **시트 사용량** — 제품별(Jira Software · JSM 에이전트 · Jira Product Discovery)
   사용/총/남은 시트 도넛과 요금제. 카드를 누르면 그 제품의 **라이선스 사용자 목록**
   (검색·페이지). *(Confluence는 시트 API가 없어 제외)*
-- **시트 추이** — 매일 실제 사용량을 **Atlassian Assets**에 스냅샷으로 저장해 그리는
-  **실측 추이 그래프**(로그 추정이 아님). "스냅샷 저장" 버튼 또는 자동 스케줄로 쌓입니다.
 - **변경 로그** — 누가·언제·어느 그룹으로 라이선스가 **부여/회수**됐는지. 제품(Jira/
   JSM/JPD)·추가/삭제·검색 필터. *(조직 admin API 키 필요 — 선택)*
 
@@ -94,24 +92,8 @@ py -m venv .venv
 - 둘 다 **OS 키체인**(서비스 `jira-workbox`)에 저장 — `.env`·코드·설정 파일에 넣지
   않으며, 어떤 응답/로그에도 토큰이 나오지 않습니다.
 - 조직 키는 `admin.atlassian.com` → Settings → API keys 에서 발급, **접속 정보 → 조직
-  API 키**에 입력. 변경 로그에만 쓰이고 시트/추이는 사이트 토큰으로 동작합니다.
+  API 키**에 입력. 변경 로그에만 쓰이고 시트 현황은 사이트 토큰으로 동작합니다.
 - 터미널 선호 시: `uv run python -m core.auth setup` (그 외 `status` · `delete`).
-
-**시트 추이(Assets)** 는 **JSM Premium 이상**이 있어야 동작합니다(Assets 기능 필요).
-
----
-
-## 매일 자동 스냅샷 (시트 추이용, 선택)
-
-시트 추이는 매일 한 번 값을 저장해 두면 선이 쌓입니다. macOS는 한 번만 등록하면 됩니다:
-
-```bash
-uv run python -m tasks.license_snapshot --install-schedule   # 매일 02:00 + 즉시 1회
-# --time 09:30 로 시각 변경 · --preview(쓰기 없음) · --reset(초기화) · --uninstall-schedule
-```
-
-공유 저장소(Assets)라 **한 대만 돌려도 전원이 같은 데이터**를 봅니다. 저장 값은 날짜·
-제품·시트 수뿐이라 개인정보가 없습니다.
 
 ---
 
@@ -154,10 +136,10 @@ verify_tls = true                      # false는 사내 MITM 프록시용(경�
 ```
 app.py                        FastAPI 진입점(라우트·정적 서빙)
 core/                         config·auth(키체인)·http(재시도/페이지네이션)
-  client.py org_client.py assets_client.py atlassian_status.py
+  client.py org_client.py atlassian_status.py
   models.py planstore.py audit.py rollback.py
 tasks/                        기능별 모듈(태스크 + 커스텀 뷰 헬퍼)
-  license_status.py license_snapshot.py
+  license_status.py
   group_inventory.py group_membership_bulk.py
   screen_share_analysis.py project_config_audit.py config_isolate.py
   space_create.py field_inventory.py
@@ -177,7 +159,6 @@ selftest.py  run.command  run.bat
 | `GET /api/health` | 연결 상태(비밀 없음) |
 | `POST·DELETE /api/setup/credentials`·`/setup/org` | 자격 증명 저장/삭제(write-only) |
 | `GET /api/license/summary`·`/users/stream`·`/events/stream` | 시트·사용자·변경 로그 |
-| `GET /api/license/snapshots` · `POST /api/license/snapshot`(+`/preview`) | 시트 스냅샷 |
 | `GET /api/groups/manage/search`·`/license-access`·`/{id}/members/stream` | 그룹 관리 |
 | `POST /api/groups/members/resolve` · `POST·DELETE …/members` | 추가 미리보기·추가/제거 |
 | `POST /api/tasks/{name}/plan`·`/plan/stream`·`/execute` | 태스크 미리보기/실행 |
