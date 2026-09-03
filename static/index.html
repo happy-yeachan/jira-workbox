@@ -2458,7 +2458,7 @@ document.addEventListener('alpine:init', () => {
     basicFields: [], advancedFields: [],
     plan: null, planning: false, running: false, error: '', isolateParams: null, rbConfirm: null,
     isoNames: {},  // config_isolate: editable name per clone that will be created
-    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [], planConsumed: false, dangerAck: false, undoTitle: '',
+    batchSize: 25, concurrency: 8, confirming: false, status: '', phase: '', runMode: 'run', runItems: [], planConsumed: false, runSummary: null, dangerAck: false, undoTitle: '',
     progress: { done: 0, total: 0, ok: 0, fail: 0 },
     log: [], logOpen: true, controller: null,
     navOpen: false,
@@ -3842,10 +3842,30 @@ document.addEventListener('alpine:init', () => {
 
     async doExecute() {
       const total = this.plan.changes.length;
+      // remember what we're about to run — after the stream we may auto-re-analyze
+      const wasIsolate = this.selected.spec.name === 'config_isolate';
+      const proj = this.form.project;
       await this.stream(`/api/tasks/${this.selected.spec.name}/execute`,
                         { plan_id: this.plan.plan_id }, total, `실행 시작 · 대상 ${total}건`);
       this.plan = null;  // token consumed server side
       this.planConsumed = true;  // tell the operator the preview is gone
+      // After a clean 분리, jump straight back to 설정 공유 진단 for the same project
+      // so the operator sees the updated sharing without re-selecting + 분석 again.
+      const s = this.runSummary;
+      if (wasIsolate && proj && s && s.succeeded > 0 && !s.failed) {
+        await this.reanalyzeProject(proj);
+      }
+    },
+    // Re-run 설정 공유 진단 for a project and show its result (used after 분리).
+    async reanalyzeProject(projectKey) {
+      const task = this.tasks.find(t => t.spec.name === 'project_config_audit');
+      if (!task || !projectKey) return;
+      this.select(task);
+      this.form.project = projectKey;
+      this.projectNames = { [projectKey]: projectKey };
+      this.landingView = 'task';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      await this.doPlan();
     },
 
     // ---- 작업 기록 (rollback history) ----
@@ -3980,6 +4000,7 @@ document.addEventListener('alpine:init', () => {
         this.push('sys', '·', ev.message || '중간 지점');
       } else if (ev.type === 'summary') {
         const s = ev.summary || {};
+        this.runSummary = s;  // let doExecute react to the outcome (e.g. re-analyze)
         this.status = s.failed ? `완료 · 실패 ${s.failed}건` : '완료';
         this.push('sys', '·', `종료: 시도 ${s.attempted} · 성공 ${s.succeeded} · 실패 ${s.failed}`);
         if (s.rollback_id && this.runMode !== 'undo') this.push('sys', '·', '작업 기록에서 되돌릴 수 있습니다 (상단 [작업 기록])');
@@ -4076,7 +4097,7 @@ document.addEventListener('alpine:init', () => {
     resetRun() {
       this.progress = { done: 0, total: 0, ok: 0, fail: 0 };
       this.log = []; this.status = ''; this.phase = ''; this.logOpen = true; this.runMode = 'run';
-      this.runItems = []; this.planConsumed = false;
+      this.runItems = []; this.planConsumed = false; this.runSummary = null;
       // undoTitle is set by rollback() right before stream()/resetRun run, and only
       // renders in undo mode, so it must survive resetRun — don't clear it here.
     },
