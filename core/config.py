@@ -135,6 +135,29 @@ class Settings(BaseModel):
     #: license view logs a warning when it can't identify the agent role.
     jsm_agent_role_names: str = ""
 
+    #: Operator-pinned license access groups, as ``product:group`` entries
+    #: (comma- or newline-separated), e.g.
+    #:   license_groups = "jira-software:jira-software-users-xxxx, confluence:confluence-users-xxxx"
+    #: These are AUTHORITATIVE: they add to (and, per product, replace) the groups
+    #: auto-derived from Jira's applicationrole — the license dashboard quick-select
+    #: and the change-log classifier both honour them. Use this to pin Confluence
+    #: (which has no applicationrole, so it can't be auto-derived) or a tenant's
+    #: custom license groups. Known ``product`` keys: jira-software, jira-servicedesk,
+    #: jira-product-discovery, jira-core, confluence (any other token is used as the
+    #: label as-is). Repeat a product to list several groups for it.
+    license_groups: str = ""
+
+    def license_group_overrides(self) -> dict[str, list[str]]:
+        """Parse :attr:`license_groups` into ``{product-key → [group names]}``,
+        preserving order and dropping malformed entries."""
+        out: dict[str, list[str]] = {}
+        for entry in self.license_groups.replace("\n", ",").split(","):
+            product, sep, group = entry.partition(":")
+            product, group = product.strip(), group.strip()
+            if sep and product and group:
+                out.setdefault(product, []).append(group)
+        return out
+
     def security_notes(self) -> list[str]:
         """Weakened settings, for the startup log, /api/health and the UI."""
         notes: list[str] = []

@@ -136,6 +136,26 @@ async def fetch_applications(client: WorkboxClient) -> list[dict[str, Any]]:
 _APP_SHORT = {"jira-software": "Jira", "jira-servicedesk": "JSM",
               "jira-product-discovery": "JPD", "jira-core": "Jira Work Mgmt"}
 
+#: labels for operator-configured override products (config.license_groups). Falls
+#: back to the raw product token so an unknown key still shows something sensible.
+_OVERRIDE_LABEL = {
+    "jira-software": "Jira Software", "jira-servicedesk": "Jira Service Management",
+    "jira-product-discovery": "Jira Product Discovery", "jira-core": "Jira Work Management",
+    "confluence": "Confluence",
+}
+
+
+async def _resolve_group_id(client: WorkboxClient, name: str) -> str:
+    """The groupId for an exact group name, via the picker. '' if not found."""
+    try:
+        picked = await client.get_json(_P_GROUPS_PICKER, params={"query": name, "maxResults": 20})
+    except UpstreamError:
+        return ""
+    for g in (picked.get("groups") or []):
+        if _sid(g.get("name")) == name and g.get("groupId"):
+            return _sid(g.get("groupId"))
+    return ""
+
 
 async def license_access_groups(client: WorkboxClient) -> list[dict[str, Any]]:
     """The primary access group per Jira application — the SAME groups the license
@@ -176,6 +196,24 @@ async def license_access_groups(client: WorkboxClient) -> list[dict[str, Any]]:
                         "group_id": _sid(cands[0].get("groupId")), "group_name": _sid(cands[0].get("name"))})
     except UpstreamError:
         pass
+
+    # operator-pinned groups (config.license_groups) are authoritative: for each
+    # configured product, drop the auto-detected entry and use the pinned groups
+    # (resolved to ids). This lets a tenant fix Confluence or custom license groups.
+    overrides = load_settings().license_group_overrides()
+    if overrides:
+        pinned: list[dict[str, Any]] = []
+        for product, names in overrides.items():
+            label = _APP_SHORT.get(product) or _OVERRIDE_LABEL.get(product) or product
+            for name in names:
+                gid = await _resolve_group_id(client, name)
+                if gid:
+                    pinned.append({"product": product, "label": label,
+                                   "group_id": gid, "group_name": name})
+        if pinned:
+            overridden = {p["product"] for p in pinned}
+            out = [g for g in out if g["product"] not in overridden] + pinned
+            out.sort(key=lambda g: order.get(g["product"], len(order)))
     return out
 
 
@@ -195,15 +233,25 @@ async def license_group_map(client: WorkboxClient) -> dict[str, str]:
         roles = roles.get("value") or []
     roles = roles if isinstance(roles, list) else []
     out: dict[str, str] = {}
+    key_label: dict[str, str] = {}
     for r in roles:
         key = _sid(r.get("key"))
         label = _APP_NAME.get(key) or _sid(r.get("name")) or key
+        key_label[key] = label
         if not label:
             continue
         for g in (r.get("groupDetails") or []):
             name = _sid(g.get("name")).strip().lower()
             if name:
                 out.setdefault(name, label)  # first application wins on collision
+    # operator-pinned groups (config.license_groups) win over the auto-derived map,
+    # and add products (Confluence) that applicationrole can't provide.
+    for product, names in load_settings().license_group_overrides().items():
+        label = _APP_NAME.get(product) or key_label.get(product) or _OVERRIDE_LABEL.get(product) or product
+        for name in names:
+            key = name.strip().lower()
+            if key:
+                out[key] = label  # authoritative → override wins
     return out
 
 

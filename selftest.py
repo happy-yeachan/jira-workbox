@@ -1557,6 +1557,75 @@ async def suite_issue_type_workflow() -> None:
         check("wf-ittype: 'default' sentinel rejected", True)
 
 
+async def suite_license_group_config() -> None:
+    print("license: operator-pinned license groups (config override)")
+    import tasks.license_status as ls
+    from core.config import Settings
+
+    # --- config parsing: valid product:group kept, malformed dropped ---
+    s = Settings(license_groups="jira-software:jsw-users, confluence:conf-users\n"
+                                " jira-servicedesk:jsm-agents , bad, :nogroup, prod:")
+    check("cfg parse: product:group entries kept, malformed dropped",
+          s.license_group_overrides() == {"jira-software": ["jsw-users"],
+                                          "confluence": ["conf-users"],
+                                          "jira-servicedesk": ["jsm-agents"]},
+          s.license_group_overrides())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p, q = request.url.path, request.url.params
+        base = "/rest/api/3"
+        if p == f"{base}/applicationrole":
+            return httpx.Response(200, json=[
+                {"key": "jira-software", "name": "Jira Software",
+                 "groupDetails": [{"groupId": "g-jsw", "name": "jira-software-users"}]},
+                {"key": "jira-servicedesk", "name": "Jira Service Management",
+                 "groupDetails": [{"groupId": "g-shared", "name": "shared-grp"}]}])
+        if p == f"{base}/groups/picker":
+            groups = {
+                "conf-users": [{"name": "conf-users", "groupId": "g-conf"}],
+                "jsw-users": [{"name": "jsw-users", "groupId": "g-jswcustom"}],
+                "confluence-users": [{"name": "confluence-users-site", "groupId": "g-cu"}],
+            }.get(q.get("query", ""), [])
+            return httpx.Response(200, json={"groups": groups})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+
+    client = _client_for(handler)
+    orig = ls.load_settings
+    # pin jira-software to a custom group + declare Confluence (no applicationrole).
+    # 'shared-grp' is auto-classified as JSM but pinned to jira-software → override wins.
+    ls.load_settings = lambda: Settings(
+        license_groups="jira-software:jsw-users, jira-software:shared-grp, confluence:conf-users")
+    try:
+        gmap = await ls.license_group_map(client)
+        check("group_map: pinned Confluence group classified as Confluence",
+              gmap.get("conf-users") == "Confluence", gmap)
+        check("group_map: pinned group overrides the auto-derived product",
+              gmap.get("shared-grp") == "Jira Software", gmap)
+        check("group_map: auto-derived entries still present",
+              gmap.get("jira-software-users") == "Jira Software", gmap)
+
+        groups = await ls.license_access_groups(client)
+        by_prod = {g["product"]: g for g in groups}
+        check("access_groups: jira-software replaced by the pinned custom group",
+              by_prod.get("jira-software", {}).get("group_id") == "g-jswcustom", by_prod)
+        check("access_groups: Confluence pinned to the configured group id",
+              by_prod.get("confluence", {}).get("group_id") == "g-conf", by_prod)
+    finally:
+        ls.load_settings = orig
+    await client.aclose()
+
+    # no override → behaviour unchanged (auto-derived only)
+    client2 = _client_for(handler)
+    ls.load_settings = lambda: Settings(license_groups="")
+    try:
+        gmap2 = await ls.license_group_map(client2)
+        check("no override: map is purely auto-derived",
+              gmap2.get("shared-grp") == "Jira Service Management" and "conf-users" not in gmap2, gmap2)
+    finally:
+        ls.load_settings = orig
+    await client2.aclose()
+
+
 async def suite_field_context() -> None:
     print("field_inventory: context write journaling + undo")
     import tasks.field_inventory as fi
@@ -1922,6 +1991,8 @@ async def main() -> None:
     await suite_issue_type_workflow()
     print()
     await suite_field_context()
+    print()
+    await suite_license_group_config()
     print()
     await suite_workflow_cache()
     print()

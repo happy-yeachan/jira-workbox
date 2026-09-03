@@ -122,9 +122,22 @@ batch_size = 25
 plan_ttl_seconds = 600                 # 쓰기 미리보기 유효시간
 verify_tls = true                      # false는 사내 MITM 프록시용(경고 표시)
 # site_url_override = "https://<sandbox>.atlassian.net"
+
+# 라이선스 접근 그룹을 직접 지정(선택). "제품:그룹이름" 을 쉼표/줄바꿈으로 나열.
+# 지정하면 그 제품은 applicationrole 자동 감지 대신 이 그룹을 씁니다(권위 있음) —
+# 라이선스 현황의 빠른 선택 칩과 변경 로그 분류가 모두 이를 따릅니다.
+# applicationrole이 없는 Confluence나, 테넌트 커스텀 라이선스 그룹을 고정할 때 유용.
+# 알려진 제품 키: jira-software, jira-servicedesk, jira-product-discovery,
+# jira-core, confluence (그 외 토큰은 라벨로 그대로 표시). 한 제품에 여러 그룹 가능.
+# license_groups = """
+#   jira-software:jira-software-users-abc123,
+#   confluence:confluence-users-abc123,
+#   jira-servicedesk:jsm-agents-abc123
+# """
 ```
 
 `WORKBOX_*` 환경변수로도 덮어쓸 수 있습니다(우선순위: 기본값 → `config.toml` → 환경변수).
+예: `WORKBOX_LICENSE_GROUPS="confluence:confluence-users-abc123"`.
 
 ---
 
