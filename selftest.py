@@ -1625,6 +1625,29 @@ async def suite_license_group_config() -> None:
         ls.load_settings = orig
     await client2.aclose()
 
+    # --- UI store (license_prefs, edited live) wins over config per product ---
+    from core import license_prefs
+    license_prefs.save({"jira-software": [{"id": "g-ui", "name": "ui-grp"}],
+                        "confluence": [{"id": "g-confui", "name": "conf-ui"}]})
+    check("prefs store: save/load round-trip",
+          license_prefs.load().get("confluence", [{}])[0].get("id") == "g-confui", license_prefs.load())
+    client3 = _client_for(handler)
+    ls.load_settings = lambda: Settings(license_groups="jira-software:jsw-users")  # config still set
+    try:
+        gmap3 = await ls.license_group_map(client3)
+        check("UI store: pinned Confluence group classified as Confluence",
+              gmap3.get("conf-ui") == "Confluence", gmap3)
+        groups3 = await ls.license_access_groups(client3)
+        by3 = {g["product"]: g for g in groups3}
+        check("UI store wins over config (uses stored id, no re-resolve)",
+              by3.get("jira-software", {}).get("group_id") == "g-ui", by3)
+        check("UI store: Confluence pinned via stored id",
+              by3.get("confluence", {}).get("group_id") == "g-confui", by3)
+    finally:
+        ls.load_settings = orig
+        license_prefs.save({})  # clean up the temp store
+    await client3.aclose()
+
 
 async def suite_field_context() -> None:
     print("field_inventory: context write journaling + undo")

@@ -28,7 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from core import audit, planstore
+from core import audit, license_prefs, planstore
 from core.client import UpstreamError, WorkboxClient, get_client
 from core.config import load_settings
 from core.concurrency import map_bounded
@@ -197,23 +197,34 @@ async def license_access_groups(client: WorkboxClient) -> list[dict[str, Any]]:
     except UpstreamError:
         pass
 
-    # operator-pinned groups (config.license_groups) are authoritative: for each
-    # configured product, drop the auto-detected entry and use the pinned groups
-    # (resolved to ids). This lets a tenant fix Confluence or custom license groups.
-    overrides = load_settings().license_group_overrides()
-    if overrides:
-        pinned: list[dict[str, Any]] = []
-        for product, names in overrides.items():
-            label = _APP_SHORT.get(product) or _OVERRIDE_LABEL.get(product) or product
-            for name in names:
-                gid = await _resolve_group_id(client, name)
-                if gid:
-                    pinned.append({"product": product, "label": label,
-                                   "group_id": gid, "group_name": name})
-        if pinned:
-            overridden = {p["product"] for p in pinned}
-            out = [g for g in out if g["product"] not in overridden] + pinned
-            out.sort(key=lambda g: order.get(g["product"], len(order)))
+    # operator-pinned groups are authoritative: for each configured product, drop
+    # the auto-detected entry and use the pinned groups. Precedence per product:
+    # UI store (id+name, edited live) > config.toml (names, resolved) > auto.
+    cfg = load_settings().license_group_overrides()   # {product: [names]}
+    ui = license_prefs.load()                          # {product: [{id,name}]}
+    pinned: list[dict[str, Any]] = []
+    handled: set[str] = set()
+    for product, names in cfg.items():
+        if product in ui:      # UI wins for this product — skip the config entry
+            continue
+        label = _APP_SHORT.get(product) or _OVERRIDE_LABEL.get(product) or product
+        for name in names:
+            gid = await _resolve_group_id(client, name)
+            if gid:
+                pinned.append({"product": product, "label": label,
+                               "group_id": gid, "group_name": name})
+                handled.add(product)
+    for product, groups in ui.items():
+        label = _APP_SHORT.get(product) or _OVERRIDE_LABEL.get(product) or product
+        for g in groups:
+            gid = _sid(g.get("id")) or await _resolve_group_id(client, _sid(g.get("name")))
+            if gid:
+                pinned.append({"product": product, "label": label,
+                               "group_id": gid, "group_name": _sid(g.get("name"))})
+                handled.add(product)
+    if pinned:
+        out = [g for g in out if g["product"] not in handled] + pinned
+        out.sort(key=lambda g: order.get(g["product"], len(order)))
     return out
 
 
@@ -244,9 +255,11 @@ async def license_group_map(client: WorkboxClient) -> dict[str, str]:
             name = _sid(g.get("name")).strip().lower()
             if name:
                 out.setdefault(name, label)  # first application wins on collision
-    # operator-pinned groups (config.license_groups) win over the auto-derived map,
-    # and add products (Confluence) that applicationrole can't provide.
-    for product, names in load_settings().license_group_overrides().items():
+    # operator-pinned groups win over the auto-derived map, and add products
+    # (Confluence) applicationrole can't provide. Precedence per product: UI store
+    # (edited live) > config.toml. Combine so a product set in either is honoured.
+    effective = {**load_settings().license_group_overrides(), **license_prefs.pinned_names()}
+    for product, names in effective.items():
         label = _APP_NAME.get(product) or key_label.get(product) or _OVERRIDE_LABEL.get(product) or product
         for name in names:
             key = name.strip().lower()

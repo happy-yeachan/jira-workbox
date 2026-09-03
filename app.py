@@ -905,6 +905,45 @@ async def group_license_access() -> dict[str, object]:
     return {"groups": groups}
 
 
+class LicenseGroupIn(BaseModel):
+    id: str = Field(default="", max_length=255)
+    name: str = Field(default="", max_length=255)
+
+
+class LicenseGroupsSave(BaseModel):
+    overrides: dict[str, list[LicenseGroupIn]] = Field(default_factory=dict)
+
+
+@app.get("/api/license-groups")
+async def get_license_groups() -> dict[str, object]:
+    """Config for the '라이선스 그룹 설정' UI: the editable products, the groups the
+    operator has pinned, and the currently effective (auto+pinned) access groups."""
+    from core import license_prefs
+    from tasks import license_status
+    client = _require_client()
+    try:
+        detected = await license_status.license_access_groups(client)
+    except (tasks.TaskInputError, UpstreamError):
+        detected = []
+    return {"products": license_prefs.PRODUCTS, "pinned": license_prefs.load(),
+            "detected": detected}
+
+
+@app.put("/api/license-groups")
+async def put_license_groups(body: LicenseGroupsSave, request: Request) -> dict[str, object]:
+    """Save the operator-pinned license access groups (local app state, no Jira
+    write). Guarded like other state changes; takes effect immediately (no restart)."""
+    _guard_setup_request(request)
+    from core import license_prefs
+    overrides = {product: [{"id": g.id.strip(), "name": g.name.strip()} for g in groups]
+                 for product, groups in body.overrides.items()}
+    try:
+        saved = license_prefs.save(overrides)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"라이선스 그룹 저장 실패: {exc}"[:200]) from None
+    return {"pinned": saved}
+
+
 @app.post("/api/groups/members/resolve")
 async def resolve_group_members(body: GroupMembersAdd, request: Request) -> dict[str, object]:
     """Dry-run for the add preview: resolve emails to accounts, add nothing.
