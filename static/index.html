@@ -559,6 +559,17 @@
   }
   .pick-row:last-child { border-bottom: 0; }
   .pick-row:hover { background: var(--hover); }
+  /* token-style multi-select: chips + an inline growing input in one bordered box */
+  .tokinput {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px;
+    min-height: 38px; background: var(--surface);
+  }
+  .tokinput:focus-within { border-color: var(--accent); }
+  .tokinput-in {
+    border: 0; outline: 0; background: none; flex: 1; min-width: 110px;
+    font: inherit; color: inherit; padding: 2px;
+  }
   .pick-row input { width: 15px; height: 15px; accent-color: var(--accent); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .tag.pick { cursor: pointer; background: var(--accent-soft); color: var(--accent); }
@@ -2406,45 +2417,32 @@
      applicationrole auto-detection; the only way to set Confluence) -->
 <template x-if="licCfg">
   <div class="modal-bg" @click.self="licCfg = null" @keydown.escape.window="licCfg = null">
-    <div class="modal" style="max-width:640px">
+    <div class="modal" style="max-width:560px">
       <div class="body">
         <h3>라이선스 그룹 설정</h3>
-        <p class="sub" style="margin:0 0 14px">
-          제품별 <b>라이선스 접근 그룹</b>을 직접 지정합니다. 지정하면 자동 감지 대신 이 그룹을
-          씁니다 — 라이선스 현황의 빠른 선택과 변경 로그 분류가 이를 따릅니다.
-          applicationrole이 없는 <b>Confluence</b>나 커스텀 그룹을 고정할 때 쓰세요. 비워두면 자동 감지.
-        </p>
+        <p class="sub" style="margin:0 0 14px">제품별 라이선스 접근 그룹. 비워두면 자동 감지.</p>
         <div class="notice err" x-show="licCfg.err" x-text="licCfg.err" style="margin-bottom:12px"></div>
         <div x-show="licCfg.loading" class="sub">불러오는 중…</div>
 
         <template x-for="p in licCfg.products" :key="p.key">
           <div class="lic-cfg-row" x-show="!licCfg.loading"
-               style="border-top:1px solid var(--border); padding:12px 0">
-            <div class="row" style="justify-content:space-between; align-items:center">
-              <b x-text="p.label"></b>
-              <span class="sub" x-show="detectedFor(p.key)"
-                    x-text="'감지됨: ' + detectedFor(p.key)"></span>
-            </div>
-            <!-- pinned groups as removable chips -->
-            <div class="lic-chips" style="margin:8px 0 6px; flex-wrap:wrap">
-              <template x-for="(g, gi) in (licCfg.pinned[p.key] || [])" :key="g.id || g.name">
-                <span class="chip" style="cursor:default; display:inline-flex; align-items:center; gap:6px">
-                  <span x-text="g.name"></span>
-                  <button @click="removeLicGroup(p.key, gi)" title="제거"
-                          style="border:0; background:none; cursor:pointer; color:inherit; opacity:.6; font-size:12px; padding:0">✕</button>
-                </span>
-              </template>
-              <span class="sub" x-show="!(licCfg.pinned[p.key] || []).length"
-                    style="opacity:.7">지정된 그룹 없음 (자동 감지 사용)</span>
-            </div>
-            <!-- add: search groups by name -->
-            <div style="position:relative; max-width:340px">
-              <input type="text" class="lic-log-search" style="width:100%"
-                     :placeholder="'그룹 검색해서 추가…'"
-                     @focus="licCfg.searchProduct = p.key"
-                     @input.debounce.300ms="licGroupSearch(p.key, $event.target.value)">
-              <div class="picker" x-show="licCfg.searchProduct === p.key && licCfg.results.length"
-                   style="max-width:340px">
+               style="display:grid; grid-template-columns:150px 1fr; gap:12px; align-items:start; margin-bottom:10px">
+            <b x-text="p.label" style="padding-top:9px; font-size:13px"></b>
+            <div style="position:relative">
+              <div class="tokinput">
+                <template x-for="(g, gi) in (licCfg.pinned[p.key] || [])" :key="g.id || g.name">
+                  <span class="chip" style="cursor:default; display:inline-flex; align-items:center; gap:6px">
+                    <span x-text="g.name"></span>
+                    <button @click="removeLicGroup(p.key, gi)" title="제거"
+                            style="border:0; background:none; cursor:pointer; color:inherit; opacity:.6; font-size:12px; padding:0; line-height:1">✕</button>
+                  </span>
+                </template>
+                <input type="text" class="tokinput-in" x-model="licCfg.query[p.key]"
+                       :placeholder="(licCfg.pinned[p.key] || []).length ? '' : '그룹 선택…'"
+                       @focus="licCfg.searchProduct = p.key"
+                       @input.debounce.300ms="licGroupSearch(p.key)">
+              </div>
+              <div class="picker" x-show="licCfg.searchProduct === p.key && licCfg.results.length">
                 <template x-for="r in licCfg.results" :key="r.groupId">
                   <div class="pick-row" @click="addLicGroup(p.key, r)" x-text="r.name"></div>
                 </template>
@@ -2845,17 +2843,22 @@ document.addEventListener('alpine:init', () => {
     // ---- 라이선스 그룹 설정 (operator-pinned license access groups) ----
     async openLicGroupCfg() {
       this.licCfg = { open: true, loading: true, saving: false, err: '',
-                      products: [], pinned: {}, detected: [],
+                      products: [], pinned: {}, query: {},
                       searchProduct: '', results: [], _ctrl: null };
       try {
         const res = await fetch('/api/license-groups');
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { this.licCfg.err = this.errText(data) || '불러오기 실패'; return; }
         this.licCfg.products = data.products || [];
-        this.licCfg.detected = data.detected || [];
-        // deep-copy pinned so edits don't mutate until saved
+        // deep-copy pinned; seed the detected group into any product not yet pinned
+        // so the field shows the current effective group ready to edit
         const pinned = {};
         for (const [k, v] of Object.entries(data.pinned || {})) pinned[k] = (v || []).map(g => ({ ...g }));
+        for (const d of (data.detected || [])) {
+          if ((!pinned[d.product] || !pinned[d.product].length) && d.group_id) {
+            pinned[d.product] = [{ id: d.group_id, name: d.group_name }];
+          }
+        }
         this.licCfg.pinned = pinned;
       } catch (e) {
         this.licCfg.err = '불러오기 실패: ' + e;
@@ -2863,13 +2866,9 @@ document.addEventListener('alpine:init', () => {
         if (this.licCfg) this.licCfg.loading = false;
       }
     },
-    detectedFor(product) {
-      const d = (this.licCfg.detected || []).find(g => g.product === product);
-      return d ? d.group_name : '';
-    },
-    async licGroupSearch(product, q) {
+    async licGroupSearch(product) {
       this.licCfg.searchProduct = product;
-      q = (q || '').trim();
+      const q = (this.licCfg.query[product] || '').trim();
       if (this.licCfg._ctrl) this.licCfg._ctrl.abort();
       if (!q) { this.licCfg.results = []; return; }
       const ctrl = new AbortController(); this.licCfg._ctrl = ctrl;
@@ -2883,7 +2882,7 @@ document.addEventListener('alpine:init', () => {
     addLicGroup(product, r) {
       const list = this.licCfg.pinned[product] || (this.licCfg.pinned[product] = []);
       if (!list.some(g => g.id === r.groupId)) list.push({ id: r.groupId, name: r.name });
-      this.licCfg.results = []; this.licCfg.searchProduct = '';
+      this.licCfg.results = []; this.licCfg.searchProduct = ''; this.licCfg.query[product] = '';
     },
     removeLicGroup(product, idx) {
       (this.licCfg.pinned[product] || []).splice(idx, 1);
