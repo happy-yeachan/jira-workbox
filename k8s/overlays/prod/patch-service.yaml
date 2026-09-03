@@ -1,0 +1,12 @@
+# prod keeps a stable NodePort too (handy fallback alongside the Ingress)
+apiVersion: v1
+kind: Service
+metadata:
+  name: jira-workbox
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      nodePort: 30800

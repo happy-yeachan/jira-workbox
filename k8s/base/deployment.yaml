@@ -1,0 +1,47 @@
+# jira-workbox app (hosted mode). One replica: login sessions live in the pod's
+# memory, so scaling out would scatter them — the prod overlay keeps replicas: 1
+# until the Redis-session capstone lands (see README roadmap, module 5).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jira-workbox
+  labels: { app: jira-workbox }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # single RWO volume — never two pods at once
+  selector:
+    matchLabels: { app: jira-workbox }
+  template:
+    metadata:
+      labels: { app: jira-workbox }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: jira-workbox
+          image: jira-workbox:latest   # kustomize rewrites the tag per overlay
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8000 }
+          env:
+            - { name: WORKBOX_HOSTED, value: "1" }
+            - { name: WORKBOX_LOG_DIR, value: /data }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: workbox-data

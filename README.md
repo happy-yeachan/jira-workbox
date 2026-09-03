@@ -160,21 +160,35 @@ docker build -t <registry>/jira-workbox:0.1 .
 docker push <registry>/jira-workbox:0.1
 ```
 
-### 2) 쿠버네티스 배포
-`k8s/jira-workbox.yaml`의 `image:`를 위 태그로 바꾼 뒤:
+### 2) 쿠버네티스 배포 — kustomize (dev / prod 분리)
+공통 정의는 `k8s/base/`, 환경 차이는 `k8s/overlays/{dev,prod}/`에 있습니다.
 ```bash
-kubectl apply -f k8s/jira-workbox.yaml
-# 접속: http://<노드IP>:30800  (NodePort)
+kubectl apply -k k8s/overlays/dev    # → namespace jira-workbox-dev,  NodePort 30801
+kubectl apply -k k8s/overlays/prod   # → namespace jira-workbox-prod, NodePort 30800 + Ingress
+# 렌더만 확인:  kubectl kustomize k8s/overlays/dev
 ```
-- **replicas: 1 고정** — 세션이 파드 메모리에 있어 스케일아웃 시 세션이 흩어집니다.
-- 상태(되돌리기 저널·라이선스 그룹 설정)는 `/data` PVC에 저장. 동적 프로비저너가 없으면
-  매니페스트의 `emptyDir` 주석으로 교체(재시작 시 상태 초기화).
-- `WORKBOX_LOG_DIR=/data`, `0.0.0.0:8000` 바인딩은 이미지에 기본 설정돼 있습니다.
+| | dev | prod |
+|---|---|---|
+| 네임스페이스 | `jira-workbox-dev` | `jira-workbox-prod` |
+| 이미지 태그 | `:develop` | `:stable`(→ Jenkins가 커밋 SHA로 고정) |
+| 접속 | NodePort 30801 | NodePort 30800 + Ingress `workbox.local` |
+| 로그 | text(`WORKBOX_LOG_JSON=0`) | JSON(ELK) |
+| 리소스 | 작게 | 크게 |
 
-### 3) CI/CD — Jenkins
-`Jenkinsfile`: **오프라인 셀프테스트 → 이미지 빌드/푸시 → `kubectl apply` → `/healthz`
-스모크**. Jenkins에 자격증명 `workbox-registry`(레지스트리), `workbox-kubeconfig`(kubeconfig)
-를 등록하고 `REGISTRY`를 설정하세요.
+- **replicas: 1 고정** — 세션이 파드 메모리에 있어 스케일아웃 시 세션이 흩어집니다(모듈 5의 Redis+HPA로 해소).
+- 상태(되돌리기 저널·라이선스 그룹 설정)는 `/data` PVC에 저장. 동적 프로비저너가 없으면
+  `base/deployment.yaml`의 볼륨을 `emptyDir`로 바꾸세요(재시작 시 초기화).
+- `WORKBOX_HOSTED=1`, `WORKBOX_LOG_DIR=/data`, `0.0.0.0:8000` 바인딩은 이미지 기본값입니다.
+
+### 3) CI/CD — Jenkins (브랜치 → 환경)
+`Jenkinsfile`: 오프라인 셀프테스트는 항상, 배포는 브랜치별로 —
+- **`develop` → dev 자동 배포** (무승인)
+- **`main` → prod 배포에 `input` 승인 단계** (조직 규칙: main/prod 변경은 승인)
+- 각 배포: 이미지 build/push(태그=커밋 SHA) → `kubectl apply -k overlays/<env>` →
+  `set image`으로 SHA 고정 → rollout 대기 → `/healthz` 스모크.
+
+Jenkins에 자격증명 `workbox-registry`(레지스트리)·`workbox-kubeconfig`(kubeconfig)를 등록하고
+`REGISTRY`를 설정하세요.
 
 ### 4) 모니터링 — Prometheus
 - 프로브: `/healthz` (liveness·readiness, 항상 200)

@@ -1,0 +1,21 @@
+# prod environment. Apply with:  kubectl apply -k k8s/overlays/prod
+# Reach via Ingress host (below) or NodePort 30800.
+# Jenkins pins the exact image per release:  kustomize edit set image jira-workbox=<repo>:<sha>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: jira-workbox-prod
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - ingress.yaml
+
+# a fixed tag, not "latest" — Jenkins overrides it with the built commit SHA
+images:
+  - name: jira-workbox
+    newTag: stable
+
+patches:
+  - path: patch-deployment.yaml
+  - path: patch-service.yaml

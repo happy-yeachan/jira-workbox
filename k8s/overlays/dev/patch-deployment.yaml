@@ -1,0 +1,15 @@
+# dev: plain-text logs (easier to eyeball with kubectl logs) and lighter limits.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jira-workbox
+spec:
+  template:
+    spec:
+      containers:
+        - name: jira-workbox
+          env:
+            - { name: WORKBOX_LOG_JSON, value: "0" }
+          resources:
+            requests: { cpu: 25m, memory: 96Mi }
+            limits: { cpu: 300m, memory: 192Mi }

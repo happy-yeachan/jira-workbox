@@ -1,0 +1,16 @@
+# ClusterIP by default; each overlay patches it to a NodePort (distinct port per
+# env). The prometheus.io/* annotations let an annotation-based Prometheus scrape
+# /metrics.
+apiVersion: v1
+kind: Service
+metadata:
+  name: jira-workbox
+  labels: { app: jira-workbox }
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  selector: { app: jira-workbox }
+  ports:
+    - { name: http, port: 8000, targetPort: http }

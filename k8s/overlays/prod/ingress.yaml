@@ -1,0 +1,28 @@
+# prod entry point (module 1). Needs an ingress controller (nginx). TLS via
+# cert-manager is left commented until that module — uncomment the tls block and
+# add a ClusterIssuer to serve HTTPS. Point workbox.local at a node IP in /etc/hosts
+# (or your LAN DNS) for a home cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jira-workbox
+  labels: { app: jira-workbox }
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"   # SSE streams
+    # cert-manager.io/cluster-issuer: letsencrypt   # module 1
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: workbox.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: jira-workbox
+                port:
+                  number: 8000
+  # tls:
+  #   - hosts: [workbox.local]
+  #     secretName: jira-workbox-tls

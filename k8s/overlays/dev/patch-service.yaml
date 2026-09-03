@@ -1,0 +1,12 @@
+# dev is reached over a NodePort (no Ingress needed for a scratch env)
+apiVersion: v1
+kind: Service
+metadata:
+  name: jira-workbox
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      nodePort: 30801

@@ -1,0 +1,13 @@
+# Persists the rollback journal + pinned license groups across restarts. On k3s
+# the default "local-path" StorageClass provisions it. No dynamic provisioner?
+# Swap the Deployment's volume to an emptyDir (state then resets per restart).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: workbox-data
+  labels: { app: jira-workbox }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Mi

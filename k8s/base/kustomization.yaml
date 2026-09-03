@@ -1,0 +1,14 @@
+# Shared definition for every environment. Overlays (dev/prod) set the namespace,
+# image tag, and the few things that differ. Render with:  kubectl kustomize k8s/base
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - pvc.yaml
+
+# overlays override newTag (dev -> develop, prod -> the commit SHA Jenkins builds)
+images:
+  - name: jira-workbox
+    newTag: latest
