@@ -36,6 +36,8 @@ TASK_NAME = "space_create"
 
 _P_PROJECT = "/project"
 _P_PROJECT_ONE = "/project/{key}"
+_P_PROJECT_NOTIFICATION = "/project/{key}/notificationscheme"
+_P_NOTIFICATION_SCHEMES = "/notificationscheme"
 
 _KEY_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 _P_USER = "/user"
@@ -218,6 +220,44 @@ def _preview_table(changes: list[Change]):
 # --------------------------------------------------------------------------
 
 
+async def _resolve_default_notification_scheme(client: WorkboxClient) -> str:
+    """The instance's default notification scheme id, so a project a template left
+    with NONE gets the scheme the web UI would assign. Prefers a scheme whose name
+    marks it the default; falls back to the lowest id (10000 on a stock Jira).
+    Returns '' if none can be read (then we simply skip the fixup)."""
+    try:
+        data = await client.get_json(_P_NOTIFICATION_SCHEMES, params={"maxResults": 100})
+    except UpstreamError:
+        return ""
+    schemes = [s for s in (data.get("values") or []) if str(s.get("id") or "").isdigit()]
+    if not schemes:
+        return ""
+    for s in schemes:
+        name = str(s.get("name") or "").lower()
+        if "default" in name or "기본" in name:
+            return str(s.get("id"))
+    return str(min(schemes, key=lambda s: int(s.get("id"))).get("id"))
+
+
+async def _missing_notification_scheme(client: WorkboxClient, key: str) -> bool:
+    """True only when the freshly-created project has NO notification scheme — the
+    bug we fix. Conservative: any read problem returns False so we never overwrite
+    a scheme the template did set. (This task always creates company-managed
+    projects via POST /project, which always support a notification scheme.)"""
+    try:
+        resp = await client.request("GET", _P_PROJECT_NOTIFICATION.format(key=key))
+    except Exception:  # noqa: BLE001
+        return False
+    if resp.status_code == 404:
+        return True
+    if resp.status_code >= 400:
+        return False
+    try:
+        return not str((resp.json() or {}).get("id") or "")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def _apply_one(client: WorkboxClient, change: Change) -> ItemResult:
     op = change.after.get("op", "create")
     key = change.after.get("key") or change.target_id
@@ -241,30 +281,42 @@ async def _apply_one(client: WorkboxClient, change: Change) -> ItemResult:
         return ItemResult(target_id=change.target_id, ok=False,
                           status_code=resp.status_code, error=WorkboxClient.short_error(resp))
 
-    # The project exists now. Two post-create fixups via PUT, both idempotent and
-    # both NON-fatal (the project is created and rollback-able; a failure is a
-    # caveat, not a run failure):
+    # The project exists now. Post-create fixups via PUT, all idempotent and all
+    # NON-fatal (the project is created and rollback-able; a failure is a caveat,
+    # not a run failure):
     #   * leadAccountId — some templates (notably custom "custom:<uuid>" ones)
     #     ignore it on create, so set the owner explicitly.
     #   * assigneeType=UNASSIGNED — Jira defaults a new project's assignee to the
     #     project lead; we want new issues to start Unassigned. Kept out of the
     #     create body because a tenant that disallows unassigned issues would 400
     #     the whole create; here it only downgrades to a caveat.
+    #   * notificationScheme — some templates leave a new project with NO
+    #     notification scheme (users then get no email), unlike the web UI which
+    #     assigns the default. Fill it in with the instance default when missing.
     put_body: dict[str, Any] = {"assigneeType": "UNASSIGNED"}
     lead = (change.after.get("create_body") or {}).get("leadAccountId")
     if lead:
         put_body["leadAccountId"] = lead
     try:
+        if await _missing_notification_scheme(client, key):
+            ns = await _resolve_default_notification_scheme(client)
+            if ns:
+                put_body["notificationScheme"] = int(ns)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — leave the scheme alone; not worth failing on
+        pass
+    try:
         put = await client.request("PUT", _P_PROJECT_ONE.format(key=key), json=put_body)
         if put.status_code >= 400:
             return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code,
-                              error=f"생성됨 · 소유자·기본 담당자 설정 실패({put.status_code}): "
+                              error=f"생성됨 · 소유자·기본 담당자·알림 스킴 설정 실패({put.status_code}): "
                                     f"{WorkboxClient.short_error(put)}"[:200])
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — project exists; note the caveat
         return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code,
-                          error=f"생성됨 · 소유자·기본 담당자 설정 오류: {type(exc).__name__}"[:200])
+                          error=f"생성됨 · 소유자·기본 담당자·알림 스킴 설정 오류: {type(exc).__name__}"[:200])
     return ItemResult(target_id=change.target_id, ok=True, status_code=resp.status_code)
 
 

@@ -1202,34 +1202,58 @@ async def suite_screen_clone() -> None:
 
 
 async def suite_space_create() -> None:
-    print("space_create: new project defaults to Unassigned")
+    print("space_create: new project defaults to Unassigned + notification scheme fixup")
     import tasks.space_create as sc
     from core.models import Change
 
-    puts: list[dict] = []
+    def make(*, has_scheme: bool):
+        puts: list[dict] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        import json as _json
-        p, m = request.url.path, request.method
-        if m == "POST" and p == "/rest/api/3/project":
-            return httpx.Response(201, json={"key": "NEW", "id": "1"})
-        if m == "PUT" and p == "/rest/api/3/project/NEW":
-            puts.append(_json.loads(request.content) if request.content else {})
-            return httpx.Response(200, json={})
-        return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json as _json
+            p, m = request.url.path, request.method
+            base = "/rest/api/3"
+            if m == "POST" and p == f"{base}/project":
+                return httpx.Response(201, json={"key": "NEW", "id": "1"})
+            # the freshly-created project's notification scheme: some templates
+            # leave it with NONE (404) — the bug we fix
+            if m == "GET" and p == f"{base}/project/NEW/notificationscheme":
+                return (httpx.Response(200, json={"id": "10100", "name": "Custom"})
+                        if has_scheme else httpx.Response(404, json={"errorMessages": ["none"]}))
+            if m == "GET" and p == f"{base}/notificationscheme":
+                return httpx.Response(200, json={"values": [
+                    {"id": "10000", "name": "Default Notification Scheme"},
+                    {"id": "10100", "name": "Custom"}]})
+            if m == "PUT" and p == f"{base}/project/NEW":
+                puts.append(_json.loads(request.content) if request.content else {})
+                return httpx.Response(200, json={})
+            return httpx.Response(404, json={"errorMessages": [f"unmapped {m} {p}"]})
+        return puts, handler
 
-    client = _client_for(handler)
     change = Change(target_id="NEW", label="새 스페이스", after={
         "op": "create", "key": "NEW", "name": "새 스페이스",
         "create_body": {"key": "NEW", "name": "새 스페이스", "leadAccountId": "lead-1",
                         "projectTypeKey": "software", "projectTemplateKey": "t"}})
+
+    # missing scheme (template left it none) → assign the instance default (10000)
+    puts, handler = make(has_scheme=False)
+    client = _client_for(handler)
     res = await sc._apply_one(client, change)
+    await client.aclose()
     check("space_create: creation succeeds", res.ok and res.status_code == 201, res)
-    check("space_create: post-create PUT sets Unassigned default + lead",
-          puts == [{"assigneeType": "UNASSIGNED", "leadAccountId": "lead-1"}], puts)
+    check("space_create: missing notification scheme → PUT assigns the default (10000)",
+          puts == [{"assigneeType": "UNASSIGNED", "leadAccountId": "lead-1",
+                    "notificationScheme": 10000}], puts)
     check("space_create: assigneeType stays out of the create body (avoids a 400)",
           "assigneeType" not in change.after["create_body"], change.after["create_body"])
-    await client.aclose()
+
+    # template already set a scheme → leave it alone (don't overwrite with default)
+    puts2, handler2 = make(has_scheme=True)
+    client2 = _client_for(handler2)
+    await sc._apply_one(client2, change)
+    await client2.aclose()
+    check("space_create: existing notification scheme is left untouched",
+          puts2 == [{"assigneeType": "UNASSIGNED", "leadAccountId": "lead-1"}], puts2)
 
 
 async def suite_group_inventory() -> None:
