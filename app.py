@@ -21,14 +21,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
@@ -45,19 +46,50 @@ from core.auth import (
     store_credentials,
     store_org_credentials,
 )
-from core.client import UpstreamError, WorkboxClient, get_client, set_client
+from core.client import (
+    UpstreamError, WorkboxClient, get_client, reset_request_client, set_client,
+    set_request_client,
+)
+from core.hosted import SessionStore
 from core.org_client import OrgClient
 from core import planstore, rollback
 from core.config import BASE_DIR, load_settings
 from core.models import ExecOptions, PlanResult, ProgressEvent
 from core.planstore import PlanRejected, consume, pending_count
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
-)
-# httpx logs request lines at INFO; keep the noise (and any URLs) down.
-logging.getLogger("httpx").setLevel(logging.WARNING)
+class _JsonLogFormatter(logging.Formatter):
+    """One JSON object per line, for shipping pod stdout into ELK (Filebeat →
+    Elasticsearch → Kibana). No secrets are logged anywhere in the app."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _configure_logging() -> None:
+    # JSON logs when WORKBOX_LOG_JSON is truthy (default ON in hosted/container
+    # mode so logs land in ELK structured); plain text otherwise for local runs.
+    json_env = (os.environ.get("WORKBOX_LOG_JSON") or "").strip().lower()
+    hosted_env = (os.environ.get("WORKBOX_HOSTED") or "").strip().lower() in ("1", "true", "yes", "on")
+    as_json = json_env in ("1", "true", "yes", "on") or (json_env == "" and hosted_env)
+    handler = logging.StreamHandler()
+    if as_json:
+        handler.setFormatter(_JsonLogFormatter())
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    # httpx logs request lines at INFO; keep the noise (and any URLs) down.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+_configure_logging()
 log = logging.getLogger("workbox")
 
 STATIC_DIR = BASE_DIR / "static"
@@ -78,18 +110,66 @@ def _install_client(creds: Credentials) -> WorkboxClient:
     return client
 
 
+# --------------------------------------------------------------------------
+# hosted (multi-user) mode — inert unless WORKBOX_HOSTED is set. Each user logs
+# in with their own token; it lives only in this process's memory (see
+# core.hosted). Local keychain mode is unchanged when this is off.
+# --------------------------------------------------------------------------
+
+_HOSTED = (os.environ.get("WORKBOX_HOSTED") or "").strip().lower() in ("1", "true", "yes", "on")
+_SESSIONS = SessionStore()
+_SID_COOKIE = "wb_sid"
+
+
+def hosted_enabled() -> bool:
+    return _HOSTED
+
+
+def _session_from(request: Request):
+    return _SESSIONS.get(request.cookies.get(_SID_COOKIE, ""))
+
+
+def _cookie_secure(request: Request) -> bool:
+    return request.url.scheme == "https"
+
+
+async def hosted_request_context(request: Request) -> AsyncIterator[None]:
+    """In hosted mode, install the logged-in session's client for this request so
+    every task's ``get_client()`` — including inside a streaming response — uses
+    the caller's own token. The client is cached on the session (reused across
+    requests, closed on logout), so nothing is closed here."""
+    if not _HOSTED:
+        yield
+        return
+    sess = _session_from(request)
+    token = None
+    if sess is not None and sess.authed:
+        if sess.client is None:
+            sess.client = WorkboxClient(sess.creds, load_settings())
+        token = set_request_client(sess.client)
+    try:
+        yield
+    finally:
+        if token is not None:
+            reset_request_client(token)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()  # logs the security notes once, on first call
 
-    # Starting without credentials is normal now: the browser setup form is how
-    # you store them, so the server has to be up for you to reach it.
-    creds = load_credentials()
-    if creds is not None:
-        _install_client(creds)
+    if _HOSTED:
+        # No process credentials in hosted mode — each user logs in in the browser.
+        log.info("hosted (multi-user) mode — users log in with their own token")
     else:
-        log.warning("no credentials stored yet — open the UI and run setup")
-        print(f"\n{SETUP_HINT}\n", file=sys.stderr)
+        # Starting without credentials is normal now: the browser setup form is how
+        # you store them, so the server has to be up for you to reach it.
+        creds = load_credentials()
+        if creds is not None:
+            _install_client(creds)
+        else:
+            log.warning("no credentials stored yet — open the UI and run setup")
+            print(f"\n{SETUP_HINT}\n", file=sys.stderr)
 
     try:
         yield
@@ -104,7 +184,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("shutdown complete")
 
 
-app = FastAPI(title="jira-workbox", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="jira-workbox", version="0.2.0", lifespan=lifespan,
+              dependencies=[Depends(hosted_request_context)] if _HOSTED else [])
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -140,10 +221,17 @@ class OrgSetupRequest(BaseModel):
 
 
 def _require_client() -> WorkboxClient:
-    """503 rather than a 500 stack trace when nothing is configured yet."""
+    """Return the active client, or a clear error instead of a 500 stack trace.
+
+    Hosted mode: the per-request session client is installed by
+    ``hosted_request_context``; its absence means "not logged in" → 401.
+    Local mode: the process singleton; its absence means "not set up" → 503."""
     try:
         return get_client()
     except RuntimeError:
+        if _HOSTED:
+            raise HTTPException(status_code=401,
+                                detail="Atlassian 토큰으로 로그인하세요.") from None
         raise HTTPException(status_code=503, detail=SETUP_HINT) from None
 
 
@@ -239,6 +327,9 @@ async def health() -> dict[str, object]:
         # whether an org admin API key is stored (enables the license event log).
         # Never returns the key itself.
         "org_configured": load_org_credentials() is not None,
+        # hosted (multi-user) mode: the UI shows an Atlassian-token login instead
+        # of the local keychain setup form.
+        "hosted": _HOSTED,
     }
 
     try:
@@ -276,6 +367,34 @@ async def health() -> dict[str, object]:
         "account_name": account,
         **common,
     }
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    """Liveness/readiness probe — always 200 while the process is up (auth state
+    is a per-user concern, not a reason to restart the pod)."""
+    return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Minimal Prometheus exposition for monitoring. No secrets, no per-user data
+    — just process-level gauges."""
+    lines = [
+        "# HELP workbox_up 1 while the process is serving.",
+        "# TYPE workbox_up gauge",
+        "workbox_up 1",
+        "# HELP workbox_hosted 1 in hosted (multi-user) mode, else 0.",
+        "# TYPE workbox_hosted gauge",
+        f"workbox_hosted {1 if _HOSTED else 0}",
+        "# HELP workbox_sessions Active in-memory login sessions (hosted mode).",
+        "# TYPE workbox_sessions gauge",
+        f"workbox_sessions {_SESSIONS.count()}",
+        "# HELP workbox_pending_plans Previews awaiting execution.",
+        "# TYPE workbox_pending_plans gauge",
+        f"workbox_pending_plans {pending_count()}",
+    ]
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.post("/api/setup/credentials")
@@ -332,6 +451,73 @@ async def setup_credentials(body: SetupRequest, request: Request) -> dict[str, o
     log.info("credentials stored via web setup: site=%s account=%s",
              site_url, mask_email(email))
     return {"ok": True, "site_url": site_url, "account_email": mask_email(email)}
+
+
+# --------------------------------------------------------------------------
+# hosted-mode session login (WORKBOX_HOSTED). The token lives only in this
+# process's memory (core.hosted), never on disk and never sent back.
+# --------------------------------------------------------------------------
+
+
+@app.post("/api/session/login")
+async def session_login(body: SetupRequest, request: Request) -> dict[str, object]:
+    """Hosted mode: verify a user's site + email + token and open an in-memory
+    session (cookie). Rejected outside hosted mode."""
+    if not _HOSTED:
+        raise HTTPException(status_code=404, detail="호스티드 모드가 아닙니다.")
+    _guard_setup_request(request)
+    try:
+        site_url = normalize_site_url(body.site_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    email = body.email.strip()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="이메일 주소 형식이 아닙니다.")
+    token = (body.api_token.get_secret_value().strip() if body.api_token else "")
+    if not token:
+        raise HTTPException(status_code=422, detail="API 토큰이 비어 있습니다.")
+
+    override = load_settings().site_url_override
+    creds = Credentials(
+        site_url=normalize_site_url(override) if override else site_url,
+        email=email, api_token=SecretStr(token))
+    del token
+    # verify the token before opening a session, so a bad token fails at login
+    probe = WorkboxClient(creds, load_settings())
+    try:
+        me = await probe.get_json("/myself")
+    except UpstreamError as exc:
+        await probe.aclose()
+        code = 401 if exc.status_code in (401, 403) else 502
+        raise HTTPException(status_code=code,
+                            detail="로그인 실패 — 사이트·이메일·토큰을 확인하세요." if code == 401
+                                   else f"사이트 확인 실패: {str(exc)[:150]}") from None
+
+    sess = _SESSIONS.new()
+    sess.creds = creds
+    sess.site_url = creds.site_url
+    sess.email = email
+    sess.client = probe  # reuse the verified client
+    _SESSIONS.save(sess)
+
+    resp = JSONResponse({"ok": True, "site_url": creds.site_url,
+                         "account_email": mask_email(email),
+                         "account_name": str(me.get("displayName") or "")})
+    resp.set_cookie(_SID_COOKIE, sess.sid, httponly=True, samesite="lax",
+                    secure=_cookie_secure(request), max_age=12 * 3600, path="/")
+    log.info("hosted login: site=%s account=%s", creds.site_url, mask_email(email))
+    return resp
+
+
+@app.post("/api/session/logout")
+async def session_logout(request: Request) -> Response:
+    sid = request.cookies.get(_SID_COOKIE, "")
+    sess = _SESSIONS.delete(sid) if sid else None
+    if sess is not None and sess.client is not None:
+        await sess.client.aclose()
+    resp = Response(status_code=204)
+    resp.delete_cookie(_SID_COOKIE, path="/")
+    return resp
 
 
 @app.post("/api/setup/org")

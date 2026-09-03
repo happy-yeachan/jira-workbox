@@ -144,6 +144,52 @@ verify_tls = true                      # false는 사내 MITM 프록시용(경�
 
 ---
 
+## 배포 (쿠버네티스 · 호스티드 모드)
+
+로컬(키체인) 모드 외에, 여러 사람이 각자 토큰으로 쓰는 **호스티드 모드**가 있습니다.
+`WORKBOX_HOSTED=1`이면 키체인을 안 쓰고, 사용자가 브라우저에서 **본인 사이트·이메일·API
+토큰으로 로그인**합니다. 토큰은 **서버 메모리에만**(세션 쿠키로) 보관되고 디스크에 저장되지
+않으며, 로그아웃/파드 재시작 시 사라집니다.
+
+> ⚠️ 호스티드 모드는 서버가 사용자 토큰을 메모리에 들고 있고, 미리보기·되돌리기 기록이
+> 프로세스 전역에서 공유됩니다. **소수 신뢰 팀/단일 사용자**에 적합합니다.
+
+### 1) 이미지 빌드
+```bash
+docker build -t <registry>/jira-workbox:0.1 .
+docker push <registry>/jira-workbox:0.1
+```
+
+### 2) 쿠버네티스 배포
+`k8s/jira-workbox.yaml`의 `image:`를 위 태그로 바꾼 뒤:
+```bash
+kubectl apply -f k8s/jira-workbox.yaml
+# 접속: http://<노드IP>:30800  (NodePort)
+```
+- **replicas: 1 고정** — 세션이 파드 메모리에 있어 스케일아웃 시 세션이 흩어집니다.
+- 상태(되돌리기 저널·라이선스 그룹 설정)는 `/data` PVC에 저장. 동적 프로비저너가 없으면
+  매니페스트의 `emptyDir` 주석으로 교체(재시작 시 상태 초기화).
+- `WORKBOX_LOG_DIR=/data`, `0.0.0.0:8000` 바인딩은 이미지에 기본 설정돼 있습니다.
+
+### 3) CI/CD — Jenkins
+`Jenkinsfile`: **오프라인 셀프테스트 → 이미지 빌드/푸시 → `kubectl apply` → `/healthz`
+스모크**. Jenkins에 자격증명 `workbox-registry`(레지스트리), `workbox-kubeconfig`(kubeconfig)
+를 등록하고 `REGISTRY`를 설정하세요.
+
+### 4) 모니터링 — Prometheus
+- 프로브: `/healthz` (liveness·readiness, 항상 200)
+- 메트릭: `/metrics` (Prometheus 텍스트) — `workbox_up`, `workbox_hosted`,
+  `workbox_sessions`(활성 로그인 세션 수), `workbox_pending_plans`
+- Service에 `prometheus.io/scrape` 주석이 있어, 해당 주석을 읽는 Prometheus가 자동 수집합니다.
+
+### 5) 로깅 — ELK
+`WORKBOX_HOSTED=1`이면 로그가 **JSON 한 줄/이벤트**로 stdout에 출력됩니다
+(`{ts, level, logger, msg}`, 시크릿 없음). 강제 지정은 `WORKBOX_LOG_JSON=1`.
+- 파드 stdout → **Filebeat**(DaemonSet)가 수집 → **Logstash/Elasticsearch** → **Kibana** 시각화.
+- Kibana에서 `logger: "workbox*"`로 필터링해 작업 흐름을 봅니다. 로그에 토큰·PII는 없습니다.
+
+---
+
 ## 개발자 참고
 
 **스택:** FastAPI + httpx(async) + uvicorn, 단일 `static/index.html`(Alpine.js, CDN,

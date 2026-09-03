@@ -1,0 +1,16 @@
+.git
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+logs/
+config.toml
+.env
+.env.local
+uv.lock
+run.bat
+run.command
+README.md
+k8s/
+Jenkinsfile

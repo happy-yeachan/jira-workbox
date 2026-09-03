@@ -1753,6 +1753,61 @@ async def suite_field_context() -> None:
     check("field ctx journal: delete still shows in 작업 기록", deleted["count"] == 0, deleted)
 
 
+async def suite_hosted() -> None:
+    print("hosted mode: session login + per-request client (incl. streaming)")
+    import importlib
+    import os as _os
+    from pydantic import SecretStr
+    from core.auth import Credentials
+    from core.config import load_settings
+
+    _os.environ["WORKBOX_HOSTED"] = "1"
+    import app as _app
+    importlib.reload(_app)  # pick up WORKBOX_HOSTED at import time
+    try:
+        check("hosted flag on", _app.hosted_enabled() is True)
+
+        def upstream(request: httpx.Request) -> httpx.Response:
+            p = request.url.path
+            if p.endswith("/myself"):
+                return httpx.Response(200, json={"displayName": "Tester", "accountId": "a1"})
+            if p.endswith("/project/TEST"):
+                return httpx.Response(200, json={"id": "1", "key": "TEST", "name": "T", "simplified": False})
+            return httpx.Response(404, json={"errorMessages": [f"nope {p}"]})
+
+        # a logged-in session whose client is mock-backed
+        sess = _app._SESSIONS.new()
+        sess.creds = Credentials(site_url="https://x.atlassian.net", email="a@b.com",
+                                 api_token=SecretStr("t"))
+        sess.client = _app.WorkboxClient(sess.creds, load_settings(),
+                                         transport=httpx.MockTransport(upstream))
+        _app._SESSIONS.save(sess)
+
+        tr = httpx.ASGITransport(app=_app.app)
+        async with httpx.AsyncClient(transport=tr, base_url="http://t",
+                                     cookies={"wb_sid": sess.sid}) as c:
+            h = (await c.get("/api/health")).json()
+            check("hosted health: logged-in session → configured + connected",
+                  h.get("configured") is True and h.get("connected") is True and h.get("hosted") is True, h)
+            # config_isolate.plan_stream calls get_client() INSIDE the streaming
+            # generator — proves the per-request client survives into streaming
+            r = await c.post("/api/tasks/config_isolate/plan/stream",
+                             json={"project": "TEST", "scheme_type": "issue_type"},
+                             headers={"X-Workbox-Setup": "1"})
+            body = r.text
+            check("hosted streaming: get_client() works inside the stream",
+                  r.status_code == 200 and "initialised" not in body
+                  and "프로젝트 확인" in body, body[:160])
+
+        async with httpx.AsyncClient(transport=tr, base_url="http://t") as c:
+            h2 = (await c.get("/api/health")).json()
+            check("hosted health: no session → not configured (login required)",
+                  h2.get("configured") is False, h2)
+    finally:
+        _os.environ.pop("WORKBOX_HOSTED", None)
+        importlib.reload(_app)  # restore local mode for anything after
+
+
 async def suite_workflow_cache() -> None:
     print("screen_share_analysis: session workflow-scan cache")
     import tasks.screen_share_analysis as ssa
@@ -2016,6 +2071,8 @@ async def main() -> None:
     await suite_field_context()
     print()
     await suite_license_group_config()
+    print()
+    await suite_hosted()
     print()
     await suite_workflow_cache()
     print()

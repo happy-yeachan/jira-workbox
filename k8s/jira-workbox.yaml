@@ -1,0 +1,103 @@
+# jira-workbox — hosted mode on Kubernetes.
+#
+# Apply:   kubectl apply -f k8s/jira-workbox.yaml
+# Reach:   http://<node-ip>:30800   (NodePort below)
+#
+# ONE replica on purpose: login sessions live in the pod's memory (a user's cookie
+# is bound to the pod that holds their session). Scaling out would scatter
+# sessions — keep replicas: 1, or add sticky sessions + shared session store first.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jira-workbox
+---
+# Persists the rollback journal + pinned license groups across restarts. On k3s
+# the default "local-path" StorageClass handles this; swap to an emptyDir volume
+# below if your cluster has no dynamic provisioner (state then resets per restart).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: workbox-data
+  namespace: jira-workbox
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jira-workbox
+  namespace: jira-workbox
+  labels: { app: jira-workbox }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # single RWO volume; don't run two pods at once
+  selector:
+    matchLabels: { app: jira-workbox }
+  template:
+    metadata:
+      labels: { app: jira-workbox }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: jira-workbox
+          # build + push this, then set your image ref:
+          #   docker build -t <registry>/jira-workbox:0.1 .
+          #   docker push <registry>/jira-workbox:0.1
+          image: jira-workbox:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: WORKBOX_HOSTED
+              value: "1"
+            - name: WORKBOX_LOG_DIR
+              value: /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: workbox-data
+        # --- no dynamic provisioner? comment the PVC block above and use: ---
+        # - name: data
+        #   emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jira-workbox
+  namespace: jira-workbox
+  labels: { app: jira-workbox }
+  annotations:
+    # let a Prometheus that honours pod/service scrape annotations pick up /metrics
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: NodePort
+  selector: { app: jira-workbox }
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      nodePort: 30800

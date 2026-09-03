@@ -14,6 +14,7 @@ never appears in a URL, a log line or an error message.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any, Literal
 
 import httpx
@@ -38,6 +39,8 @@ __all__ = [
     "WorkboxClient",
     "get_client",
     "set_client",
+    "set_request_client",
+    "reset_request_client",
 ]
 
 Product = Literal["jira", "confluence"]
@@ -100,13 +103,31 @@ class WorkboxClient(BaseApiClient):
 
 _client: WorkboxClient | None = None
 
+#: In hosted (multi-user) mode there is no process singleton — each request runs
+#: with the logged-in session's client, installed here for the duration of the
+#: request (including its streaming response). Task modules keep calling
+#: ``get_client()`` unchanged; it returns this when set, else the singleton.
+_request_client: ContextVar["WorkboxClient | None"] = ContextVar("wb_request_client", default=None)
+
 
 def set_client(client: WorkboxClient | None) -> None:
     global _client
     _client = client
 
 
+def set_request_client(client: "WorkboxClient | None"):
+    """Install the per-request (session) client; returns a token to reset with."""
+    return _request_client.set(client)
+
+
+def reset_request_client(token) -> None:
+    _request_client.reset(token)
+
+
 def get_client() -> WorkboxClient:
+    client = _request_client.get()
+    if client is not None:
+        return client
     if _client is None:
         raise RuntimeError("HTTP client is not initialised (app lifespan did not run).")
     return _client

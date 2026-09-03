@@ -743,7 +743,8 @@
   <button class="btn small ghost" @click="toggleHistory()" x-show="health.configured">
     작업 기록<span x-show="history.length" x-text="' (' + history.length + ')'"></span>
   </button>
-  <button class="btn small ghost" @click="setupOpen ? (setupOpen = false) : openSetup()" x-show="health.configured">접속 정보</button>
+  <button class="btn small ghost" @click="setupOpen ? (setupOpen = false) : openSetup()" x-show="health.configured && !health.hosted">접속 정보</button>
+  <button class="btn small ghost" @click="hostedLogout()" x-show="health.configured && health.hosted">로그아웃</button>
 </header>
 
 <template x-for="w in (health.security_warnings || [])">
@@ -792,12 +793,17 @@
   <div class="center-wrap">
     <div class="card">
       <header>
-        <h2 x-text="health.configured ? '접속 정보' : 'Jira 사이트 연결'"></h2>
+        <h2 x-text="health.hosted ? 'Atlassian 로그인' : (health.configured ? '접속 정보' : 'Jira 사이트 연결')"></h2>
       </header>
       <div class="body">
-        <p class="sub" style="margin:0 0 16px">
+        <p class="sub" style="margin:0 0 16px" x-show="!health.hosted">
           OS 키체인(<code>jira-workbox</code>)에 저장됩니다. 이 폴더의 파일에는 남지 않고,
           저장된 토큰이 이 화면으로 다시 내려오는 일도 없습니다.
+        </p>
+        <p class="sub" style="margin:0 0 16px" x-show="health.hosted">
+          본인 Atlassian 계정(사이트·이메일·API 토큰)으로 로그인합니다. 토큰은 이 서버의
+          <b>메모리에만</b> 보관되고 디스크·파일에 저장되지 않으며, 로그아웃하거나 서버가
+          재시작되면 지워집니다.
         </p>
 
         <label class="field">
@@ -831,13 +837,14 @@
 
         <div class="row" style="margin-top:16px">
           <button class="btn primary" @click="saveCredentials()" :disabled="setupBusy">
-            <span x-text="setupBusy ? '연결 중…' : '연결'"></span>
+            <span x-text="setupBusy ? (health.hosted ? '로그인 중…' : '연결 중…') : (health.hosted ? '로그인' : '연결')"></span>
           </button>
           <button class="btn ghost" x-show="health.configured" @click="setupOpen = false">닫기</button>
         </div>
 
-        <!-- optional: organisation admin API key → license change log -->
-        <details class="advanced" style="margin-top:20px">
+        <!-- optional: organisation admin API key → license change log (keychain
+             mode only — hosted mode has no shared server-side key store) -->
+        <details class="advanced" style="margin-top:20px" x-show="!health.hosted">
           <summary>
             조직 API 키 (라이선스 변경 로그 · 선택)
             <span class="pill" x-show="health.org_configured" style="margin-left:6px">연결됨</span>
@@ -2722,6 +2729,23 @@ document.addEventListener('alpine:init', () => {
     async saveCredentials() {
       this.setupBusy = true; this.setupError = '';
       try {
+        // hosted (multi-user) mode: log in a session (token kept only in server
+        // memory), not the local keychain
+        if (this.health.hosted) {
+          const res = await fetch('/api/session/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Workbox-Setup': '1' },
+            body: JSON.stringify({ site_url: this.setup.site_url, email: this.setup.email,
+                                   api_token: this.setup.api_token }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { this.setupError = this.errText(data); return; }
+          this.setup = { site_url: '', email: '', api_token: '' };
+          this.setupOpen = false;
+          await this.refreshHealth();
+          if (this.health.configured) this.loadDashboard();
+          return;
+        }
         const keep = this.setup.api_token === this.KEEP_TOKEN;  // token unchanged
         const body = keep
           ? { site_url: this.setup.site_url, email: this.setup.email, keep_token: true }
@@ -2745,6 +2769,10 @@ document.addEventListener('alpine:init', () => {
       } finally {
         this.setupBusy = false;
       }
+    },
+    async hostedLogout() {
+      try { await fetch('/api/session/logout', { method: 'POST', headers: { 'X-Workbox-Setup': '1' } }); } catch (e) {}
+      location.reload();
     },
     async saveOrgKey() {
       // unchanged sentinel = already connected, nothing to do

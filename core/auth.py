@@ -114,11 +114,21 @@ def mask_email(email: str) -> str:
     return f"{head}{'*' * max(len(local) - 1, 1)}@{domain}"
 
 
+def _kr_get(key: str) -> str | None:
+    """keyring.get_password, but ``None`` when there is no keyring backend at all
+    (e.g. a headless Linux container running in hosted mode) instead of raising —
+    so keychain-optional features degrade cleanly rather than 500."""
+    try:
+        return keyring.get_password(SERVICE, key)
+    except keyring.errors.KeyringError:
+        return None
+
+
 def load_credentials() -> Credentials | None:
     """Read credentials from the OS store, or ``None`` if incomplete."""
-    site_url = keyring.get_password(SERVICE, _KEY_SITE_URL)
-    email = keyring.get_password(SERVICE, _KEY_EMAIL)
-    token = keyring.get_password(SERVICE, _KEY_API_TOKEN)
+    site_url = _kr_get(_KEY_SITE_URL)
+    email = _kr_get(_KEY_EMAIL)
+    token = _kr_get(_KEY_API_TOKEN)
     if not (site_url and email and token):
         return None
 
@@ -167,10 +177,10 @@ class OrgCredentials(BaseModel):
 
 
 def load_org_credentials() -> OrgCredentials | None:
-    key = keyring.get_password(SERVICE, _KEY_ORG_API_KEY)
+    key = _kr_get(_KEY_ORG_API_KEY)
     if not key:
         return None
-    org_id = keyring.get_password(SERVICE, _KEY_ORG_ID) or ""
+    org_id = _kr_get(_KEY_ORG_ID) or ""
     return OrgCredentials(api_key=SecretStr(key), org_id=org_id)
 
 
