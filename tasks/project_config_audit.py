@@ -291,21 +291,30 @@ async def _workflow_children(
     """The workflows inside a workflow scheme, one row per distinct workflow with
     the issue types it serves (default workflow covers all unmapped types).
 
-    A workflow gets its own [분리하기] when it is shared — either because the
+    A workflow gets its own [전용으로 분리] when it is shared — either because the
     whole scheme is shared, or (even in a dedicated scheme) because the workflow
-    itself is referenced by another scheme, i.e. shared with another project."""
+    itself is referenced by another scheme, i.e. shared with another project.
+
+    Under each workflow the issue types it serves are listed, each with a
+    "특정 이슈타입만 분리" button (node_kind=issue_type_workflow) so ONE type can be
+    peeled off onto its own workflow copy — the mirror of the screen tree. The
+    default workflow gets a picker row (pick any type still riding default). A
+    non-default workflow serving a SINGLE type has nothing to split (that equals
+    isolating the whole workflow) so it lists the type without a button."""
     try:
         wf = await client.get_json(_P_WF_ONE.format(id=scheme_id))
     except UpstreamError:
         return []
     default = str(wf.get("defaultWorkflow") or "").strip()
-    by_wf: dict[str, list[str]] = {}
+    # workflow name -> [(issue_type_id, label)] explicitly mapped to it
+    by_wf: dict[str, list[tuple[str, str]]] = {}
     for it_id, w in (wf.get("issueTypeMappings") or {}).items():
-        by_wf.setdefault(str(w), []).append(it_names.get(_sid(it_id), _sid(it_id)))
+        by_wf.setdefault(str(w), []).append((_sid(it_id), it_names.get(_sid(it_id), _sid(it_id))))
 
     # only need the site-wide reference scan to catch shared workflows that live
     # in an otherwise-dedicated scheme; when the scheme is shared they all qualify
     refs = {} if shared else await _workflow_refs(client)
+    explicit_ids = sorted({iid for lst in by_wf.values() for iid, _ in lst})
 
     def node(wf_name: str, sub: str) -> dict[str, Any]:
         n = _leaf(wf_name, sub)
@@ -317,13 +326,34 @@ async def _workflow_children(
                             "workflow_scheme_id": scheme_id, "ws_shared": shared}
         return n
 
+    def assign(it_id: str, *, is_default_row: bool) -> dict[str, Any]:
+        p = {"project": target_key, "scheme_type": "workflow",
+             "node_kind": "issue_type_workflow", "issue_type_id": it_id,
+             "workflow_scheme_id": scheme_id, "ws_shared": shared}
+        if is_default_row:                 # picker: exclude types already mapped
+            p["mapped_ids"] = explicit_ids
+        return p
+
+    def it_row(label: str, action: dict[str, Any] | None) -> dict[str, Any]:
+        return {"depth": 2, "kind": "issue_type", "label": label, "sub": "",
+                "badge": "", "tag": "", "shared_with": [], "isolate": None,
+                "note": "", "assign": action}
+
     out: list[dict[str, Any]] = []
     if default:
-        explicit = sorted(by_wf.pop(default, []))
-        sub = "모든 작업 유형(기본)" + (" · " + ", ".join(explicit) if explicit else "")
-        out.append(node(default, sub))
+        explicit = sorted(by_wf.pop(default, []), key=lambda x: x[1])
+        out.append(node(default, "기본 워크플로우"))
+        # pick any type currently riding the default to split off
+        out.append(it_row("모든 작업 유형(기본)", assign("default", is_default_row=True)))
+        for iid, lab in explicit:          # types pinned to the default workflow name
+            out.append(it_row(lab, assign(iid, is_default_row=False)))
     for w, types in by_wf.items():
-        out.append(node(w, ", ".join(sorted(types))))
+        out.append(node(w, ""))
+        sole = len(types) == 1
+        for iid, lab in sorted(types, key=lambda x: x[1]):
+            # a workflow serving exactly one type: splitting it == isolating the
+            # whole workflow (the node's [전용으로 분리] already covers it) → no button
+            out.append(it_row(lab, None if sole else assign(iid, is_default_row=False)))
     return out
 
 

@@ -1449,6 +1449,90 @@ async def suite_issue_type_screen() -> None:
           and not a5["inplace"], a5)
 
 
+async def suite_issue_type_workflow() -> None:
+    print("config_isolate: per-issue-type workflow split")
+    import tasks.config_isolate as iso
+
+    # a workflow scheme WS1: default "Base", Bug+Story on shared "SDLC".
+    def site(default, mappings):
+        def handler(request: httpx.Request) -> httpx.Response:
+            p, q, m = request.url.path, request.url.params, request.method
+            base = "/rest/api/3"
+            if p == f"{base}/workflowscheme/WS1":
+                return httpx.Response(200, json={
+                    "id": "WS1", "name": "공유 워크플로우 스킴",
+                    "defaultWorkflow": default, "issueTypeMappings": mappings})
+            if p == f"{base}/workflowscheme":  # name-conflict check (queryString)
+                return httpx.Response(200, json={"values": [], "isLast": True,
+                                                 "startAt": 0, "maxResults": 100, "total": 0})
+            if p == f"{base}/workflows/search":  # workflow name-conflict check
+                return httpx.Response(200, json={"values": [], "isLast": True,
+                                                 "startAt": 0, "maxResults": 100, "total": 0})
+            if p == f"{base}/issuetype":
+                return httpx.Response(200, json=[{"id": "10001", "name": "Bug"},
+                                                 {"id": "10002", "name": "Story"},
+                                                 {"id": "10003", "name": "Task"}])
+            if p == f"{base}/workflows" and m == "POST":  # read one workflow by name
+                name = (request.read() and json.loads(request.content))["workflowNames"][0]
+                return httpx.Response(200, json={
+                    "statuses": [{"id": "1", "statusReference": "r1", "name": "To Do",
+                                  "statusCategory": "TODO"}],
+                    "workflows": [{"name": name, "statuses": [{"statusReference": "r1"}],
+                                   "transitions": [{"id": "1", "name": "Start",
+                                                    "toStatusReference": "r1"}]}]})
+            return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+        return handler
+
+    async def run(params, default, mappings):
+        client = _client_for(site(default, mappings))
+        plan = None
+        async for ev in iso._plan_issue_type_workflow(client, params, "10000", "NZGE"):
+            if ev.type == "plan":
+                plan = ev.plan
+        await client.aclose()
+        return plan.changes[0].after
+
+    def mk(it_id, **kw):
+        return iso.Params(project="NZGE", scheme_type="workflow",
+                          node_kind="issue_type_workflow", workflow_scheme_id="WS1",
+                          issue_type_id=it_id, **kw)
+
+    # shared scheme: Bug+Story share "SDLC" → clone SDLC, move ONLY Bug; Story stays
+    a = await run(mk("10001", ws_shared=True), "Base", {"10001": "SDLC", "10002": "SDLC"})
+    check("wf-ittype: shared scheme is cloned", a["ws_mode"] == "clone", a["ws_mode"])
+    m = a["ws_body"]["issueTypeMappings"]
+    check("wf-ittype: only the chosen type moves to the clone (Story stays on SDLC)",
+          m["10001"] == a["wf_new_name"] and m["10002"] == "SDLC", m)
+    check("wf-ittype: default workflow unchanged", a["ws_body"]["defaultWorkflow"] == "Base",
+          a["ws_body"]["defaultWorkflow"])
+    check("wf-ittype: re-point back on rollback recorded", a.get("restore_ws_id") == "WS1", a)
+
+    # riding-default type Task (no explicit mapping) → clone the default workflow,
+    # ADD an explicit mapping for Task only; other default-riders keep default
+    a2 = await run(mk("10003", ws_shared=True), "Base", {"10001": "SDLC"})
+    m2 = a2["ws_body"]["issueTypeMappings"]
+    check("wf-ittype(default-rider): adds explicit mapping for the split type",
+          m2["10003"] == a2["wf_new_name"] and m2["10001"] == "SDLC"
+          and a2["ws_body"]["defaultWorkflow"] == "Base", m2)
+
+    # dedicated scheme (ws_shared=False) → in-place draft edit, restore = original
+    a3 = await run(mk("10001", ws_shared=False), "Base", {"10001": "SDLC", "10002": "SDLC"})
+    check("wf-ittype(dedicated): edits the scheme in place, no scheme clone",
+          a3["ws_mode"] == "inplace" and a3["ws_id"] == "WS1", a3.get("ws_mode"))
+    upd = a3["ws_update_body"]["issueTypeMappings"]
+    rst = a3["ws_restore_body"]["issueTypeMappings"]
+    check("wf-ittype(dedicated): only chosen type re-pointed, restore is the original",
+          upd["10001"] == a3["wf_new_name"] and upd["10002"] == "SDLC"
+          and rst == {"10001": "SDLC", "10002": "SDLC"}, (upd, rst))
+
+    # guard: 'default' sentinel must be rejected (a concrete type is required)
+    try:
+        await run(mk("default", ws_shared=True), "Base", {"10001": "SDLC"})
+        check("wf-ittype: 'default' sentinel rejected", False, "no error raised")
+    except iso.TaskInputError:
+        check("wf-ittype: 'default' sentinel rejected", True)
+
+
 async def suite_workflow_cache() -> None:
     print("screen_share_analysis: session workflow-scan cache")
     import tasks.screen_share_analysis as ssa
@@ -1706,6 +1790,8 @@ async def main() -> None:
     await suite_screen_clone()
     print()
     await suite_issue_type_screen()
+    print()
+    await suite_issue_type_workflow()
     print()
     await suite_workflow_cache()
     print()

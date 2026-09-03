@@ -233,7 +233,8 @@ class Params(BaseModel):
     # granular (path-clone) isolation — set by the tree's per-node [분리하기].
     # node_kind=scheme means whole-scheme (the default). screens family:
     # screen_scheme|screen; workflow family: workflow (a single workflow).
-    node_kind: Literal["scheme", "screen_scheme", "screen", "workflow", "issue_type_screen"] = Field(
+    node_kind: Literal["scheme", "screen_scheme", "screen", "workflow",
+                       "issue_type_screen", "issue_type_workflow"] = Field(
         default="scheme", json_schema_extra={"hidden": True})
     node_id: str = Field(default="", json_schema_extra={"hidden": True})
     itss_id: str = Field(default="", json_schema_extra={"hidden": True})
@@ -1081,6 +1082,109 @@ async def _plan_workflow_fork(
     yield ProgressEvent(type="plan", total=1, plan=result)
 
 
+async def _plan_issue_type_workflow(
+    client: WorkboxClient, params: Params, target_id: str, target_key: str
+) -> AsyncIterator[ProgressEvent]:
+    """Split ONE issue type off a shared workflow: clone the workflow that type
+    currently uses (default or explicit), and re-point only that issue type's
+    mapping to the clone. Other issue types (including the default and everyone
+    riding it) stay on the original workflow, and other projects are untouched.
+
+    Same ``op=isolate_workflow`` ``after`` shape as :func:`_plan_workflow_fork`
+    (clone the shared scheme + re-point, or in-place draft edit a dedicated
+    scheme), so the generic workflow apply/rollback runs it unchanged. The ONLY
+    difference from a whole-workflow fork is which mappings move: here just the
+    chosen issue type, there every type on that workflow."""
+    ws_id = _sid(params.workflow_scheme_id)
+    it_id = _sid(params.issue_type_id)
+    if not ws_id or not it_id or it_id == "default":
+        raise TaskInputError("분리할 이슈타입/워크플로우 정보가 부족합니다. 진단을 다시 실행해 주세요.")
+
+    yield ProgressEvent(type="phase", phase="chain", message="워크플로우 스킴 확인")
+    ws = await client.get_json(_P_WFS_ONE + f"/{ws_id}")
+    ws_name = _sid(ws.get("name")) or f"#{ws_id}"
+    default_wf = _sid(ws.get("defaultWorkflow"))
+    mappings = {str(k): str(v) for k, v in (ws.get("issueTypeMappings") or {}).items()}
+    # the workflow this issue type uses right now: its explicit mapping, else the
+    # scheme default (the type is "riding default").
+    wf_name = mappings.get(it_id) or default_wf
+    if not wf_name:
+        raise TaskInputError("이 이슈타입이 사용하는 워크플로우를 찾지 못했습니다.")
+
+    it_names = await _issue_type_names(client)
+    it_lab = it_names.get(it_id, it_id)
+    new_wf_name = params.workflow_name.strip() or f"{target_key}: {it_lab} 워크플로우"
+    new_ws_name = params.workflow_scheme_name.strip() or f"{target_key}: 전체 워크플로우 스킴"
+    name_fields: list[dict[str, str]] = [
+        {"param": "workflow_name", "label": "워크플로우 이름", "value": new_wf_name}]
+    if params.ws_shared:
+        name_fields.append({"param": "workflow_scheme_name", "label": "워크플로우 스킴 이름", "value": new_ws_name})
+
+    yield ProgressEvent(type="phase", phase="workflow", message="워크플로우 정의 읽기")
+    read = await client.json("POST", _P_WF_READ, json={"workflowNames": [wf_name]})
+    wf_payload = _wf_create_payload(read, wf_name, new_wf_name)
+
+    # only this issue type moves to the clone — default and every other type keep
+    # their current workflow. Riding-default types get an explicit mapping added.
+    new_default = default_wf
+    new_mappings = dict(mappings)
+    new_mappings[it_id] = new_wf_name
+
+    after: dict[str, Any] = {
+        "op": "isolate_workflow", "scheme_type": "workflow", "label": "워크플로우",
+        "project_id": target_id, "project_key": target_key,
+        "wf_payload": wf_payload, "wf_new_name": new_wf_name,
+    }
+    warnings = ["워크플로우 복제는 상태·전환·규칙(조건·검증·후처리)까지 재생성합니다. "
+                "실행 후 새 워크플로우가 원본과 같은지 확인하세요."]
+    if params.ws_shared:
+        after["ws_mode"] = "clone"
+        after["ws_body"] = {"name": new_ws_name, "defaultWorkflow": new_default,
+                            "issueTypeMappings": new_mappings}
+        after["restore_ws_id"] = ws_id
+        ws_row = {"kind": "워크플로우 스킴", "from": ws_name, "to": new_ws_name}
+        note = f"'{it_lab}' 이슈타입만 워크플로우 '{wf_name}' 복제 → 워크플로우 스킴 복제 후 이 프로젝트만 재지정"
+        tnote = "선택한 이슈타입이 쓰는 워크플로우만 복제하고, 그 이슈타입의 매핑만 복제본으로 바꿉니다. 다른 이슈타입·다른 프로젝트는 그대로입니다."
+    else:
+        after["ws_mode"] = "inplace"
+        after["ws_id"] = ws_id
+        after["ws_update_body"] = {"id": ws_id, "name": ws_name, "defaultWorkflow": new_default,
+                                   "issueTypeMappings": new_mappings, "updateDraftIfNeeded": True}
+        after["ws_restore_body"] = {"id": ws_id, "name": ws_name, "defaultWorkflow": default_wf,
+                                    "issueTypeMappings": mappings, "updateDraftIfNeeded": True}
+        ws_row = {"kind": "워크플로우 스킴 (제자리 재지정)", "from": ws_name, "to": ws_name}
+        note = (f"'{it_lab}' 이슈타입만 워크플로우 '{wf_name}' 복제 → 전용 워크플로우 스킴을 제자리에서 "
+                "그 이슈타입만 새 워크플로우로 재지정")
+        tnote = ("이 프로젝트 전용 워크플로우 스킴은 새로 만들지 않고, 선택한 이슈타입이 쓰는 워크플로우만 복제해 "
+                 "그 이슈타입의 매핑만 제자리에서 바꿉니다. 활성 스킴이면 Jira 드래프트를 만들어 게시합니다.")
+        warnings.append("전용 워크플로우 스킴을 제자리에서 수정합니다. 활성 스킴이면 드래프트가 게시되며, "
+                        "상태가 동일해 이슈 이동은 없어야 하지만 실행 후 프로젝트 상태를 확인하세요.")
+
+    change = Change(
+        target_id=f"wfittype:{target_id}:{it_id}",
+        label=f"{target_key} · {it_lab} 워크플로우 분리",
+        before={"workflow": wf_name, "workflow_scheme": ws_name, "issue_type": it_lab},
+        after=after,
+        note=note,
+    )
+    table = ResultTable(
+        key="isolate", title=f"이슈타입 워크플로우 분리 · {it_lab}",
+        columns=[Column(key="kind", title="대상"), Column(key="from", title="원본(공유)"),
+                 Column(key="to", title="새 전용")],
+        rows=[{"kind": "워크플로우", "from": wf_name, "to": new_wf_name}, ws_row],
+        note=tnote,
+    )
+    await _mark_name_conflicts(client, name_fields)
+    result = planstore.register(
+        task=TASK_NAME,
+        params_echo={"project": target_key, "scheme_type": "workflow", "node_kind": "issue_type_workflow"},
+        changes=[change], warnings=warnings, tables=[table],
+        data={"isolate_names": name_fields},
+    )
+    audit.record_plan(result)
+    yield ProgressEvent(type="plan", total=1, plan=result)
+
+
 # --------------------------------------------------------------------------
 # plan
 # --------------------------------------------------------------------------
@@ -1099,6 +1203,10 @@ async def plan_stream(params: Params) -> AsyncIterator[ProgressEvent]:
         return
     if params.scheme_type == "issuetypescreen" and params.node_kind in ("screen_scheme", "screen"):
         async for ev in _plan_screen_fork(client, params, target_id, target_key):
+            yield ev
+        return
+    if params.scheme_type == "workflow" and params.node_kind == "issue_type_workflow":
+        async for ev in _plan_issue_type_workflow(client, params, target_id, target_key):
             yield ev
         return
     if params.scheme_type == "workflow" and params.node_kind == "workflow":

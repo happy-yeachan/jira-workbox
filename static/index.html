@@ -2245,7 +2245,7 @@
                         <span class="spacer"></span>
                         <template x-if="n.assign">
                           <button class="btn small ghost" style="flex:none" @click.stop="openAssignScreen(n.assign, n.label)"
-                                  title="특정 이슈타입만 화면·화면 스킴을 복제해 전용으로 분리합니다">특정 이슈타입만 분리</button>
+                                  title="특정 이슈타입만 지금 쓰는 설정을 복제해 전용으로 분리합니다">특정 이슈타입만 분리</button>
                         </template>
                         <template x-if="n.isolate">
                           <button class="btn small" style="flex:none" @click.stop="isolate(n.isolate)"
@@ -2363,10 +2363,14 @@
   <div class="modal-bg" @click.self="assignScreen = null" @keydown.escape.window="assignScreen = null">
     <div class="modal">
       <div class="body">
-        <h3>이슈타입 화면 분리</h3>
-        <p class="sub" style="margin:0 0 12px">
+        <h3 x-text="assignScreen.isWf ? '이슈타입 워크플로우 분리' : '이슈타입 화면 분리'"></h3>
+        <p class="sub" style="margin:0 0 12px" x-show="!assignScreen.isWf">
           고른 이슈타입이 지금 쓰는 <b>화면과 화면 스킴을 통째로 복제</b>해 그 이슈타입 전용으로 분리합니다.
           시작은 원본과 동일하고, 이후 Jira에서 독립 편집할 수 있어요. 같은 스킴을 쓰던 다른 이슈타입·다른 프로젝트는 그대로입니다.
+        </p>
+        <p class="sub" style="margin:0 0 12px" x-show="assignScreen.isWf">
+          고른 이슈타입이 지금 쓰는 <b>워크플로우를 복제</b>해 그 이슈타입만 복제본으로 옮깁니다.
+          시작은 원본과 동일하고, 이후 Jira에서 독립 편집할 수 있어요. 같은 워크플로우를 쓰던 다른 이슈타입·다른 프로젝트는 그대로입니다.
         </p>
         <template x-if="assignScreen.pickType">
           <label class="field"><span class="name">분리할 이슈타입</span>
@@ -3596,7 +3600,8 @@ document.addEventListener('alpine:init', () => {
       // when the scheme is mapped via 'default', let the operator pick which
       // concrete issue type to split off (fetch the project's types)
       const pickType = params.issue_type_id === 'default';
-      this.assignScreen = { params, itLabel, err: '', pickType, types: [], issueType: '' };
+      const isWf = params.scheme_type === 'workflow';
+      this.assignScreen = { params, itLabel, err: '', pickType, isWf, types: [], issueType: '' };
       if (pickType) {
         try {
           const res = await fetch('/api/project-issuetypes?project=' + encodeURIComponent(params.project));
