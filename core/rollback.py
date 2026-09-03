@@ -58,13 +58,20 @@ def record(
     note: str = "",
     detail: list[str] | None = None,
     undo: bool = False,
+    undoable: bool = True,
 ) -> str | None:
-    """Append a journal entry. Returns its id, or ``None`` if nothing to undo.
+    """Append a journal entry. Returns its id, or ``None`` if nothing to record.
 
     ``undo=True`` marks a run that was itself a rollback of another entry; it is
     kept for audit and redo data but hidden from :func:`history`.
+
+    ``undoable=False`` records a **log-only** entry — one that appears in 작업 기록
+    for the audit trail but carries no inverse, so it can't be undone (e.g. a
+    field-context delete, which Jira can't reliably recreate). Such an entry is
+    allowed to have an empty ``inverse``; :func:`history` reports it with
+    ``can_rollback=False`` and the UI shows "되돌릴 수 없음".
     """
-    if not inverse:
+    if not inverse and undoable:
         return None
     entry_id = secrets.token_urlsafe(12)
     entry = {
@@ -79,6 +86,7 @@ def record(
         # human-readable "what this run did" lines, shown when the row is expanded
         "detail": [str(d) for d in (detail or [])][:60],
         "undo": undo,
+        "undoable": undoable,
         "status": "active",
         "rolled_back_by": None,
         # dicts, not Change objects — this is what a rollback re-hydrates
@@ -213,7 +221,8 @@ def history(limit: int = 50) -> list[dict[str, Any]]:
             "detail": e.get("detail") or _summary_from_inverse(e),
             "status": e.get("status", "active"),
             "count": len(e.get("inverse", [])),
-            "can_rollback": e.get("status") == "active" and bool(e.get("inverse")),
+            "can_rollback": (e.get("status") == "active" and bool(e.get("inverse"))
+                             and e.get("undoable", True)),
         })
     return view
 

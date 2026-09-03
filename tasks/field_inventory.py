@@ -14,11 +14,24 @@ module.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import Any
 
-from core.client import UpstreamError, WorkboxClient
+from pydantic import BaseModel
+
+from core import audit, rollback
+from core.client import UpstreamError, WorkboxClient, get_client
 from core.concurrency import chunked
+from core.models import (
+    Change, ExecOptions, ExecuteResult, ItemResult, PlanResult, ProgressEvent,
+)
+
+log = logging.getLogger("workbox.task.field_inventory")
+
+TASK_NAME = "field_inventory"
 
 _P_FIELD_SEARCH = "/field/search"
 #: field type suffixes that carry a selectable option list per context
@@ -385,5 +398,246 @@ async def apply_options(
     return await context_options(client, field_id, ctx_id)
 
 
+# --------------------------------------------------------------------------
+# rollback / 작업 기록 for field-context writes
+#
+# The context add/edit/delete routes write directly (not through a plan), so they
+# journal like the manual group-membership actions do: after a successful write
+# the route calls one of journal_create / journal_edit / journal_delete, which
+# records the INVERSE. Undo re-runs that inverse through execute_stream (below):
+#   create → inverse deletes the new context   (undoable)
+#   edit   → inverse re-applies the prior state (undoable)
+#   delete → NO inverse (Jira can't recreate a context with its id/options/
+#            mappings) → recorded log-only (undoable=False) so it still shows in
+#            작업 기록 but with "되돌릴 수 없음".
+# _apply_one re-journals its own inverse so an undo is itself redoable, exactly
+# like the other write tasks. See [[rollback-standard]].
+# --------------------------------------------------------------------------
+
+
+def _ctx_target(field_id: str, ctx_id: str) -> str:
+    return f"fieldctx:{field_id}:{ctx_id}"
+
+
+def _edit_change(field_id: str, ctx_id: str, state: dict[str, Any], *, label: str = "") -> Change:
+    """A change that sets one context to ``state`` (name/desc/scope/default)."""
+    return Change(target_id=_ctx_target(field_id, ctx_id), label=label,
+                  after={"op": "ctx_edit", "field_id": field_id, "ctx_id": ctx_id, "state": state})
+
+
+def _delete_change(field_id: str, ctx_id: str, *, redo: dict[str, Any] | None = None,
+                   label: str = "") -> Change:
+    """A change that deletes a context; ``redo`` (create params) lets a later undo
+    of *this delete* recreate it — only set when the delete is itself an undo of a
+    create, never for an operator-initiated delete."""
+    after: dict[str, Any] = {"op": "ctx_delete", "field_id": field_id, "ctx_id": ctx_id}
+    if redo:
+        after["redo"] = redo
+    return Change(target_id=_ctx_target(field_id, ctx_id), label=label, after=after)
+
+
+def _create_change(field_id: str, params: dict[str, Any], *, label: str = "") -> Change:
+    return Change(target_id=_ctx_target(field_id, "new"), label=label,
+                  after={"op": "ctx_create", "field_id": field_id, **params})
+
+
+async def capture_context_state(
+    client: WorkboxClient, field_id: str, ctx_id: str
+) -> dict[str, Any] | None:
+    """The current editable state of one context, shaped for :func:`apply_context`
+    (so it can be stored as an inverse and re-applied verbatim). ``None`` if the
+    field/context can't be read."""
+    detail = await fetch_field_detail(client, field_id)
+    if not detail:
+        return None
+    c = next((x for x in detail.get("contexts", []) if _sid(x.get("id")) == _sid(ctx_id)), None)
+    if c is None:
+        return None
+    return {
+        "name": _sid(c.get("name")),
+        "description": _sid(c.get("description")),
+        "project_ids": [_sid(p.get("id")) for p in c.get("projects", [])],
+        "is_global": bool(c.get("global")),
+        "any_issue_type": bool(c.get("any_issue_type")),
+        "issue_type_ids": [_sid(i.get("id")) for i in c.get("issue_types", [])],
+        "default_value": _sid(c.get("default")),
+        "default_type": _sid(detail.get("default_type")),
+    }
+
+
+def journal_create(field_id: str, field_name: str, ctx_id: str, ctx_name: str,
+                   create_params: dict[str, Any]) -> str | None:
+    """Record a context creation (inverse = delete the new context; redo re-creates)."""
+    inverse = [_delete_change(field_id, ctx_id, redo=create_params,
+                              label=f"'{ctx_name}' 삭제 (생성 되돌리기)")]
+    return rollback.record(
+        task=TASK_NAME, title=f"필드 컨텍스트 · '{field_name}'에 '{ctx_name}' 생성",
+        inverse=inverse, attempted=1, succeeded=1, failed=0,
+        detail=[f"컨텍스트 생성: '{ctx_name}'"])
+
+
+def journal_edit(field_id: str, field_name: str, ctx_id: str, ctx_name: str,
+                 before_state: dict[str, Any]) -> str | None:
+    """Record a context edit (inverse = re-apply the state captured before the edit)."""
+    inverse = [_edit_change(field_id, ctx_id, before_state,
+                            label=f"'{ctx_name}' 이전 상태로 되돌리기")]
+    return rollback.record(
+        task=TASK_NAME, title=f"필드 컨텍스트 · '{field_name}'의 '{ctx_name}' 수정",
+        inverse=inverse, attempted=1, succeeded=1, failed=0,
+        detail=[f"컨텍스트 수정: '{ctx_name}'"])
+
+
+def journal_delete(field_id: str, field_name: str, ctx_id: str, ctx_name: str) -> str | None:
+    """Record a context deletion — log-only: Jira can't reliably recreate a
+    context (id, options, mappings, default), so this is NOT undoable."""
+    return rollback.record(
+        task=TASK_NAME, title=f"필드 컨텍스트 · '{field_name}'의 '{ctx_name}' 삭제",
+        inverse=[], attempted=1, succeeded=1, failed=0, undoable=False,
+        note="컨텍스트 삭제는 되돌릴 수 없습니다.",
+        detail=[f"컨텍스트 삭제: '{ctx_name}' (되돌리기 불가)"])
+
+
+async def _apply_one(client: WorkboxClient, change: Change) -> tuple[ItemResult, Change | None]:
+    """Apply one field-context change; return (result, inverse-for-redo).
+
+    Used only on the undo path — the forward writes happen in the API routes and
+    journal their own inverse. Each op re-journals its inverse so the undo is
+    itself redoable (create↔delete, edit↔edit)."""
+    a = change.after
+    op = a.get("op")
+    field_id = _sid(a.get("field_id"))
+    try:
+        if op == "ctx_edit":
+            ctx_id = _sid(a.get("ctx_id"))
+            state = a.get("state") or {}
+            # snapshot the current state first so the redo restores exactly this
+            current = await capture_context_state(client, field_id, ctx_id)
+            await apply_context(
+                client, field_id, ctx_id,
+                name=_sid(state.get("name")), description=_sid(state.get("description")),
+                project_ids=[_sid(p) for p in state.get("project_ids", [])],
+                is_global=bool(state.get("is_global")),
+                any_issue_type=state.get("any_issue_type"),
+                issue_type_ids=[_sid(i) for i in state.get("issue_type_ids", [])],
+                default_value=state.get("default_value"), default_type=_sid(state.get("default_type")))
+            redo = _edit_change(field_id, ctx_id, current) if current else None
+            return ItemResult(target_id=change.target_id, ok=True, status_code=200,
+                              note=f"컨텍스트 재설정: '{state.get('name')}'"), redo
+
+        if op == "ctx_delete":
+            ctx_id = _sid(a.get("ctx_id"))
+            await delete_context(client, field_id, ctx_id)
+            redo_params = a.get("redo")
+            redo = _create_change(field_id, redo_params) if redo_params else None
+            return ItemResult(target_id=change.target_id, ok=True, status_code=204,
+                              note="컨텍스트 삭제"), redo
+
+        if op == "ctx_create":
+            params = {k: a.get(k) for k in ("name", "description", "project_ids", "issue_type_ids")}
+            created = await create_context(
+                client, field_id, name=_sid(params.get("name")),
+                description=_sid(params.get("description")),
+                project_ids=[_sid(p) for p in (params.get("project_ids") or [])],
+                issue_type_ids=[_sid(i) for i in (params.get("issue_type_ids") or [])])
+            new_id = _sid(created.get("id"))
+            redo = _delete_change(field_id, new_id, redo=params) if new_id else None
+            return ItemResult(target_id=change.target_id, ok=True, status_code=201,
+                              note=f"컨텍스트 생성: '{params.get('name')}'"), redo
+
+        return ItemResult(target_id=change.target_id, ok=False,
+                          error=f"알 수 없는 작업: {op}"), None
+    except UpstreamError as exc:
+        return ItemResult(target_id=change.target_id, ok=False,
+                          status_code=exc.status_code, error=str(exc)[:200]), None
+    except Exception as exc:  # noqa: BLE001
+        return ItemResult(target_id=change.target_id, ok=False,
+                          error=f"{type(exc).__name__}: {exc}"[:200]), None
+
+
+class Params(BaseModel):
+    """No form params — field-context writes run from the 필드 관리 view, and undo
+    replays stored changes. Present only because the registry requires a model."""
+
+
+async def plan(params: Params) -> PlanResult:  # pragma: no cover - not reachable via UI
+    from tasks import TaskInputError
+    raise TaskInputError("필드 컨텍스트 작업은 필드 관리 화면에서 직접 실행합니다.")
+
+
+async def execute_stream(
+    plan_result: PlanResult, opts: ExecOptions
+) -> AsyncIterator[ProgressEvent]:
+    """Undo/redo path for field-context changes: apply each stored change and
+    journal the collected inverse so the undo is itself listed and redoable."""
+    client = get_client()
+    started_at = datetime.now(timezone.utc)
+    total = len(plan_result.changes)
+    results: list[ItemResult] = []
+    inverses: list[Change] = []
+    done = 0
+    cancelled = False
+    rollback_id: str | None = None
+
+    def build() -> ExecuteResult:
+        return ExecuteResult(
+            task=plan_result.task, plan_id=plan_result.plan_id,
+            started_at=started_at, finished_at=datetime.now(timezone.utc),
+            attempted=len(results), succeeded=sum(1 for r in results if r.ok),
+            failed=sum(1 for r in results if not r.ok), cancelled=cancelled,
+            results=results, rollback_id=rollback_id)
+
+    try:
+        yield ProgressEvent(type="start", index=0, total=total, message=f"{total}건")
+        for change in plan_result.changes:
+            item, inverse = await _apply_one(client, change)
+            results.append(item)
+            if item.ok and inverse is not None:
+                inverses.append(inverse)
+            done += 1
+            yield ProgressEvent(type="item", index=done, total=total, item=item)
+
+        if inverses:
+            rollback_id = rollback.record(
+                task=plan_result.task, title="필드 컨텍스트 · 되돌리기",
+                inverse=inverses, attempted=len(results),
+                succeeded=sum(1 for r in results if r.ok),
+                failed=sum(1 for r in results if not r.ok),
+                undo=bool(plan_result.params_echo.get("rollback_of")))
+        yield ProgressEvent(type="summary", index=done, total=total, summary=build())
+    except (asyncio.CancelledError, GeneratorExit):
+        cancelled = True
+        raise
+    finally:
+        audit.record_execution(build(), batch_size=opts.batch_size)
+
+
+async def execute(plan_result: PlanResult, opts: ExecOptions) -> ExecuteResult:
+    summary: ExecuteResult | None = None
+    async for event in execute_stream(plan_result, opts):
+        if event.type == "summary" and event.summary is not None:
+            summary = event.summary
+    if summary is None:
+        raise RuntimeError("execution ended without a summary event")
+    return summary
+
+
+def _register_task() -> None:
+    """Register the field-context write task (off the launcher; drives undo)."""
+    from tasks import TaskModule, TaskSpec, register
+    register(TaskModule(
+        spec=TaskSpec(
+            name=TASK_NAME, category="필드",
+            title="필드 컨텍스트 변경",
+            description="필드 관리 화면에서 컨텍스트를 추가·수정·삭제합니다 (되돌리기 지원 · 삭제는 기록만).",
+            launcher=False,
+        ),
+        params_model=Params, plan=plan, execute_stream=execute_stream))
+
+
+_register_task()
+
+
 __all__ = ["fetch_fields", "fetch_field_detail", "context_options", "apply_options",
-           "apply_context", "create_context", "delete_context", "type_label", "UpstreamError"]
+           "apply_context", "create_context", "delete_context", "type_label", "UpstreamError",
+           "capture_context_state", "journal_create", "journal_edit", "journal_delete",
+           "execute_stream", "execute"]

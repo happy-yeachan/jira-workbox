@@ -605,6 +605,9 @@ async def apply_field_context(
     from tasks import field_inventory
     client = _require_client()
     try:
+        # snapshot the current state BEFORE editing, so 작업 기록 can offer an undo
+        # that re-applies exactly this state
+        before = await field_inventory.capture_context_state(client, field_id, ctx_id)
         await field_inventory.apply_context(
             client, field_id, ctx_id, name=body.name.strip(), description=body.description.strip(),
             project_ids=[p for p in body.project_ids if p], is_global=body.is_global,
@@ -617,6 +620,9 @@ async def apply_field_context(
             raise HTTPException(status_code=403,
                                 detail="컨텍스트를 변경할 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
         raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    if before is not None:  # journal the edit for 작업 기록 (undoable)
+        field_inventory.journal_edit(field_id, str((detail or {}).get("name") or field_id),
+                                     ctx_id, body.name.strip() or (before.get("name") or ctx_id), before)
     return detail or {}
 
 
@@ -635,17 +641,25 @@ async def create_field_context(
     _guard_setup_request(request)
     from tasks import field_inventory
     client = _require_client()
+    create_params = {
+        "name": body.name.strip(), "description": body.description.strip(),
+        "project_ids": [p for p in body.project_ids if p],
+        "issue_type_ids": [i for i in body.issue_type_ids if i],
+    }
     try:
-        await field_inventory.create_context(
-            client, field_id, name=body.name.strip(), description=body.description.strip(),
-            project_ids=[p for p in body.project_ids if p],
-            issue_type_ids=[i for i in body.issue_type_ids if i])
+        created = await field_inventory.create_context(
+            client, field_id, name=create_params["name"], description=create_params["description"],
+            project_ids=create_params["project_ids"], issue_type_ids=create_params["issue_type_ids"])
         detail = await field_inventory.fetch_field_detail(client, field_id)
     except UpstreamError as exc:
         if exc.status_code in (401, 403):
             raise HTTPException(status_code=403,
                                 detail="컨텍스트를 만들 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
         raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    new_id = str((created or {}).get("id") or "")
+    if new_id:  # journal the creation for 작업 기록 (undo deletes the new context)
+        field_inventory.journal_create(field_id, str((detail or {}).get("name") or field_id),
+                                       new_id, create_params["name"], create_params)
     return detail or {}
 
 
@@ -658,6 +672,11 @@ async def delete_field_context(
     from tasks import field_inventory
     client = _require_client()
     try:
+        # capture the name before deleting so 작업 기록 can describe what was removed
+        before = await field_inventory.capture_context_state(client, field_id, ctx_id)
+        field_name = ""
+        detail_before = await field_inventory.fetch_field_detail(client, field_id)
+        field_name = str((detail_before or {}).get("name") or field_id)
         await field_inventory.delete_context(client, field_id, ctx_id)
         detail = await field_inventory.fetch_field_detail(client, field_id)
     except UpstreamError as exc:
@@ -665,6 +684,9 @@ async def delete_field_context(
             raise HTTPException(status_code=403,
                                 detail="컨텍스트를 삭제할 권한이 없습니다. Jira 관리자 권한이 필요합니다.") from None
         raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+    # log-only: a deleted context can't be reliably recreated → not undoable
+    field_inventory.journal_delete(field_id, field_name, ctx_id,
+                                   (before or {}).get("name") or ctx_id)
     return detail or {}
 
 

@@ -1533,6 +1533,110 @@ async def suite_issue_type_workflow() -> None:
         check("wf-ittype: 'default' sentinel rejected", True)
 
 
+async def suite_field_context() -> None:
+    print("field_inventory: context write journaling + undo")
+    import tasks.field_inventory as fi
+    from core import rollback as rb
+    from core.models import Change, ExecOptions
+
+    base = "/rest/api/3"
+    CUSTOM = "com.atlassian.jira.plugin.system.customfieldtypes:textfield"
+
+    def pg(items):
+        return {"values": items, "isLast": True, "startAt": 0, "maxResults": 100, "total": len(items)}
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p, q, m = request.url.path, request.url.params, request.method
+        calls.append(f"{m} {p.replace(base, '')}")
+        if p == f"{base}/field/search":
+            return httpx.Response(200, json=pg([
+                {"id": "F1", "name": "우선순위", "schema": {"custom": CUSTOM}}]))
+        if p == f"{base}/field/F1/context" and m == "GET":
+            return httpx.Response(200, json=pg([
+                {"id": "ctx1", "name": "C-orig", "description": "d",
+                 "isGlobalContext": False, "isAnyIssueType": False}]))
+        if p == f"{base}/field/F1/context" and m == "POST":
+            return httpx.Response(200, json={"id": "ctxNEW", "name": "새 컨텍스트"})
+        if p.startswith(f"{base}/field/F1/context/") and m == "DELETE":
+            return httpx.Response(204)
+        if p == f"{base}/field/F1/context/projectmapping":
+            return httpx.Response(200, json=pg([{"contextId": "ctx1", "projectId": "P1"}]))
+        if p == f"{base}/field/F1/context/issuetypemapping":
+            return httpx.Response(200, json=pg([{"contextId": "ctx1", "issueTypeId": "10001"}]))
+        if p == f"{base}/field/F1/context/defaultValue":
+            return httpx.Response(200, json={"values": [{"contextId": "ctx1", "text": "hello"}]})
+        if p == f"{base}/project/search":
+            return httpx.Response(200, json=pg([{"id": "P1", "key": "PRJ", "name": "Proj"}]))
+        if p == f"{base}/issuetype":
+            return httpx.Response(200, json=[{"id": "10001", "name": "Bug"}])
+        # writes performed by apply_context — accept any
+        if p.startswith(f"{base}/field/F1/context/"):
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"errorMessages": [f"unmapped {p}"]})
+
+    client = _client_for(handler)
+
+    # ---- _apply_one: ctx_create → creates + inverse deletes (redo re-creates) ----
+    params = {"name": "새 컨텍스트", "description": "", "project_ids": [], "issue_type_ids": []}
+    item, inv = await fi._apply_one(client, fi._create_change("F1", params))
+    check("field ctx create: applied ok", item.ok and "POST /field/F1/context" in calls, item)
+    check("field ctx create: inverse deletes the new context, carries redo",
+          inv is not None and inv.after["op"] == "ctx_delete" and inv.after["ctx_id"] == "ctxNEW"
+          and inv.after.get("redo", {}).get("name") == "새 컨텍스트", inv and inv.after)
+
+    # ---- _apply_one: ctx_delete (with redo) → deletes + inverse re-creates ----
+    calls.clear()
+    dch = fi._delete_change("F1", "ctxX", redo={"name": "복구용", "description": "",
+                                                "project_ids": [], "issue_type_ids": []})
+    item2, inv2 = await fi._apply_one(client, dch)
+    check("field ctx delete: applied ok", item2.ok and any(c.startswith("DELETE") for c in calls), item2)
+    check("field ctx delete: inverse re-creates from redo params",
+          inv2 is not None and inv2.after["op"] == "ctx_create" and inv2.after.get("name") == "복구용", inv2 and inv2.after)
+
+    # ---- _apply_one: ctx_edit → captures current state as the inverse ----
+    calls.clear()
+    ech = fi._edit_change("F1", "ctx1", {"name": "C-new", "description": "x", "project_ids": [],
+                                         "is_global": True, "any_issue_type": True,
+                                         "issue_type_ids": [], "default_value": "bye",
+                                         "default_type": "textfield"})
+    item3, inv3 = await fi._apply_one(client, ech)
+    check("field ctx edit: applied ok (renamed the context)",
+          item3.ok and any(c == "PUT /field/F1/context/ctx1" for c in calls), item3)
+    check("field ctx edit: inverse restores the PRE-edit state (name/projects/default)",
+          inv3 is not None and inv3.after["op"] == "ctx_edit"
+          and inv3.after["state"]["name"] == "C-orig"
+          and inv3.after["state"]["project_ids"] == ["P1"]
+          and inv3.after["state"]["default_value"] == "hello", inv3 and inv3.after)
+
+    await client.aclose()
+
+    # ---- journal helpers → 작업 기록 semantics (create/edit undoable, delete not) ----
+    def mine():
+        return [e for e in rb.history(limit=200) if e["task"] == "field_inventory"]
+
+    fi.journal_create("F1", "우선순위", "ctxA", "만든 컨텍스트",
+                      {"name": "만든 컨텍스트", "description": "", "project_ids": [], "issue_type_ids": []})
+    fi.journal_edit("F1", "우선순위", "ctx1", "수정한 컨텍스트",
+                    {"name": "이전이름", "description": "", "project_ids": ["P1"], "is_global": False,
+                     "any_issue_type": False, "issue_type_ids": [], "default_value": "", "default_type": ""})
+    fi.journal_delete("F1", "우선순위", "ctxDel", "삭제한 컨텍스트")
+
+    hist = mine()
+    by_title = {e["title"].split("'")[-2] if "'" in e["title"] else e["title"]: e for e in hist}
+    created = next(e for e in hist if "생성" in e["title"])
+    edited = next(e for e in hist if "수정" in e["title"])
+    deleted = next(e for e in hist if "삭제" in e["title"])
+    check("field ctx journal: create is undoable", created["can_rollback"] is True, created)
+    check("field ctx journal: edit is undoable", edited["can_rollback"] is True, edited)
+    check("field ctx journal: delete is log-only (NOT undoable)",
+          deleted["can_rollback"] is False and deleted["status"] == "active", deleted)
+
+    # the delete entry still exists in history (audit trail), just can't be undone
+    check("field ctx journal: delete still shows in 작업 기록", deleted["count"] == 0, deleted)
+
+
 async def suite_workflow_cache() -> None:
     print("screen_share_analysis: session workflow-scan cache")
     import tasks.screen_share_analysis as ssa
@@ -1792,6 +1896,8 @@ async def main() -> None:
     await suite_issue_type_screen()
     print()
     await suite_issue_type_workflow()
+    print()
+    await suite_field_context()
     print()
     await suite_workflow_cache()
     print()
