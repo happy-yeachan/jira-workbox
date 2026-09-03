@@ -34,7 +34,6 @@ PRODUCTS: list[dict[str, str]] = [
     {"key": "jira-software", "label": "Jira Software"},
     {"key": "jira-servicedesk", "label": "Jira Service Management"},
     {"key": "jira-product-discovery", "label": "Jira Product Discovery"},
-    {"key": "jira-core", "label": "Jira Work Management"},
     {"key": "confluence", "label": "Confluence"},
 ]
 _KNOWN = {p["key"] for p in PRODUCTS}

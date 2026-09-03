@@ -566,9 +566,11 @@
     min-height: 38px; background: var(--surface);
   }
   .tokinput:focus-within { border-color: var(--accent); }
-  .tokinput-in {
-    border: 0; outline: 0; background: none; flex: 1; min-width: 110px;
-    font: inherit; color: inherit; padding: 2px;
+  /* beat the generic input[type=text] rule so the inner input is seamless (no
+     nested border/background/shadow) */
+  .tokinput .tokinput-in, .tokinput .tokinput-in:focus {
+    border: 0; outline: 0; box-shadow: none; background: none;
+    flex: 1; min-width: 110px; width: auto; font: inherit; color: inherit; padding: 2px;
   }
   .pick-row input { width: 15px; height: 15px; accent-color: var(--accent); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
