@@ -8,8 +8,11 @@ metadata:
   name: jira-workbox
   labels: { app: jira-workbox }
   annotations:
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"   # SSE streams
-    # cert-manager.io/cluster-issuer: letsencrypt   # module 1
+    # jira-workbox streams progress over SSE (text/event-stream). Two settings make
+    # that work through nginx-ingress:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"   # don't cut a long stream
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"      # flush events immediately
+    # cert-manager.io/cluster-issuer: letsencrypt   # TLS sub-step (later)
 spec:
   ingressClassName: nginx
   rules:
